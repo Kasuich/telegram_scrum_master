@@ -166,19 +166,51 @@ graph TB
 **Зависит от:** контракт `@platform_tool` (день 1). До него — пишет `TrackerClient` (он самодостаточен).
 **Отдаёт:** импортируемые тулзы + рабочая интеграция с Трекером.
 
-### 🅱️ Track B — Core Platform (Dev B)
+### 🅱️ Track B — Core Platform + Monitoring Infrastructure (Dev B)
 
 Фундамент. **Приоритет — выкатить интерфейсы-заглушки в день 1**, чтобы разблокировать остальных.
 
-- [ ] `config.py` — pydantic-settings (DATABASE_URL, YC_API_KEY, YC_FOLDER_ID, TRACKER_TOKEN, TRACKER_ORG_ID)
-- [ ] `db.py` — async engine + session (SQLAlchemy + asyncpg)
-- [ ] Миграции (Alembic): `actions`, `traces`, `confirms`, `runtime_configs`
-- [ ] `llm.py` — обёртка LiteLLM → Yandex AI Studio (YandexGPT), интерфейс `complete(messages, tools)`
-- [ ] `tools.py` — `@platform_tool` декоратор + `ToolRegistry`
-- [ ] Проверить доступ к модели в Yandex AI Studio (тестовый вызов)
+**Core Platform:**
+- [x] `config.py` — pydantic-settings (DATABASE_URL, YC_API_KEY, YC_FOLDER_ID, TRACKER_TOKEN, TRACKER_ORG_ID)
+- [x] `db.py` — async engine + session (SQLAlchemy + asyncpg)
+- [x] Миграции (Alembic): все таблицы платформы (11 таблиц, 3 ENUM, 8 индексов)
+- [x] `llm.py` — обёртка YandexGPT (httpx), интерфейс `complete(messages, tools)`, streaming, retry
+- [x] `tools.py` — `@platform_tool` декоратор + `ToolRegistry` (singleton, schema generation, validation)
+- [x] `exceptions.py` — иерархия исключений с exception chaining
+- [x] `logging.py` — structured JSON logging, ContextVar trace_id, `@timed` декоратор
+- [x] `prompts.py` — system prompt PM-агента, форматирование тулзов и confirm-запросов
+- [x] Unit-тесты: `test_config`, `test_db`, `test_llm` (28), `test_models` (89), `test_tools`
+- [x] Интеграционные тесты: `test_full_system` (27)
+- [x] Примеры: `examples/01–05_*.py`
+- [x] `.env.example`
+- [ ] Проверить доступ к модели в Yandex AI Studio (тестовый вызов на реальном ключе)
+
+**Метрики (`core/metrics.py`):**
+- [ ] Prometheus-счётчики и гистограммы:
+  - `llm_requests_total{model, status}`, `llm_latency_seconds{model}`, `llm_tokens_total{model, type}`
+  - `tool_executions_total{tool_name, risk, status}`, `tool_latency_seconds{tool_name}`
+  - `external_requests_total{service, status_code}`, `external_latency_seconds{service}`
+  - `db_pool_checked_out` gauge
+- [ ] Хелпер `@track_metrics` — оборачивает async-функцию, пишет latency + status автоматически
+- [ ] Инструментировать `llm.py` и `tools.py` через `@track_metrics`
+
+**Мониторинг-инфраструктура (не зависит от других треков):**
+- [ ] `docker-compose.monitoring.yml` — оверлей с сервисами мониторинга:
+  - `prometheus` — scrape platform-api, pm-orchestrator, cadvisor, node-exporter
+  - `grafana` — provisioning дашбордов и datasource из файлов
+  - `alertmanager` — маршрутизация алертов в Telegram Bot
+  - `cadvisor` — метрики контейнеров (CPU/Memory/Network/Disk per container)
+  - `node-exporter` — метрики хоста (CPU, RAM, disk I/O, network)
+- [ ] `monitoring/prometheus.yml` — scrape-конфиг
+- [ ] `monitoring/alertmanager.yml` — Telegram webhook (шаблон, токен бота через env)
+- [ ] `monitoring/alerts.yml` — правила: контейнер упал, диск > 80%, OOM
+- [ ] Grafana дашборды (JSON provisioning):
+  - **Контейнеры** — CPU/Memory/Network/Disk per container (cAdvisor)
+  - **Хост** — CPU, RAM, disk I/O, network (Node Exporter)
+  - **Приложение** — заготовка под метрики из `core/metrics.py` (Track D заполнит)
 
 **Зависит от:** ничего (фундамент).
-**Отдаёт:** пакет `core`, который импортируют все. ⚠️ Узкое место — отдать контракты и стабы в первую очередь.
+**Отдаёт:** пакет `core`, `core/metrics.py`, поднятый стек мониторинга. ⚠️ Узкое место — отдать контракты и стабы в первую очередь.
 
 ### 🅲 Track C — Agent + Autonomy (Dev C)
 
@@ -194,14 +226,26 @@ graph TB
 
 ### 🅳 Track D — Entry points + Observability (Dev D)
 
+**Entry points:**
 - [ ] HTTP в `platform-api`: `POST /chat`, `POST /confirm/{id}`, `GET /actions`, `GET /traces/{id}`
 - [ ] Confirm-флоу: вернуть pending_confirm, принять ответ, возобновить агента
 - [ ] Read-модель: листинг действий + просмотр трейса (для отладки и демо)
 - [ ] **Telegram-адаптер (aiogram)** — чат + кнопки confirm (must для красивого демо)
 - [ ] Простой лог/вывод трейса
 
+**Мониторинг приложения (поверх инфраструктуры Track B):**
+- [ ] `GET /metrics` endpoint в `platform-api` (prometheus-client, multiprocess mode)
+- [ ] Grafana дашборды (provisioning из JSON):
+  - **LLM** — запросы/сек, latency p50/p95/p99, токены (prompt/completion), ошибки по типу
+  - **Внешние сервисы** — Yandex Tracker latency, статус-коды
+  - **Агенты** — трейсы (completed/failed), actions по tool/risk, confirms pending/resolved
+  - **Здоровье сервисов** — HTTP error rate, DB pool utilization, uptime
+- [ ] Alertmanager правила приложения: error rate > 5%, LLM latency p95 > 10s, confirms зависли > 30 мин
+- [ ] Telegram-алерты подключить к Alertmanager из Track B
+
 **Зависит от:** `invoke()` агента (контракт), DB-модели. Кодит против стабов.
-**Отдаёт:** способ поговорить с агентом + увидеть, что он сделал.
+**Зависит от (мониторинг):** инфраструктура из Track B + `core/metrics.py`.
+**Отдаёт:** способ поговорить с агентом + увидеть, что он сделал + application-level дашборды.
 
 ---
 
@@ -220,9 +264,12 @@ gantt
     TrackerClient                    :a1, after d0, 2d
     tracker_* тулзы + smoke          :a2, after a1, 2d
 
-    section Track B — Core
-    config + db + миграции           :b1, after d0, 2d
-    llm + tool registry              :b2, after b1, 2d
+    section Track B — Core + Monitoring
+    config + db + миграции           :done, b1, after d0, 2d
+    llm + tool registry + prompts    :done, b2, after b1, 2d
+    core/metrics.py (prometheus)     :b3, after b2, 1d
+    docker-compose.monitoring.yml    :b4, after b3, 1d
+    cAdvisor + Node Exporter дашборды :b5, after b4, 1d
 
     section Track C — Agent
     ReAct loop (на моках)            :c1, after d0, 3d
@@ -230,7 +277,8 @@ gantt
 
     section Track D — Entry
     HTTP /chat /confirm /actions     :dd1, after d0, 3d
-    Telegram-адаптер                 :dd2, after dd1, 2d
+    Telegram-адаптер                 :dd2, after dd1, 1d
+    Application дашборды + алерты    :dd3, after dd2, 1d
 
     section Финал (вместе)
     Интеграция среза + демо          :crit, fin, after a2 b2 c2 dd2, 2d
@@ -248,6 +296,9 @@ gantt
 - [ ] `GET /actions` показывает действие, `GET /traces/{id}` — шаги рассуждения
 - [ ] Telegram: то же самое работает через бота с кнопками
 - [ ] Всё деплоится на тест-VPS через push в `develop`
+- [ ] Grafana открывается на тест-VPS: дашборды контейнеров и хоста работают (Track B)
+- [ ] Grafana application-дашборды показывают LLM-метрики и метрики агентов (Track D)
+- [ ] Telegram-алерт приходит если контейнер упал или диск > 80% (Track B) или error rate > 5% (Track D)
 
 ---
 

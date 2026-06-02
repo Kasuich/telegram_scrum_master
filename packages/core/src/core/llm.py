@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from core.config import get_config
 from core.exceptions import LLMError
+from core.metrics import llm_latency_seconds, llm_requests_total, llm_tokens_total
 
 
 class Message(BaseModel):
@@ -131,14 +132,17 @@ class LLMClient:
                 return await self._complete_impl(messages, tools, stream, start_time, **kwargs)
             except httpx.TimeoutException as e:
                 if attempt == self.max_retries:
+                    llm_requests_total.labels(model=self.model, status="error").inc()
                     raise LLMError(f"Request timeout after {self.max_retries} retries") from e
                 await asyncio.sleep(2**attempt * 0.5)
             except httpx.HTTPStatusError as e:
                 if e.response.status_code >= 500 and attempt < self.max_retries:
                     await asyncio.sleep(2**attempt * 0.5)
                     continue
+                llm_requests_total.labels(model=self.model, status="error").inc()
                 raise LLMError(f"HTTP {e.response.status_code}: {e.response.text}") from e
 
+        llm_requests_total.labels(model=self.model, status="error").inc()
         raise LLMError("Max retries exceeded")
 
     async def _complete_impl(
@@ -186,7 +190,6 @@ class LLMClient:
 
         data = response.json()
         latency_ms = int((time.monotonic() - start_time) * 1000)
-
         result_message = data.get("result", {}).get("message", {})
 
         tool_calls: list[ToolCall] | None = None
@@ -209,6 +212,15 @@ class LLMClient:
             completion_tokens=usage_data.get("outputTokensCount", 0),
             total_tokens=usage_data.get("totalTokensCount", 0),
         )
+
+        llm_requests_total.labels(model=self.model, status="success").inc()
+        llm_latency_seconds.labels(model=self.model).observe(latency_ms / 1000)
+        if usage.prompt_tokens:
+            llm_tokens_total.labels(model=self.model, token_type="prompt").inc(usage.prompt_tokens)
+        if usage.completion_tokens:
+            llm_tokens_total.labels(model=self.model, token_type="completion").inc(
+                usage.completion_tokens
+            )
 
         return LLMResponse(
             content=content,

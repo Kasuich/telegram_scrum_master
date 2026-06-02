@@ -9,6 +9,7 @@ dependencies = [
     "asyncpg>=0.29",
     "httpx>=0.25",
     "alembic>=1.13",
+    "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]

@@ -12,7 +12,7 @@ Provides foundational components for multi-agent platform:
 
 __version__ = "0.1.0"
 
-from core import config, db, exceptions, llm, logging, models, prompts, tools
+from core import config, db, exceptions, llm, logging, metrics, models, prompts, tools
 from core.config import (
     AppConfig,
     Config,
@@ -68,6 +68,19 @@ from core.logging import (
     set_trace_id,
     timed,
 )
+from core.metrics import (
+    agent_confirms_pending,
+    agent_traces_total,
+    db_pool_checked_out,
+    external_latency_seconds,
+    external_requests_total,
+    llm_latency_seconds,
+    llm_requests_total,
+    llm_tokens_total,
+    tool_executions_total,
+    tool_latency_seconds,
+    track_tool,
+)
 from core.models import (
     Action,
     ActionFeedback,
@@ -105,6 +118,7 @@ __all__ = [
     "exceptions",
     "llm",
     "logging",
+    "metrics",
     "models",
     "prompts",
     "tools",
@@ -132,6 +146,17 @@ __all__ = [
     "LLMResponse",
     "LLMClient",
     "complete",
+    "llm_requests_total",
+    "llm_latency_seconds",
+    "llm_tokens_total",
+    "tool_executions_total",
+    "tool_latency_seconds",
+    "external_requests_total",
+    "external_latency_seconds",
+    "db_pool_checked_out",
+    "agent_traces_total",
+    "agent_confirms_pending",
+    "track_tool",
     "Tool",
     "ToolParameter",
     "ToolRegistry",

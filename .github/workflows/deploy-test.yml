@@ -40,15 +40,26 @@ jobs:
             YC_FOLDER_ID=${{ secrets.YC_FOLDER_ID }}
             TRACKER_TOKEN=${{ secrets.TRACKER_TOKEN }}
             TRACKER_ORG_ID=${{ secrets.TRACKER_ORG_ID }}
+            TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+            TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+            GRAFANA_USER=${{ secrets.GRAFANA_USER }}
+            GRAFANA_PASSWORD=${{ secrets.GRAFANA_PASSWORD }}
+            GRAFANA_URL=http://${{ secrets.VPS_HOST }}:3000
             ENVIRONMENT=test
             LOG_LEVEL=DEBUG
             EOF
 
-            docker compose -f docker-compose.yml -f docker-compose.test.yml \
+            docker compose \
+              -f docker-compose.yml \
+              -f docker-compose.test.yml \
+              -f docker-compose.monitoring.yml \
               --env-file .env.test \
               up --build -d --remove-orphans
 
             echo "=== Running containers ==="
-            docker compose -f docker-compose.yml -f docker-compose.test.yml \
+            docker compose \
+              -f docker-compose.yml \
+              -f docker-compose.test.yml \
+              -f docker-compose.monitoring.yml \
               --env-file .env.test \
               ps

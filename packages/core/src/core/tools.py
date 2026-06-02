@@ -7,12 +7,14 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import time
 import typing
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
 from core.exceptions import ToolError, ToolNotFoundError, ToolValidationError
+from core.metrics import tool_executions_total, tool_latency_seconds
 
 
 class ToolParameter(BaseModel):
@@ -44,9 +46,31 @@ class Tool(BaseModel):
         bound.apply_defaults()
 
         if asyncio.iscoroutinefunction(self.func):
-            return self.func(**bound.arguments)
+            return self._execute_async(**bound.arguments)
 
-        return self.func(**bound.arguments)
+        start = time.monotonic()
+        status = "success"
+        try:
+            return self.func(**bound.arguments)
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            tool_executions_total.labels(tool_name=self.name, risk=self.risk, status=status).inc()
+            tool_latency_seconds.labels(tool_name=self.name).observe(time.monotonic() - start)
+
+    async def _execute_async(self, **kwargs: Any) -> Any:
+        """Execute async tool with metrics."""
+        start = time.monotonic()
+        status = "success"
+        try:
+            return await self.func(**kwargs)
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            tool_executions_total.labels(tool_name=self.name, risk=self.risk, status=status).inc()
+            tool_latency_seconds.labels(tool_name=self.name).observe(time.monotonic() - start)
 
     def validate_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Validate tool arguments against parameter schema."""

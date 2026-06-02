@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    project: pm-agent
+    env: test
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: [alertmanager:9093]
+
+scrape_configs:
+  - job_name: platform-api
+    static_configs:
+      - targets: [platform-api:8000]
+    metrics_path: /metrics
+
+  - job_name: pm-orchestrator
+    static_configs:
+      - targets: [pm-orchestrator:8001]
+    metrics_path: /metrics
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: [cadvisor:8080]
+
+  - job_name: node-exporter
+    static_configs:
+      - targets: [node-exporter:9100]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]

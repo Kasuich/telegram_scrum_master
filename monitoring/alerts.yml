@@ -1,0 +1,106 @@
+groups:
+  - name: infrastructure
+    interval: 30s
+    rules:
+      - alert: ContainerDown
+        expr: absent(container_last_seen{name=~"pm-agent.*"})
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Container {{ $labels.name }} is down"
+          description: "Container {{ $labels.name }} has been missing for more than 1 minute."
+
+      - alert: ContainerHighCPU
+        expr: >
+          rate(container_cpu_usage_seconds_total{
+            name=~"pm-agent.*",image!=""
+          }[5m]) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU in {{ $labels.name }}"
+          description: "Container {{ $labels.name }} CPU usage is {{ $value | printf \"%.1f\" }}%."
+
+      - alert: ContainerHighMemory
+        expr: >
+          container_memory_usage_bytes{name=~"pm-agent.*",image!=""}
+          / container_spec_memory_limit_bytes{name=~"pm-agent.*",image!=""}
+          * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory in {{ $labels.name }}"
+          description: "Container {{ $labels.name }} memory is {{ $value | printf \"%.1f\" }}%."
+
+  - name: host
+    interval: 60s
+    rules:
+      - alert: DiskUsageHigh
+        expr: >
+          (1 - node_filesystem_avail_bytes{fstype!="tmpfs",mountpoint="/"}
+               / node_filesystem_size_bytes{fstype!="tmpfs",mountpoint="/"})
+          * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk usage above 80%"
+          description: "Disk {{ $labels.mountpoint }} is {{ $value | printf \"%.1f\" }}% full."
+
+      - alert: DiskUsageCritical
+        expr: >
+          (1 - node_filesystem_avail_bytes{fstype!="tmpfs",mountpoint="/"}
+               / node_filesystem_size_bytes{fstype!="tmpfs",mountpoint="/"})
+          * 100 > 92
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk usage critical (>92%)"
+          description: "Disk {{ $labels.mountpoint }} is {{ $value | printf \"%.1f\" }}% full — act immediately."
+
+      - alert: HighMemoryUsage
+        expr: >
+          (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host memory above 90%"
+          description: "Host memory usage is {{ $value | printf \"%.1f\" }}%."
+
+  - name: application
+    interval: 30s
+    rules:
+      - alert: LLMHighErrorRate
+        expr: >
+          rate(pm_llm_requests_total{status="error"}[5m])
+          / rate(pm_llm_requests_total[5m]) * 100 > 10
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM error rate above 10%"
+          description: "LLM {{ $labels.model }} error rate is {{ $value | printf \"%.1f\" }}%."
+
+      - alert: LLMHighLatency
+        expr: >
+          histogram_quantile(0.95, rate(pm_llm_latency_seconds_bucket[5m])) > 15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM p95 latency above 15s"
+          description: "LLM {{ $labels.model }} p95 latency is {{ $value | printf \"%.1f\" }}s."
+
+      - alert: ConfirmsPending
+        expr: pm_agent_confirms_pending > 20
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} confirmations pending for 30+ min"
+          description: "{{ $value }} agent actions are waiting for user confirmation."
