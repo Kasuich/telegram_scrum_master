@@ -47,4 +47,6 @@ jobs:
               up --build -d --remove-orphans
 
             echo "=== Running containers ==="
-            docker compose -f docker-compose.yml -f docker-compose.test.yml ps
+            docker compose -f docker-compose.yml -f docker-compose.test.yml \
+              --env-file .env.test \
+              ps
