@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN pip install uv
 
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock ./
 COPY packages/core ./packages/core
 COPY services/pm-orchestrator ./services/pm-orchestrator
 
