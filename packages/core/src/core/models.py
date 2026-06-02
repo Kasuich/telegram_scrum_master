@@ -12,7 +12,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
-    Enum as SQLEnum,
     ForeignKey,
     Index,
     Integer,
@@ -20,6 +19,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+)
+from sqlalchemy import (
+    Enum as SQLEnum,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncAttrs
@@ -127,9 +129,7 @@ class AgentSpec(Base):
         onupdate=func.now(),
     )
 
-    instances: Mapped[list[AgentInstance]] = relationship(
-        "AgentInstance", back_populates="spec"
-    )
+    instances: Mapped[list[AgentInstance]] = relationship("AgentInstance", back_populates="spec")
 
 
 class AgentInstance(Base):
@@ -224,18 +224,14 @@ class Action(Base):
     team: Mapped[Team] = relationship("Team", back_populates="actions")
     trace: Mapped[Trace | None] = relationship("Trace", back_populates="actions")
     confirms: Mapped[list[Confirm]] = relationship("Confirm", back_populates="action")
-    feedback: Mapped[list[ActionFeedback]] = relationship(
-        "ActionFeedback", back_populates="action"
-    )
+    feedback: Mapped[list[ActionFeedback]] = relationship("ActionFeedback", back_populates="action")
 
 
 class Trace(Base):
     """Agent reasoning trace."""
 
     __tablename__ = "traces"
-    __table_args__ = (
-        Index("idx_traces_session_id", "session_id"),
-    )
+    __table_args__ = (Index("idx_traces_session_id", "session_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -264,9 +260,7 @@ class Confirm(Base):
     """Confirmation request for agent action."""
 
     __tablename__ = "confirms"
-    __table_args__ = (
-        Index("idx_confirms_action_id", "action_id"),
-    )
+    __table_args__ = (Index("idx_confirms_action_id", "action_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -335,9 +329,7 @@ class ScheduledJob(Base):
     """Scheduled job for agent self-scheduling."""
 
     __tablename__ = "scheduled_jobs"
-    __table_args__ = (
-        Index("idx_scheduled_jobs_next_run", "next_run"),
-    )
+    __table_args__ = (Index("idx_scheduled_jobs_next_run", "next_run"),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

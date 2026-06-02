@@ -20,7 +20,7 @@ os.environ.setdefault("TRACKER_ORG_ID", "12345678901234567890")
 
 async def demo_with_mock() -> None:
     """Demonstrate DB API using mocked session (no real DB required)."""
-    from core.db import get_session, health_check, Checkpointer, reset_engine
+    from core.db import Checkpointer, get_session, health_check, reset_engine
 
     reset_engine()
 
@@ -31,7 +31,7 @@ async def demo_with_mock() -> None:
     with patch("core.db.get_session_factory") as mock_factory:
         mock_factory.return_value = MagicMock(return_value=mock_session)
 
-        async with get_session() as session:
+        async with get_session() as _:
             print("Session acquired")
             # In real code: result = await session.execute(select(Organization))
             print("Query executed (mocked)")
@@ -56,7 +56,9 @@ async def demo_with_mock() -> None:
 
     # --- Checkpointer demo (mocked) ---
     mock_cp_session = AsyncMock()
-    mock_cp_session.execute = AsyncMock(return_value=MagicMock(fetchone=MagicMock(return_value=None)))
+    mock_cp_session.execute = AsyncMock(
+        return_value=MagicMock(fetchone=MagicMock(return_value=None))
+    )
     mock_cp_session.commit = AsyncMock()
 
     with patch("core.db.async_sessionmaker") as mock_sm:

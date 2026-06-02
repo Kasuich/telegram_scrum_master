@@ -56,10 +56,12 @@ async def demo_text_completion() -> None:
         prop.__get__ = MagicMock(return_value=make_mock_http(MOCK_TEXT))
 
         client = LLMClient(temperature=0.5)
-        response = await client.complete([
-            Message(role="system", content="Ты PM-агент. Отвечай кратко."),
-            Message(role="user", content="Создай задачу на оптимизацию БД"),
-        ])
+        response = await client.complete(
+            [
+                Message(role="system", content="Ты PM-агент. Отвечай кратко."),
+                Message(role="user", content="Создай задачу на оптимизацию БД"),
+            ]
+        )
         await client.close()
 
     print(f"Content: {response.content}")
@@ -114,9 +116,7 @@ async def demo_streaming() -> None:
 
         client = LLMClient()
         chunks = []
-        async for chunk in client.stream_complete([
-            Message(role="user", content="Привет!")
-        ]):
+        async for chunk in client.stream_complete([Message(role="user", content="Привет!")]):
             chunks.append(chunk)
         await client.close()
 

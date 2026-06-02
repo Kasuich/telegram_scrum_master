@@ -7,7 +7,6 @@ Tests components working together with mocked external services (LLM API, DB).
 from __future__ import annotations
 
 import asyncio
-import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -50,6 +49,7 @@ class TestConfigDbIntegration:
         """Config exposes DB URL that db module can consume."""
         with patch.dict("os.environ", ENV):
             from core.config import get_config, reload_config
+
             reload_config()
             config = get_config()
 
@@ -103,11 +103,12 @@ class TestToolSystemIntegration:
 
     def setup_method(self) -> None:
         from core.tools import get_registry
+
         get_registry().clear()
 
     def test_register_and_execute_tool(self) -> None:
         """Register a tool and call it via registry."""
-        from core.tools import platform_tool, get_registry
+        from core.tools import get_registry, platform_tool
 
         @platform_tool(name="int_greet", risk="low", scopes=["test:read"])
         def greet(name: str, loud: bool = False) -> str:
@@ -126,7 +127,7 @@ class TestToolSystemIntegration:
     @pytest.mark.asyncio
     async def test_async_tool_execution(self) -> None:
         """Async tool executes correctly through registry."""
-        from core.tools import platform_tool, get_registry
+        from core.tools import get_registry, platform_tool
 
         @platform_tool(name="int_async_fetch", risk="medium")
         async def fetch_data(item_id: str) -> dict[str, Any]:
@@ -141,7 +142,7 @@ class TestToolSystemIntegration:
 
     def test_tool_schema_generation(self) -> None:
         """Schema generated from tool matches OpenAPI format."""
-        from core.tools import platform_tool, get_registry
+        from core.tools import get_registry, platform_tool
 
         @platform_tool(name="int_schema_tool", risk="low")
         def create_item(name: str, count: int = 1) -> dict[str, Any]:
@@ -161,7 +162,7 @@ class TestToolSystemIntegration:
 
     def test_tool_scope_filtering(self) -> None:
         """Registry scope filtering works across multiple tools."""
-        from core.tools import platform_tool, get_registry
+        from core.tools import get_registry, platform_tool
 
         @platform_tool(name="int_read_tool", risk="low", scopes=["tracker:read"])
         def read_op() -> str:
@@ -185,8 +186,8 @@ class TestToolSystemIntegration:
 
     def test_validation_error_propagation(self) -> None:
         """Validation errors from tools propagate cleanly."""
-        from core.tools import platform_tool
         from core.exceptions import ToolValidationError
+        from core.tools import platform_tool
 
         @platform_tool(name="int_strict_tool", risk="low")
         def strict_tool(count: int) -> int:
@@ -204,6 +205,7 @@ class TestLLMIntegration:
         """LLM returns text response, parsed into LLMResponse."""
         with patch.dict("os.environ", ENV):
             from core.config import reload_config
+
             reload_config()
 
             from core.llm import LLMClient, Message
@@ -218,9 +220,7 @@ class TestLLMIntegration:
                 mock_client_prop.__get__ = MagicMock(return_value=mock_http)
 
                 client = LLMClient()
-                result = await client.complete([
-                    Message(role="user", content="Create a task")
-                ])
+                result = await client.complete([Message(role="user", content="Create a task")])
 
             assert result.content == "Task created successfully."
             assert result.tool_calls is None
@@ -233,6 +233,7 @@ class TestLLMIntegration:
         """LLM returns tool call, parsed correctly."""
         with patch.dict("os.environ", ENV):
             from core.config import reload_config
+
             reload_config()
 
             from core.llm import LLMClient, Message
@@ -247,9 +248,7 @@ class TestLLMIntegration:
                 mock_client_prop.__get__ = MagicMock(return_value=mock_http)
 
                 client = LLMClient()
-                result = await client.complete([
-                    Message(role="user", content="Create a task")
-                ])
+                result = await client.complete([Message(role="user", content="Create a task")])
 
             assert result.content is None
             assert result.tool_calls is not None
@@ -262,10 +261,11 @@ class TestLLMIntegration:
         """LLM receives tool schemas, processes them."""
         with patch.dict("os.environ", ENV):
             from core.config import reload_config
+
             reload_config()
 
             from core.llm import LLMClient, Message
-            from core.tools import platform_tool, get_registry
+            from core.tools import get_registry, platform_tool
 
             get_registry().clear()
 
@@ -364,16 +364,16 @@ class TestExceptionPropagation:
 
     def test_config_error_on_invalid_url(self) -> None:
         """Invalid DB URL raises ConfigError-like ValidationError."""
-        from pydantic import ValidationError
         from core.config import DatabaseConfig
+        from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
             DatabaseConfig(database_url="mysql://localhost/test")
 
     def test_tool_not_found_error(self) -> None:
         """ToolNotFoundError raised for unknown tool."""
-        from core.tools import get_registry
         from core.exceptions import ToolNotFoundError
+        from core.tools import get_registry
 
         get_registry().clear()
         with pytest.raises(ToolNotFoundError):
@@ -381,8 +381,8 @@ class TestExceptionPropagation:
 
     def test_tool_validation_error_message(self) -> None:
         """ToolValidationError has meaningful message."""
-        from core.tools import platform_tool, get_registry
         from core.exceptions import ToolValidationError
+        from core.tools import get_registry, platform_tool
 
         get_registry().clear()
 
@@ -413,7 +413,7 @@ class TestLoggingIntegration:
 
     def test_trace_id_propagation(self) -> None:
         """Trace ID set in one place is readable elsewhere."""
-        from core.logging import set_trace_id, get_trace_id
+        from core.logging import get_trace_id, set_trace_id
 
         set_trace_id("trace-abc-123")
         assert get_trace_id() == "trace-abc-123"
@@ -421,6 +421,7 @@ class TestLoggingIntegration:
     def test_logger_created_with_name(self) -> None:
         """get_logger returns named logger."""
         import logging as stdlib_logging
+
         from core.logging import get_logger
 
         logger = get_logger("test.integration")

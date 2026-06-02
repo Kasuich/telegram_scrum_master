@@ -8,15 +8,16 @@ import asyncio
 import functools
 import inspect
 import typing
-from typing import Any, Callable, Literal, TypeVar
+from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from core.exceptions import ToolError, ToolNotFoundError, ToolValidationError
 
 
 class ToolParameter(BaseModel):
     """Tool parameter definition."""
+
     name: str
     type: str
     description: str | None = None
@@ -26,6 +27,7 @@ class ToolParameter(BaseModel):
 
 class Tool(BaseModel):
     """Tool definition with metadata."""
+
     name: str
     description: str
     func: Callable[..., Any]
@@ -55,9 +57,7 @@ class Tool(BaseModel):
                 try:
                     validated[param.name] = self._coerce_type(value, param.type)
                 except (ValueError, TypeError) as e:
-                    raise ToolValidationError(
-                        f"Invalid value for {param.name}: {e}"
-                    ) from e
+                    raise ToolValidationError(f"Invalid value for {param.name}: {e}") from e
             elif param.required and param.default is None:
                 raise ToolValidationError(f"Missing required argument: {param.name}")
             elif param.default is not None:
@@ -145,8 +145,7 @@ class ToolRegistry:
             return list(self._tools.values())
 
         return [
-            tool for tool in self._tools.values()
-            if any(scope in tool.scopes for scope in scopes)
+            tool for tool in self._tools.values() if any(scope in tool.scopes for scope in scopes)
         ]
 
     def get_schemas(self, scopes: list[str] | None = None) -> list[dict[str, Any]]:
@@ -201,6 +200,7 @@ def platform_tool(
     Returns:
         Decorated function as Tool
     """
+
     def decorator(func: Callable[..., Any]) -> Tool:
         sig = inspect.signature(func)
         # Evaluate string annotations (from __future__ import annotations) to real types
@@ -240,13 +240,15 @@ def platform_tool(
                         param_type = "object"
 
             has_default = param.default is not inspect.Parameter.empty
-            parameters.append(ToolParameter(
-                name=param_name,
-                type=param_type,
-                description=description,
-                required=not has_default,
-                default=param.default if has_default else None,
-            ))
+            parameters.append(
+                ToolParameter(
+                    name=param_name,
+                    type=param_type,
+                    description=description,
+                    required=not has_default,
+                    default=param.default if has_default else None,
+                )
+            )
 
         tool_description = description or func.__doc__ or ""
         if tool_description:
@@ -271,11 +273,13 @@ def platform_tool(
             return tool.execute(**validated)
 
         if asyncio.iscoroutinefunction(func):
+
             @functools.wraps(func)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 merged = _bind_positional_args(sig, args, kwargs)
                 validated = tool.validate_arguments(merged)
                 return await tool.execute(**validated)
+
             return async_wrapper  # type: ignore
 
         return wrapper  # type: ignore

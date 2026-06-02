@@ -26,8 +26,8 @@ os.environ.setdefault("YC_FOLDER_ID", "b1g1234567890abcdef")
 os.environ.setdefault("TRACKER_TOKEN", "example_oauth_token_12345678901234567890")
 os.environ.setdefault("TRACKER_ORG_ID", "12345678901234567890")
 
-from core.tools import platform_tool, get_registry
 from core.logging import configure_logging, get_logger, set_trace_id
+from core.tools import get_registry, platform_tool
 
 configure_logging("INFO")
 logger = get_logger(__name__)
@@ -53,6 +53,7 @@ MOCK_TOOL_CALL_RESPONSE = {
 
 
 # --- Register tools for this agent ---
+
 
 @platform_tool(name="create_tracker_issue", risk="medium", scopes=["tracker:write"])
 async def create_tracker_issue(
@@ -85,7 +86,7 @@ async def run_agent_turn(user_message: str, team_id: str) -> dict[str, Any]:
     # Step 1: Set trace ID for this request
     trace_id = str(uuid.uuid4())
     set_trace_id(trace_id)
-    logger.info(f"Agent turn started", extra={"team_id": team_id, "user_message": user_message})
+    logger.info("Agent turn started", extra={"team_id": team_id, "user_message": user_message})
 
     # Step 2: Load team config
     config = Config.for_team(team_id, auto_risk=["low", "medium"])
@@ -121,8 +122,11 @@ async def run_agent_turn(user_message: str, team_id: str) -> dict[str, Any]:
         await client.close()
 
     logger.info(
-        f"LLM response received",
-        extra={"has_tool_call": response.tool_calls is not None, "tokens": response.usage.total_tokens if response.usage else 0},
+        "LLM response received",
+        extra={
+            "has_tool_call": response.tool_calls is not None,
+            "tokens": response.usage.total_tokens if response.usage else 0,
+        },
     )
 
     # Step 6: Execute tool call if present
@@ -135,11 +139,15 @@ async def run_agent_turn(user_message: str, team_id: str) -> dict[str, Any]:
             logger.info(f"Auto-executing tool: {tool.name} (risk={tool.risk})")
             validated_args = tool.validate_arguments(tool_call.arguments)
             result = await tool.execute(**validated_args)
-            logger.info(f"Tool executed successfully", extra={"result": result})
+            logger.info("Tool executed successfully", extra={"result": result})
             return {"status": "completed", "tool": tool.name, "result": result}
         else:
             logger.info(f"Tool requires confirmation: {tool.name} (risk={tool.risk})")
-            return {"status": "pending_confirmation", "tool": tool.name, "args": tool_call.arguments}
+            return {
+                "status": "pending_confirmation",
+                "tool": tool.name,
+                "args": tool_call.arguments,
+            }
 
     return {"status": "text_response", "content": response.content}
 
@@ -152,7 +160,7 @@ async def main() -> None:
         team_id="team_backend",
     )
 
-    print(f"\nFinal result:")
+    print("\nFinal result:")
     for key, value in result.items():
         print(f"  {key}: {value}")
 

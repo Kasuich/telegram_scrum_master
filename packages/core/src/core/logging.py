@@ -34,11 +34,28 @@ class JSONFormatter(logging.Formatter):
             if key not in logging.LogRecord.__dict__ and not key.startswith("_"):
                 # Skip standard LogRecord attributes that aren't relevant
                 if key not in {
-                    "name", "msg", "args", "created", "filename", "funcName",
-                    "levelname", "levelno", "lineno", "module", "msecs",
-                    "pathname", "process", "processName", "relativeCreated",
-                    "stack_info", "thread", "threadName", "exc_info", "exc_text",
-                    "message", "taskName",
+                    "name",
+                    "msg",
+                    "args",
+                    "created",
+                    "filename",
+                    "funcName",
+                    "levelname",
+                    "levelno",
+                    "lineno",
+                    "module",
+                    "msecs",
+                    "pathname",
+                    "process",
+                    "processName",
+                    "relativeCreated",
+                    "stack_info",
+                    "thread",
+                    "threadName",
+                    "exc_info",
+                    "exc_text",
+                    "message",
+                    "taskName",
                 }:
                     payload[key] = value
 
@@ -80,9 +97,7 @@ def configure_logging(level: str = "INFO") -> None:
     root = logging.getLogger()
     root.setLevel(numeric_level)
 
-    has_json_handler = any(
-        isinstance(h.formatter, JSONFormatter) for h in root.handlers
-    )
+    has_json_handler = any(isinstance(h.formatter, JSONFormatter) for h in root.handlers)
     if not has_json_handler:
         handler = logging.StreamHandler()
         handler.setFormatter(JSONFormatter())
@@ -98,6 +113,7 @@ def timed(func: _F) -> _F:
     logger = get_logger(func.__module__)
 
     if asyncio.iscoroutinefunction(func):
+
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             start = time.perf_counter()
@@ -110,6 +126,7 @@ def timed(func: _F) -> _F:
                     func.__qualname__,
                     extra={"duration_ms": duration_ms, "function": func.__qualname__},
                 )
+
         return async_wrapper  # type: ignore[return-value]
 
     @functools.wraps(func)
@@ -124,6 +141,7 @@ def timed(func: _F) -> _F:
                 func.__qualname__,
                 extra={"duration_ms": duration_ms, "function": func.__qualname__},
             )
+
     return sync_wrapper  # type: ignore[return-value]
 
 

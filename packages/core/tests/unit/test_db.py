@@ -173,7 +173,9 @@ class TestHealthCheck:
         with patch("core.db.get_engine") as mock_engine:
             mock_engine.return_value.pool = mock_pool
             with patch("core.db.get_session") as mock_get_session:
-                mock_get_session.return_value.__aenter__ = AsyncMock(side_effect=Exception("DB error"))
+                mock_get_session.return_value.__aenter__ = AsyncMock(
+                    side_effect=Exception("DB error")
+                )
 
                 result = await health_check()
 
@@ -192,8 +194,12 @@ class TestCheckpointer:
         mock_session = AsyncMock()
         mock_result = MagicMock()
         mock_result.fetchall.return_value = [
-            MagicMock(_mapping={"checkpoint_id": "cp1", "created_at": "2024-01-01", "metadata": {}}),
-            MagicMock(_mapping={"checkpoint_id": "cp2", "created_at": "2024-01-02", "metadata": {}}),
+            MagicMock(
+                _mapping={"checkpoint_id": "cp1", "created_at": "2024-01-01", "metadata": {}}
+            ),  # noqa: E501
+            MagicMock(
+                _mapping={"checkpoint_id": "cp2", "created_at": "2024-01-02", "metadata": {}}
+            ),  # noqa: E501
         ]
         mock_session.execute = AsyncMock(return_value=mock_result)
 

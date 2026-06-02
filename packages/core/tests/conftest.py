@@ -4,7 +4,7 @@ Test fixtures for core package tests.
 
 import asyncio
 from typing import Any, Generator
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

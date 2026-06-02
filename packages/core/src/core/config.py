@@ -10,8 +10,6 @@ Provides centralized configuration management with:
 
 from __future__ import annotations
 
-import os
-from functools import cached_property
 from pathlib import Path
 from typing import Any, Literal
 
@@ -305,6 +303,7 @@ class Config(BaseSettings):
         env_path = Path(env_file)
         if not env_path.exists():
             import warnings
+
             warnings.warn(f"Env file not found: {env_file}, using defaults")
             return cls()
 
@@ -312,11 +311,7 @@ class Config(BaseSettings):
         DynamicConfig = type(
             "DynamicConfig",
             (cls,),
-            {
-                "model_config": SettingsConfigDict(
-                    **{**cls.model_config, "env_file": str(env_path)}
-                )
-            },
+            {"model_config": SettingsConfigDict(**{**cls.model_config, "env_file": str(env_path)})},
         )
         return DynamicConfig()
 

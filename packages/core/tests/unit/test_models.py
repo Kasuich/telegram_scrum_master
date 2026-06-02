@@ -8,16 +8,8 @@ model definitions: columns, defaults, table names, indexes, and constraints.
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
 import pytest
-from sqlalchemy import (
-    CheckConstraint,
-    Index,
-    UniqueConstraint,
-)
-from sqlalchemy.orm import DeclarativeBase
-
 from core.models import (
     Action,
     ActionFeedback,
@@ -31,6 +23,12 @@ from core.models import (
     Team,
     Trace,
 )
+from sqlalchemy import (
+    CheckConstraint,
+    Index,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import DeclarativeBase
 
 # ---------------------------------------------------------------------------
 # Helpers

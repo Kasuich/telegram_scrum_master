@@ -2,13 +2,9 @@
 Tests for tool system.
 """
 
-from typing import Any
-from unittest.mock import MagicMock
-
 import pytest
-
 from core.exceptions import ToolNotFoundError, ToolValidationError
-from core.tools import Tool, ToolParameter, ToolRegistry, platform_tool, get_registry
+from core.tools import Tool, ToolParameter, get_registry, platform_tool
 
 
 class TestToolParameter:
@@ -47,6 +43,7 @@ class TestTool:
 
     def test_tool_creation(self) -> None:
         """Tool creation with function."""
+
         def sample_func(a: str, b: int) -> str:
             return f"{a}: {b}"
 
@@ -62,6 +59,7 @@ class TestTool:
 
     def test_execute_sync(self) -> None:
         """Synchronous tool execution."""
+
         def add(a: int, b: int) -> int:
             return a + b
 
@@ -76,6 +74,7 @@ class TestTool:
     @pytest.mark.asyncio
     async def test_execute_async(self) -> None:
         """Async tool execution."""
+
         async def async_add(a: int, b: int) -> int:
             return a + b
 
@@ -89,6 +88,7 @@ class TestTool:
 
     def test_validate_arguments_valid(self) -> None:
         """Valid argument validation."""
+
         def sample(a: str, b: int) -> str:
             return a
 
@@ -106,6 +106,7 @@ class TestTool:
 
     def test_validate_arguments_missing_required(self) -> None:
         """Missing required argument raises error."""
+
         def sample(a: str, b: int) -> str:
             return a
 
@@ -124,6 +125,7 @@ class TestTool:
 
     def test_validate_arguments_with_defaults(self) -> None:
         """Optional args use defaults."""
+
         def sample(a: str, b: int = 10) -> int:
             return b
 
@@ -141,6 +143,7 @@ class TestTool:
 
     def test_type_coercion(self) -> None:
         """Type coercion works."""
+
         def sample(a: int, b: bool, c: list) -> tuple:
             return (a, b, c)
 
@@ -154,17 +157,20 @@ class TestTool:
                 ToolParameter(name="c", type="array"),
             ],
         )
-        validated = tool.validate_arguments({
-            "a": "42",
-            "b": "true",
-            "c": "x,y,z",
-        })
+        validated = tool.validate_arguments(
+            {
+                "a": "42",
+                "b": "true",
+                "c": "x,y,z",
+            }
+        )
         assert validated["a"] == 42
         assert validated["b"] is True
         assert validated["c"] == ["x", "y", "z"]
 
     def test_get_schema(self) -> None:
         """Schema generation."""
+
         def sample(a: str, b: int) -> str:
             return a
 
@@ -199,6 +205,7 @@ class TestToolRegistry:
 
     def test_register_and_get(self) -> None:
         """Register and retrieve tool."""
+
         def sample() -> str:
             return "sample"
 
@@ -217,8 +224,12 @@ class TestToolRegistry:
 
     def test_list_all(self) -> None:
         """List all registered tools."""
-        def sample1() -> None: pass
-        def sample2() -> None: pass
+
+        def sample1() -> None:
+            pass
+
+        def sample2() -> None:
+            pass
 
         registry = get_registry()
         registry.register(Tool(name="tool1", description="Tool 1", func=sample1))
@@ -229,8 +240,12 @@ class TestToolRegistry:
 
     def test_list_filtered_by_scope(self) -> None:
         """List filtered by scope."""
-        def sample1() -> None: pass
-        def sample2() -> None: pass
+
+        def sample1() -> None:
+            pass
+
+        def sample2() -> None:
+            pass
 
         registry = get_registry()
         registry.register(Tool(name="tool1", description="Tool 1", func=sample1, scopes=["read"]))
@@ -242,15 +257,19 @@ class TestToolRegistry:
 
     def test_get_schemas(self) -> None:
         """Get schemas for all tools."""
-        def sample() -> None: pass
+
+        def sample() -> None:
+            pass
 
         registry = get_registry()
-        registry.register(Tool(
-            name="test",
-            description="Test",
-            func=sample,
-            parameters=[ToolParameter(name="arg", type="string")],
-        ))
+        registry.register(
+            Tool(
+                name="test",
+                description="Test",
+                func=sample,
+                parameters=[ToolParameter(name="arg", type="string")],
+            )
+        )
 
         schemas = registry.get_schemas()
         assert len(schemas) == 1
@@ -258,7 +277,9 @@ class TestToolRegistry:
 
     def test_exists(self) -> None:
         """Check tool existence."""
-        def sample() -> None: pass
+
+        def sample() -> None:
+            pass
 
         registry = get_registry()
         registry.register(Tool(name="test", description="Test", func=sample))
@@ -268,7 +289,9 @@ class TestToolRegistry:
 
     def test_unregister(self) -> None:
         """Unregister tool."""
-        def sample() -> None: pass
+
+        def sample() -> None:
+            pass
 
         registry = get_registry()
         registry.register(Tool(name="test", description="Test", func=sample))
@@ -278,8 +301,12 @@ class TestToolRegistry:
 
     def test_clear(self) -> None:
         """Clear all tools."""
-        def sample1() -> None: pass
-        def sample2() -> None: pass
+
+        def sample1() -> None:
+            pass
+
+        def sample2() -> None:
+            pass
 
         registry = get_registry()
         registry.register(Tool(name="tool1", description="Tool 1", func=sample1))
@@ -292,7 +319,8 @@ class TestToolRegistry:
         """Duplicate registration raises error."""
         from core.exceptions import ToolError
 
-        def sample() -> None: pass
+        def sample() -> None:
+            pass
 
         registry = get_registry()
         registry.register(Tool(name="test", description="Test", func=sample))
@@ -312,6 +340,7 @@ class TestPlatformToolDecorator:
 
     def test_basic_decorator(self) -> None:
         """Basic decorator usage."""
+
         @platform_tool(name="hello", risk="low", scopes=["test:read"])
         def hello(name: str) -> str:
             return f"Hello, {name}!"
@@ -326,6 +355,7 @@ class TestPlatformToolDecorator:
 
     def test_decorator_with_params(self) -> None:
         """Decorator with multiple parameters."""
+
         @platform_tool(name="add", risk="medium")
         def add(a: int, b: int, desc: str = "addition") -> int:
             return a + b
@@ -340,6 +370,7 @@ class TestPlatformToolDecorator:
     @pytest.mark.asyncio
     async def test_decorator_async(self) -> None:
         """Async function decorator."""
+
         @platform_tool(name="async_hello")
         async def async_hello(name: str) -> str:
             return f"Async Hello, {name}!"
@@ -349,13 +380,14 @@ class TestPlatformToolDecorator:
 
     def test_decorator_type_inference(self) -> None:
         """Parameter types inferred from annotations."""
+
         @platform_tool(name="types")
         def typed_func(
             s: str,
             i: int,
             f: float,
             b: bool,
-            l: list,
+            lst: list,
         ) -> str:
             return s
 
@@ -367,10 +399,11 @@ class TestPlatformToolDecorator:
         assert types["i"] == "integer"
         assert types["f"] == "number"
         assert types["b"] == "boolean"
-        assert types["l"] == "array"
+        assert types["lst"] == "array"
 
     def test_decorator_validation(self) -> None:
         """Decorated function validates arguments."""
+
         @platform_tool(name="validated")
         def validated(a: int, b: str) -> str:
             return f"{b}: {a}"

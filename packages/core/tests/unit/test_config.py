@@ -2,13 +2,9 @@
 Tests for configuration module.
 """
 
-from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import pytest
-from pydantic import ValidationError
-
 from core.config import (
     AppConfig,
     Config,
@@ -21,6 +17,7 @@ from core.config import (
     reload_config,
     set_config,
 )
+from pydantic import ValidationError
 
 
 class TestDatabaseConfig:
@@ -213,13 +210,16 @@ class TestConfig:
 
     def test_nested_configs_initialized(self) -> None:
         """All nested configs are properly initialized."""
-        with patch.dict("os.environ", {
-            "DATABASE_URL": "postgresql://localhost/test",
-            "YC_API_KEY": "test_key_12345678901234567890",
-            "YC_FOLDER_ID": "b1g1234567890abcdef",
-            "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
-            "TRACKER_ORG_ID": "12345678901234567890",
-        }):
+        with patch.dict(
+            "os.environ",
+            {
+                "DATABASE_URL": "postgresql://localhost/test",
+                "YC_API_KEY": "test_key_12345678901234567890",
+                "YC_FOLDER_ID": "b1g1234567890abcdef",
+                "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
+                "TRACKER_ORG_ID": "12345678901234567890",
+            },
+        ):
             config = Config()
 
             assert isinstance(config.database, DatabaseConfig)
@@ -231,39 +231,48 @@ class TestConfig:
 
     def test_database_url_shortcut(self) -> None:
         """Database URL is accessible via shortcut property."""
-        with patch.dict("os.environ", {
-            "DATABASE_URL": "postgresql://localhost/test",
-            "YC_API_KEY": "test_key_12345678901234567890",
-            "YC_FOLDER_ID": "b1g1234567890abcdef",
-            "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
-            "TRACKER_ORG_ID": "12345678901234567890",
-        }):
+        with patch.dict(
+            "os.environ",
+            {
+                "DATABASE_URL": "postgresql://localhost/test",
+                "YC_API_KEY": "test_key_12345678901234567890",
+                "YC_FOLDER_ID": "b1g1234567890abcdef",
+                "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
+                "TRACKER_ORG_ID": "12345678901234567890",
+            },
+        ):
             config = Config()
             assert config.database_url == "postgresql://localhost/test"
 
     def test_production_requires_team_id(self) -> None:
         """Production environment requires team_id."""
-        with patch.dict("os.environ", {
-            "DATABASE_URL": "postgresql://localhost/test",
-            "ENVIRONMENT": "production",
-            "YC_API_KEY": "test_key_12345678901234567890",
-            "YC_FOLDER_ID": "b1g1234567890abcdef",
-            "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
-            "TRACKER_ORG_ID": "12345678901234567890",
-        }):
+        with patch.dict(
+            "os.environ",
+            {
+                "DATABASE_URL": "postgresql://localhost/test",
+                "ENVIRONMENT": "production",
+                "YC_API_KEY": "test_key_12345678901234567890",
+                "YC_FOLDER_ID": "b1g1234567890abcdef",
+                "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
+                "TRACKER_ORG_ID": "12345678901234567890",
+            },
+        ):
             with pytest.raises(ValidationError) as exc_info:
                 Config()
             assert "team_id is required in production" in str(exc_info.value)
 
     def test_autonomy_overlap_rejected(self) -> None:
         """Auto and confirm risk levels cannot overlap."""
-        with patch.dict("os.environ", {
-            "DATABASE_URL": "postgresql://localhost/test",
-            "YC_API_KEY": "test_key_12345678901234567890",
-            "YC_FOLDER_ID": "b1g1234567890abcdef",
-            "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
-            "TRACKER_ORG_ID": "12345678901234567890",
-        }):
+        with patch.dict(
+            "os.environ",
+            {
+                "DATABASE_URL": "postgresql://localhost/test",
+                "YC_API_KEY": "test_key_12345678901234567890",
+                "YC_FOLDER_ID": "b1g1234567890abcdef",
+                "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
+                "TRACKER_ORG_ID": "12345678901234567890",
+            },
+        ):
             with pytest.raises(ValidationError) as exc_info:
                 Config(
                     runtime=RuntimeConfig(
@@ -275,13 +284,16 @@ class TestConfig:
 
     def test_for_team_method(self) -> None:
         """for_team creates config with team override."""
-        with patch.dict("os.environ", {
-            "DATABASE_URL": "postgresql://localhost/test",
-            "YC_API_KEY": "test_key_12345678901234567890",
-            "YC_FOLDER_ID": "b1g1234567890abcdef",
-            "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
-            "TRACKER_ORG_ID": "12345678901234567890",
-        }):
+        with patch.dict(
+            "os.environ",
+            {
+                "DATABASE_URL": "postgresql://localhost/test",
+                "YC_API_KEY": "test_key_12345678901234567890",
+                "YC_FOLDER_ID": "b1g1234567890abcdef",
+                "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
+                "TRACKER_ORG_ID": "12345678901234567890",
+            },
+        ):
             config = Config.for_team(
                 team_id="team_abc",
                 auto_risk=["low"],
@@ -298,13 +310,16 @@ class TestGlobalConfig:
 
     def test_get_config_singleton(self) -> None:
         """get_config returns singleton."""
-        with patch.dict("os.environ", {
-            "DATABASE_URL": "postgresql://localhost/test",
-            "YC_API_KEY": "test_key_12345678901234567890",
-            "YC_FOLDER_ID": "b1g1234567890abcdef",
-            "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
-            "TRACKER_ORG_ID": "12345678901234567890",
-        }):
+        with patch.dict(
+            "os.environ",
+            {
+                "DATABASE_URL": "postgresql://localhost/test",
+                "YC_API_KEY": "test_key_12345678901234567890",
+                "YC_FOLDER_ID": "b1g1234567890abcdef",
+                "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
+                "TRACKER_ORG_ID": "12345678901234567890",
+            },
+        ):
             set_config(None)
             config1 = get_config()
             config2 = get_config()
@@ -312,26 +327,32 @@ class TestGlobalConfig:
 
     def test_reload_config(self) -> None:
         """reload_config creates new instance."""
-        with patch.dict("os.environ", {
-            "DATABASE_URL": "postgresql://localhost/test",
-            "YC_API_KEY": "test_key_12345678901234567890",
-            "YC_FOLDER_ID": "b1g1234567890abcdef",
-            "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
-            "TRACKER_ORG_ID": "12345678901234567890",
-        }):
+        with patch.dict(
+            "os.environ",
+            {
+                "DATABASE_URL": "postgresql://localhost/test",
+                "YC_API_KEY": "test_key_12345678901234567890",
+                "YC_FOLDER_ID": "b1g1234567890abcdef",
+                "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
+                "TRACKER_ORG_ID": "12345678901234567890",
+            },
+        ):
             config1 = get_config()
             config2 = reload_config()
             assert config1 is not config2
 
     def test_set_config(self) -> None:
         """set_config updates global instance."""
-        with patch.dict("os.environ", {
-            "DATABASE_URL": "postgresql://localhost/test",
-            "YC_API_KEY": "test_key_12345678901234567890",
-            "YC_FOLDER_ID": "b1g1234567890abcdef",
-            "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
-            "TRACKER_ORG_ID": "12345678901234567890",
-        }):
+        with patch.dict(
+            "os.environ",
+            {
+                "DATABASE_URL": "postgresql://localhost/test",
+                "YC_API_KEY": "test_key_12345678901234567890",
+                "YC_FOLDER_ID": "b1g1234567890abcdef",
+                "TRACKER_TOKEN": "test_token_123456789012345678901234567890",
+                "TRACKER_ORG_ID": "12345678901234567890",
+            },
+        ):
             new_config = Config()
             set_config(new_config)
             assert get_config() is new_config

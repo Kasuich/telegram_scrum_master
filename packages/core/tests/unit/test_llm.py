@@ -10,14 +10,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-
 from core.exceptions import LLMError
 from core.llm import (
     LLMClient,
     LLMResponse,
     Message,
-    ToolCall,
     TokenUsage,
+    ToolCall,
     complete,
 )
 
@@ -174,6 +173,7 @@ class TestLLMClientInit:
         """LLMClient uses values from config when no args provided."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)  # clear cached singleton
             client = LLMClient()
             assert client.model == "yandexgpt-pro"
@@ -186,6 +186,7 @@ class TestLLMClientInit:
         """Explicit constructor args override config defaults."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             client = LLMClient(
                 model="yandexgpt-lite",
@@ -204,6 +205,7 @@ class TestLLMClientInit:
         """temperature=0.0 must NOT be replaced by the config default (regression)."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             client = LLMClient(temperature=0.0)
             assert client.temperature == 0.0, (
@@ -214,6 +216,7 @@ class TestLLMClientInit:
         """api_key and folder_id come from Yandex config."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             client = LLMClient()
             assert client.api_key == ENV["YC_API_KEY"]
@@ -223,6 +226,7 @@ class TestLLMClientInit:
         """HTTP client is not created until first access."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             llm = LLMClient()
             assert llm._client is None
@@ -243,11 +247,13 @@ class TestLLMClientComplete:
         """Clear config singleton before each test."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
 
     async def _make_client(self) -> LLMClient:
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             return LLMClient(max_retries=0)
 
@@ -256,6 +262,7 @@ class TestLLMClientComplete:
         """complete() returns LLMResponse with text content."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             client = LLMClient(max_retries=0)
 
@@ -277,6 +284,7 @@ class TestLLMClientComplete:
         """complete() includes token usage in response."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             client = LLMClient(max_retries=0)
 
@@ -296,6 +304,7 @@ class TestLLMClientComplete:
         """complete() parses functionCall into tool_calls list."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             client = LLMClient(max_retries=0)
 
@@ -317,6 +326,7 @@ class TestLLMClientComplete:
         """complete() retries on 5xx server errors up to max_retries times."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             # 2 retries: first two calls → 500, third → success
             client = LLMClient(max_retries=2)
@@ -338,13 +348,12 @@ class TestLLMClientComplete:
         """complete() raises LLMError after all retries exhaust on timeout."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             client = LLMClient(max_retries=1)
 
             client._client = AsyncMock()
-            client._client.post = AsyncMock(
-                side_effect=httpx.TimeoutException("timed out")
-            )
+            client._client.post = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
 
             with patch("asyncio.sleep", new_callable=AsyncMock):
                 with pytest.raises(LLMError, match="timeout"):
@@ -355,6 +364,7 @@ class TestLLMClientComplete:
         """complete() raises LLMError on 4xx (non-retryable) HTTP error."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             client = LLMClient(max_retries=3)
 
@@ -373,6 +383,7 @@ class TestLLMClientComplete:
         """complete() accepts plain dicts in addition to Message objects."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             client = LLMClient(max_retries=0)
 
@@ -388,6 +399,7 @@ class TestLLMClientComplete:
         """LLMResponse.latency_ms reflects elapsed time."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             client = LLMClient(max_retries=0)
 
@@ -414,6 +426,7 @@ class TestStreamComplete:
 
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             client = LLMClient(max_retries=0)
 
@@ -433,6 +446,7 @@ class TestStreamComplete:
         """stream_complete() yields individual characters from content."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             client = LLMClient(max_retries=0)
 
@@ -443,9 +457,7 @@ class TestStreamComplete:
             with patch("asyncio.sleep", new_callable=AsyncMock):
                 chunks = [
                     chunk
-                    async for chunk in client.stream_complete(
-                        [Message(role="user", content="hi")]
-                    )
+                    async for chunk in client.stream_complete([Message(role="user", content="hi")])
                 ]
 
             assert "".join(chunks) == "Hello, World!"
@@ -455,6 +467,7 @@ class TestStreamComplete:
         """stream_complete() yields nothing when response has a tool_call."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
             client = LLMClient(max_retries=0)
 
@@ -486,9 +499,8 @@ class TestCompleteConvenience:
         """Module-level complete() returns LLMResponse."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
-            set_config(None)
 
-            mock_http_resp = _make_httpx_response(MOCK_TEXT_RESPONSE)
+            set_config(None)
 
             with patch("core.llm.LLMClient") as MockClient:
                 instance = AsyncMock()
@@ -518,6 +530,7 @@ class TestCompleteConvenience:
         """Module-level complete() always closes the HTTP client."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
 
             with patch("core.llm.LLMClient") as MockClient:
@@ -537,6 +550,7 @@ class TestCompleteConvenience:
         """Module-level complete() closes the client even when complete() raises."""
         with patch.dict("os.environ", ENV):
             from core.config import set_config
+
             set_config(None)
 
             with patch("core.llm.LLMClient") as MockClient:

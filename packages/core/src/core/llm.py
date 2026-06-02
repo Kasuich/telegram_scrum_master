@@ -18,29 +18,34 @@ from core.exceptions import LLMError
 
 class Message(BaseModel):
     """Chat message."""
+
     role: Literal["system", "user", "assistant"]
     content: str
 
 
 class ToolCall(BaseModel):
     """Tool call from LLM."""
+
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolCallFunction(BaseModel):
     """OpenAI-style function call."""
+
     name: str
     arguments: str
 
 
 class ToolCallDelta(BaseModel):
     """Streaming tool call delta."""
+
     function: ToolCallFunction
 
 
 class TokenUsage(BaseModel):
     """Token usage statistics."""
+
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -48,6 +53,7 @@ class TokenUsage(BaseModel):
 
 class LLMResponse(BaseModel):
     """Response from LLM completion."""
+
     content: str | None = None
     tool_calls: list[ToolCall] | None = None
     usage: TokenUsage | None = None
@@ -76,11 +82,12 @@ class LLMClient:
         max_retries: int | None = None,
     ):
         config = get_config()
-        self.model = model if model is not None else config.llm.yandexgpt_model
-        self.temperature = temperature if temperature is not None else config.llm.yandexgpt_temperature
-        self.max_tokens = max_tokens if max_tokens is not None else config.llm.yandexgpt_max_tokens
-        self.timeout = timeout if timeout is not None else config.llm.yandexgpt_timeout
-        self.max_retries = max_retries if max_retries is not None else config.llm.yandexgpt_max_retries
+        llm_cfg = config.llm
+        self.model = model if model is not None else llm_cfg.yandexgpt_model
+        self.temperature = temperature if temperature is not None else llm_cfg.yandexgpt_temperature
+        self.max_tokens = max_tokens if max_tokens is not None else llm_cfg.yandexgpt_max_tokens
+        self.timeout = timeout if timeout is not None else llm_cfg.yandexgpt_timeout
+        self.max_retries = max_retries if max_retries is not None else llm_cfg.yandexgpt_max_retries
         self.api_key = config.yandex.yc_api_key
         self.folder_id = config.yandex.yc_folder_id
         self._client: httpx.AsyncClient | None = None
@@ -121,9 +128,7 @@ class LLMClient:
 
         for attempt in range(self.max_retries + 1):
             try:
-                return await self._complete_impl(
-                    messages, tools, stream, start_time, **kwargs
-                )
+                return await self._complete_impl(messages, tools, stream, start_time, **kwargs)
             except httpx.TimeoutException as e:
                 if attempt == self.max_retries:
                     raise LLMError(f"Request timeout after {self.max_retries} retries") from e

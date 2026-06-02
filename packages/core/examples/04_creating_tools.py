@@ -17,13 +17,14 @@ os.environ.setdefault("YC_FOLDER_ID", "b1g1234567890abcdef")
 os.environ.setdefault("TRACKER_TOKEN", "example_oauth_token_12345678901234567890")
 os.environ.setdefault("TRACKER_ORG_ID", "12345678901234567890")
 
-from core.tools import platform_tool, get_registry
-from core.exceptions import ToolValidationError, ToolNotFoundError
+from core.exceptions import ToolNotFoundError, ToolValidationError
+from core.tools import get_registry, platform_tool
 
 get_registry().clear()
 
 
 # --- Define tools ---
+
 
 @platform_tool(name="tracker_create_issue", risk="medium", scopes=["tracker:write"])
 async def create_issue(queue: str, summary: str, description: str = "") -> dict[str, Any]:

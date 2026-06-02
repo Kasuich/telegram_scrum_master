@@ -5,6 +5,7 @@ Revises:
 Create Date: 2026-01-01 00:00:00.000000
 
 """
+
 from __future__ import annotations
 
 from typing import Sequence, Union
@@ -270,7 +271,9 @@ def upgrade() -> None:
         sa.Column(
             "status",
             sa.Enum(
-                "pending", "approved", "rejected",
+                "pending",
+                "approved",
+                "rejected",
                 name="confirm_status_enum",
                 create_type=False,
             ),
