@@ -21,6 +21,10 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      YC_API_KEY: ${YC_API_KEY}
+      YC_FOLDER_ID: ${YC_FOLDER_ID}
+      TRACKER_TOKEN: ${TRACKER_TOKEN}
+      TRACKER_ORG_ID: ${TRACKER_ORG_ID}
       ENVIRONMENT: ${ENVIRONMENT}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:
@@ -36,6 +40,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       YC_API_KEY: ${YC_API_KEY}
       YC_FOLDER_ID: ${YC_FOLDER_ID}
+      TRACKER_TOKEN: ${TRACKER_TOKEN}
+      TRACKER_ORG_ID: ${TRACKER_ORG_ID}
       ENVIRONMENT: ${ENVIRONMENT}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:

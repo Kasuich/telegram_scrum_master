@@ -38,6 +38,8 @@ jobs:
             DB_PASSWORD=${{ secrets.TEST_DB_PASSWORD }}
             YC_API_KEY=${{ secrets.YC_API_KEY }}
             YC_FOLDER_ID=${{ secrets.YC_FOLDER_ID }}
+            TRACKER_TOKEN=${{ secrets.TRACKER_TOKEN }}
+            TRACKER_ORG_ID=${{ secrets.TRACKER_ORG_ID }}
             ENVIRONMENT=test
             LOG_LEVEL=DEBUG
             EOF
