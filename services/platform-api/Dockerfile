@@ -8,7 +8,7 @@ COPY pyproject.toml uv.lock ./
 COPY packages/core ./packages/core
 COPY services/platform-api ./services/platform-api
 
-RUN uv sync --frozen --no-dev --package platform-api
+RUN uv sync --frozen --no-dev --no-editable --package platform-api
 
 FROM python:3.12-slim
 

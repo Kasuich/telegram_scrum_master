@@ -8,7 +8,7 @@ COPY pyproject.toml uv.lock ./
 COPY packages/core ./packages/core
 COPY services/pm-orchestrator ./services/pm-orchestrator
 
-RUN uv sync --frozen --no-dev --package pm-orchestrator
+RUN uv sync --frozen --no-dev --no-editable --package pm-orchestrator
 
 FROM python:3.12-slim
 
