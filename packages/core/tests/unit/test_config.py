@@ -48,9 +48,14 @@ class TestDatabaseConfig:
         assert "database_url must start with" in str(exc_info.value)
 
     def test_missing_url(self) -> None:
-        """Missing database URL raises error."""
+        """Empty database URL is allowed (for services that don't use the DB)."""
+        config = DatabaseConfig(database_url="")
+        assert config.database_url == ""
+
+    def test_invalid_url_rejected(self) -> None:
+        """Non-empty invalid URL scheme is rejected."""
         with pytest.raises(ValidationError) as exc_info:
-            DatabaseConfig(database_url="")
+            DatabaseConfig(database_url="mysql://localhost/test")
         assert "database_url must start with" in str(exc_info.value)
 
     def test_pool_size_bounds(self) -> None:

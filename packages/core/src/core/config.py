@@ -21,7 +21,8 @@ class DatabaseConfig(BaseSettings):
     """Database connection configuration."""
 
     database_url: str = Field(
-        description="PostgreSQL connection URL",
+        default="",
+        description="PostgreSQL connection URL (optional for services that don't use the DB)",
         examples=["postgresql+asyncpg://user:pass@localhost:5432/pm_agent"],
     )
 
@@ -48,7 +49,9 @@ class DatabaseConfig(BaseSettings):
     @field_validator("database_url")
     @classmethod
     def validate_database_url(cls, v: str) -> str:
-        """Validate database URL format."""
+        """Validate database URL format (skip if empty — service doesn't use DB)."""
+        if not v:
+            return v
         if not v.startswith(("postgresql+asyncpg://", "postgresql://", "sqlite://")):
             raise ValueError(
                 "database_url must start with 'postgresql+asyncpg://', "
