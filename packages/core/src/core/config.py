@@ -81,10 +81,15 @@ class TrackerConfig(BaseSettings):
         description="Organization ID for Yandex Tracker",
     )
 
+    tracker_org_type: str = Field(
+        default="360",
+        description="Organization type: '360' (X-Org-ID) or 'cloud' (X-Cloud-Org-ID)",
+    )
+
     tracker_queue: str = Field(
         default="TEST",
         description="Default queue key",
-        examples=["TEST", "PROD", "BACKEND"],
+        examples=["TEST", "DARKHORSE", "BACKEND"],
     )
 
     tracker_api_base: str = Field(

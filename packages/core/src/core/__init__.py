@@ -127,6 +127,15 @@ from core.prompts import (
 )
 from core.react import AgentResult, PendingConfirm, ReActRunner
 from core.registry import BotRegistry, get_bot_registry
+from core.tracker import TrackerClient, TrackerError
+from core.tracker_tools import (
+    tracker_close_issue,
+    tracker_comment_issue,
+    tracker_create_issue,
+    tracker_get_issue,
+    tracker_search_issues,
+    tracker_update_issue,
+)
 from core.tools import (
     Tool,
     ToolParameter,
@@ -158,6 +167,14 @@ __all__ = [
     "BotRegistry",
     "get_bot_registry",
     "react",
+    "TrackerClient",
+    "TrackerError",
+    "tracker_get_issue",
+    "tracker_search_issues",
+    "tracker_create_issue",
+    "tracker_update_issue",
+    "tracker_comment_issue",
+    "tracker_close_issue",
     "ReActRunner",
     "AgentResult",
     "PendingConfirm",
