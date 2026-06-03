@@ -40,6 +40,8 @@ jobs:
             YC_FOLDER_ID=${{ secrets.YC_FOLDER_ID }}
             TRACKER_TOKEN=${{ secrets.TRACKER_TOKEN }}
             TRACKER_ORG_ID=${{ secrets.TRACKER_ORG_ID }}
+            TRACKER_ORG_TYPE=${{ secrets.TRACKER_ORG_TYPE }}
+            TRACKER_QUEUE=${{ secrets.TRACKER_QUEUE }}
             TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
             TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
             GRAFANA_USER=${{ secrets.GRAFANA_USER }}
