@@ -38,12 +38,19 @@ services:
     restart: unless-stopped
     environment:
       ORCHESTRATOR_URL: http://pm-orchestrator:8001
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      YC_API_KEY: ${YC_API_KEY}
+      YC_FOLDER_ID: ${YC_FOLDER_ID}
+      TRACKER_TOKEN: ${TRACKER_TOKEN}
+      TRACKER_ORG_ID: ${TRACKER_ORG_ID}
+      TRACKER_ORG_TYPE: ${TRACKER_ORG_TYPE:-360}
       ENVIRONMENT: ${ENVIRONMENT}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     ports:
       - "8000:8000"
     depends_on:
       - pm-orchestrator
+      - postgres
 
 volumes:
   postgres_data:
