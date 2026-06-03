@@ -178,7 +178,9 @@ class TestRpcEndpoint:
 
     def test_resume_not_found(self, rpc_client):
         r = self._call(rpc_client, "resume", confirm_id="nope", approved=True)
-        assert r.status_code == 404
+        # JSON-RPC 2.0: always HTTP 200, error communicated in body
+        assert r.status_code == 200
+        assert "error" in r.json()
 
     def test_unknown_method(self, rpc_client):
         r = self._call(rpc_client, "nonexistent")

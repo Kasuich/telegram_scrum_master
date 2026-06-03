@@ -130,11 +130,27 @@ async def rpc(request: Request) -> JSONResponse:
         result = await handler(req.params)
         return JSONResponse(_ok(result, req.id))
     except KeyError as exc:
-        return JSONResponse(_err(-32001, str(exc), req.id), status_code=404)
+        # JSON-RPC spec: always HTTP 200, error in body
+        return JSONResponse(_err(-32001, str(exc), req.id))
     except Exception as exc:
-        return JSONResponse(_err(-32000, str(exc), req.id), status_code=500)
+        import logging
+        import traceback
+
+        logging.getLogger(__name__).error(
+            "RPC method %s failed: %s\n%s", req.method, exc, traceback.format_exc()
+        )
+        return JSONResponse(_err(-32000, str(exc), req.id))
 
 
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "agents": [a["name"] for a in _svc.list_agents()]}
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics."""
+    from fastapi.responses import PlainTextResponse
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+    return PlainTextResponse(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)

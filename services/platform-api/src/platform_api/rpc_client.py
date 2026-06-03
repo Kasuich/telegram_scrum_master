@@ -50,10 +50,10 @@ async def _rpc_http(method: str, params: dict) -> Any:
 
     url = f"{_orchestrator_url()}/rpc"
     payload = {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(url, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+    # JSON-RPC 2.0: HTTP status is always 200; errors are in the body
+    data = resp.json()
     if "error" in data:
         raise RuntimeError(data["error"]["message"])
     return data["result"]
