@@ -565,6 +565,95 @@ flowchart LR
 
 ---
 
-## 12. Сводка одним абзацем
+## 12. Разбиение на 4 независимых трека (ближайший скоуп)
+
+Ближайший скоуп = Шаги 1-4 (замкнуть демо + Meeting Summarizer + scheduler + консоль-минимум). Делим на **4 трека по разным сервисам/слоям**, чтобы 4 человека работали параллельно с минимумом блокировок. Принцип тот же, что в прошлый раз: **в день 1 фиксируем контракты, дальше каждый кодит против контракта, а не против чужой реализации.**
+
+```mermaid
+flowchart TB
+    subgraph A["🅰 Транспорт + Telegram"]
+        AA["platform-api<br/>+ core/notify.py"]
+    end
+    subgraph B["🅱 Ядро рантайма"]
+        BB["pm-orchestrator + core<br/>персист · scheduler · call_agent"]
+    end
+    subgraph C["🅲 Агенты и тулзы"]
+        CC["agents/ + tracker_tools<br/>Meeting Summarizer · alert"]
+    end
+    subgraph D["🅳 Консоль (GUI)"]
+        DD["console-api + web-ui<br/>отдельный сервис + SPA"]
+    end
+
+    NOTIFY["контракт: notify(target, text, buttons)"]
+    CALL["контракт: call_agent:X"]
+    READ["контракт: read-модели в БД (поля зафиксированы в models.py)"]
+
+    A -. отдаёт .-> NOTIFY -. использует .-> C
+    B -. отдаёт .-> CALL -. использует .-> C
+    B -. пишет .-> READ -. читает .-> D
+
+    style A fill:#e3f2fd,color:#000
+    style B fill:#fff3e0,color:#000
+    style C fill:#e8f5e9,color:#000
+    style D fill:#f3e5f5,color:#000
+```
+
+### 🅰 Трек A — Транспорт + Telegram (`platform-api`)
+**Слой:** точка входа / транспорт. Самый независимый — работает против уже существующих `/chat`, `/confirm`.
+- Telegram-адаптер (aiogram): webhook → `/chat`, inline-кнопки ✅/❌ → `/confirm/{id}`, сессия = chat_id.
+- `core/notify.py` — отправка сообщений в Telegram (bot token); единый интерфейс `notify(target, text, buttons?)`.
+- Выбор агента командой (`/meeting`, `/pm`) поверх `/agents/{name}/chat`.
+
+**Отдаёт:** `notify(...)` для Трека C (алерты/уведомления).
+**Зависит от:** ничего нового (контракты `/chat`, `/confirm` уже есть).
+**DoD:** в Telegram можно поговорить с агентом и подтвердить действие кнопкой → задача в Трекере.
+
+### 🅱 Трек B — Ядро рантайма (`pm-orchestrator` + `core`)
+**Слой:** «мозг» / runtime. Внутренности оркестратора и `core`.
+- **DB-персист:** передать `db_session` в `ReActRunner` внутри `OrchestratorService` (сейчас in-memory) → `traces/actions/confirms` пишутся в БД.
+- **Scheduler daemon:** asyncio-loop `* * * * *`, `SELECT ... FOR UPDATE SKIP LOCKED` по `scheduled_jobs.next_run`.
+- **`schedule_task`** tool (guardrails: квота, TTL, max_runs, confirm на recurring).
+- **`call_agent`** tool — делегирование агент→агент через `OrchestratorService` (in-process, см. §5).
+
+**Отдаёт:** `call_agent:X` (Трек C), наполнение read-моделей в БД (Трек D).
+**Зависит от:** `ReActRunner`, модели БД (всё есть).
+**DoD:** действия видны в `actions`/`traces`; cron-задача исполняется; агент A может позвать агента B.
+
+### 🅲 Трек C — Агенты и тулзы (`agents/` + `tracker_tools`)
+**Слой:** контент / предметная область. Новые классы агентов и инструменты.
+- **Meeting Summarizer** (`agents/meeting_summarizer.py`): вход — ручной транскрипт, выход — action items с владельцами.
+- **`alert`** tool — использует `core/notify` (контракт Трека A).
+- **Effective Config:** мёрж `agent_specs` + `agent_instances.overlay` поверх значений класса (координация с Треком B по приоритету: класс < spec < overlay).
+- Доп. tracker-тулзы при необходимости (`tracker_get_sprint`, `tracker_get_metrics`).
+
+**Отдаёт:** рабочий поток «встреча → задачи».
+**Зависит от:** `BaseAgent` (есть); `notify` (Трек A) и `call_agent` (Трек B) — **можно на моках до готовности**.
+**DoD:** загрузил транскрипт → агент предложил задачи → confirm → задачи в Трекере.
+
+### 🅳 Трек D — Консоль (`console-api` + `web-ui`)
+**Слой:** GUI-плоскость. Полностью отдельный сервис + фронт — максимальная изоляция.
+- **`services/console-api`** (новый, FastAPI :8002): read-эндпоинты (`actions/traces/runtime_configs/action_feedback`), минимальная auth (сессия), kill-switch, правка порогов/промпта.
+- **`web-ui`** (новый SPA): dev-кабинет (реестр агентов, playground промпта, трейсы) + admin-минимум (лента действий, kill-switch).
+- Читает read-модели из БД напрямую.
+
+**Отдаёт:** видимость и управление для отладки/демо.
+**Зависит от:** схема БД (есть); реальные данные от Трека B — **до их готовности работает на сид-данных**.
+**DoD:** в браузере видно ленту действий и трейс; работает kill-switch и правка промпта.
+
+### Контракты, которые фиксируем в день 1
+
+| # | Контракт | Владелец | Потребитель |
+|---|----------|----------|-------------|
+| 1 | `notify(target, text, buttons?)` в `core/notify.py` | A | C (alert) |
+| 2 | `call_agent:X` tool (имя, сигнатура) | B | C (агенты) |
+| 3 | Effective Config: приоритет `класс < spec < overlay` | B + C | оба |
+| 4 | Read-модели: поля `actions/traces/runtime_configs/feedback` (зафиксированы в `models.py`) | B (пишет) | D (читает) |
+| 5 | Формат `AgentResult` / `PendingConfirm` (уже есть) | — | A, D |
+
+**Критический путь:** Трек B (персист) разблокирует реальные данные для Трека D, а `call_agent` — для Трека C. Поэтому B стартует первым на этих двух вещах; A, C, D кодят против контрактов/моков параллельно. Интеграция — в конце, как и раньше.
+
+---
+
+## 13. Сводка одним абзацем
 
 Фундамент платформы и самый сложный механизм (автономия уровня 2 с human-in-the-loop) **готовы и работают**. Текущая БД-схема покрывает **~70% будущих шагов** без изменений — критичный layered config уже заложен правильно. Целевая система — **три независимые плоскости** поверх общего `core` и одной БД: рантайм агентов (`platform-api` + `pm-orchestrator`), консоль (`console-api` + `web-ui` — отдельно от платформы, со своим auth/RBAC), и захват встреч (`meeting-capture` — отдельный тяжёлый сервис с S3 для аудио). Ближайшая ценность — **замкнуть демо через Telegram и добавить Meeting Summarizer** (на ручном транскрипте, без тяжёлого бота), затем проактивные алерты, консоль и только потом — полный Telemost-захват. Тяжёлые элементы видения (networked A2A, LangGraph, LiteLLM) сознательно заменены на лёгкие эквиваленты и добавляются только при реальной потребности. Новые таблицы нужны лишь изолированным подсистемам (GUI-auth, Meeting Capture, метрики, RBAC, память), а файловое хранилище (S3) появляется только с захватом встреч на Шаге 5.
