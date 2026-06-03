@@ -14,17 +14,48 @@ These tests make real API calls and cost tokens. Never run in regular CI.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
-# Skip the whole module if credentials are missing
 pytestmark = pytest.mark.smoke
 
-YC_API_KEY = os.getenv("YC_API_KEY", "")
-YC_FOLDER_ID = os.getenv("YC_FOLDER_ID", "")
 
-_has_creds = bool(YC_API_KEY and YC_FOLDER_ID and not YC_API_KEY.startswith("stub"))
+def _load_creds() -> tuple[str, str]:
+    """Load YC credentials from env vars or nearest .env file."""
+    import os
+    from pathlib import Path
+
+    key = os.getenv("YC_API_KEY", "")
+    folder = os.getenv("YC_FOLDER_ID", "")
+    if key and folder:
+        return key, folder
+
+    # Walk up from this file looking for a .env
+    for parent in Path(__file__).parents:
+        env_file = parent / ".env"
+        if env_file.exists():
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k == "YC_API_KEY":
+                    key = v
+                elif k == "YC_FOLDER_ID":
+                    folder = v
+            break
+
+    return key, folder
+
+
+_yc_api_key, _yc_folder_id = _load_creds()
+_has_creds = bool(
+    _yc_api_key
+    and _yc_folder_id
+    and not _yc_api_key.startswith("stub")
+    and _yc_api_key != "YandexCloud_api_key_here"
+)
 _skip_no_creds = pytest.mark.skipif(not _has_creds, reason="YC_API_KEY / YC_FOLDER_ID not set")
 
 

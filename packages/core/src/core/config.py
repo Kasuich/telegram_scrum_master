@@ -105,9 +105,9 @@ class LLMConfig(BaseSettings):
     """LLM (Language Model) configuration."""
 
     yandexgpt_model: str = Field(
-        default="yandexgpt-pro",
+        default="yandexgpt",
         description="YandexGPT model name",
-        examples=["yandexgpt-pro", "yandexgpt-lite"],
+        examples=["yandexgpt", "yandexgpt-lite"],
     )
 
     yandexgpt_temperature: float = Field(

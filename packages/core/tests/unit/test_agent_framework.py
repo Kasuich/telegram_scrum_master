@@ -40,30 +40,45 @@ ENV = {
 
 MOCK_TEXT_RESPONSE = {
     "result": {
-        "message": {"text": "All good!", "role": "assistant"},
+        "alternatives": [
+            {
+                "message": {"role": "assistant", "text": "All good!"},
+                "status": "ALTERNATIVE_STATUS_FINAL",
+            }
+        ],
         "usage": {
-            "inputTokensCount": 10,
-            "outputTokensCount": 5,
-            "totalTokensCount": 15,
+            "inputTokens": "10",
+            "completionTokens": "5",
+            "totalTokens": "15",
         },
-        "status": "COMPLETED",
     }
 }
 
 MOCK_TOOL_CALL_RESPONSE = {
     "result": {
-        "message": {
-            "functionCall": {
-                "name": "my_tool",
-                "args": {"param": "value"},
+        "alternatives": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "toolCallList": {
+                        "toolCalls": [
+                            {
+                                "functionCall": {
+                                    "name": "my_tool",
+                                    "arguments": {"param": "value"},
+                                }
+                            }
+                        ]
+                    },
+                },
+                "status": "ALTERNATIVE_STATUS_TOOL_CALLS",
             }
-        },
+        ],
         "usage": {
-            "inputTokensCount": 20,
-            "outputTokensCount": 10,
-            "totalTokensCount": 30,
+            "inputTokens": "20",
+            "completionTokens": "10",
+            "totalTokens": "30",
         },
-        "status": "COMPLETED",
     }
 }
 
@@ -137,7 +152,7 @@ def entry_point(agent):
 class TestLLMSettings:
     def test_defaults(self):
         s = LLMSettings()
-        assert s.model == "yandexgpt-pro"
+        assert s.model == "yandexgpt"
         assert s.temperature is None
         assert s.max_tokens is None
 
@@ -184,7 +199,7 @@ class TestBaseAgentClassValidation:
         a = _Agent()
         cfgs = a._effective_llm_configs()
         assert len(cfgs) == 1
-        assert cfgs[0].model == "yandexgpt-pro"
+        assert cfgs[0].model == "yandexgpt"
 
 
 # ---------------------------------------------------------------------------

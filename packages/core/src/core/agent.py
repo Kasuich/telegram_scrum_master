@@ -17,7 +17,7 @@ Usage example::
         prompt = "You are a weather assistant."
         tools = ["get_weather"]
         llm_configs = [
-            LLMSettings(model="yandexgpt-pro", temperature=0.3),
+            LLMSettings(model="yandexgpt", temperature=0.3),
             LLMSettings(model="yandexgpt-lite", temperature=0.3),   # fallback
         ]
 
@@ -47,7 +47,7 @@ class LLMSettings(BaseModel):
     each in order and moves to the next on failure.
     """
 
-    model: str = "yandexgpt-pro"
+    model: str = "yandexgpt"
     temperature: float | None = None
     max_tokens: int | None = None
     timeout: int | None = None

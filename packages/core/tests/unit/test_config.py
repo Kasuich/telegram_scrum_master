@@ -111,7 +111,7 @@ class TestLLMConfig:
     def test_default_values(self) -> None:
         """LLM config with all defaults."""
         config = LLMConfig()
-        assert config.yandexgpt_model == "yandexgpt-pro"
+        assert config.yandexgpt_model == "yandexgpt"
         assert config.yandexgpt_temperature == 0.7
         assert config.yandexgpt_max_tokens == 4000
         assert config.yandexgpt_top_p == 0.9
@@ -144,8 +144,12 @@ class TestAppConfig:
     """Tests for AppConfig."""
 
     def test_default_values(self) -> None:
-        """App config with defaults."""
-        config = AppConfig()
+        """App config with defaults (DEBUG forced off to avoid .env pollution)."""
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"DEBUG": "false"}):
+            config = AppConfig()
         assert config.environment == "development"
         assert config.debug is False
         assert config.log_level == "INFO"

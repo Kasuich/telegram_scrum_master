@@ -54,7 +54,7 @@ class PMReportAgent(BaseAgent):
     prompt = "You are a PM assistant. Today is {current_date}. Answer concisely in Russian."
     tools = ["get_sprint_status"]
     llm_configs = [
-        LLMSettings(model="yandexgpt-pro", temperature=0.3),
+        LLMSettings(model="yandexgpt", temperature=0.3),
         LLMSettings(model="yandexgpt-lite", temperature=0.3),  # fallback
     ]
 
@@ -67,7 +67,7 @@ class TaskCreatorAgent(BaseAgent):
     prompt = "You are a task manager. Create issues as requested by the user."
     tools = ["create_issue"]
     llm_configs = [
-        LLMSettings(model="yandexgpt-pro", temperature=0.1),
+        LLMSettings(model="yandexgpt", temperature=0.1),
     ]
 
 

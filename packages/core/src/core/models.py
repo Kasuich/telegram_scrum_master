@@ -115,7 +115,7 @@ class AgentSpec(Base):
         default=uuid.uuid4,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    model: Mapped[str] = mapped_column(String(100), nullable=False, default="yandexgpt-pro")
+    model: Mapped[str] = mapped_column(String(100), nullable=False, default="yandexgpt")
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
     tools: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     autonomy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)

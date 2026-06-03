@@ -153,7 +153,7 @@ class LLMClient:
         start_time: float,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Internal completion implementation."""
+        """Internal completion implementation (foundationModels v1 API)."""
         normalized_messages = []
         for msg in messages:
             if isinstance(msg, Message):
@@ -162,19 +162,17 @@ class LLMClient:
                 normalized_messages.append(msg)
 
         request_body: dict[str, Any] = {
-            "modelUri": f"gpt://{self.folder_id}/{self.model}",
-            "messages": normalized_messages,
+            "modelUri": f"gpt://{self.folder_id}/{self.model}/latest",
             "completionOptions": {
                 "stream": stream,
                 "temperature": kwargs.get("temperature", self.temperature),
-                "maxTokens": kwargs.get("max_tokens", self.max_tokens),
+                "maxTokens": str(kwargs.get("max_tokens", self.max_tokens)),
             },
+            "messages": normalized_messages,
         }
 
         if tools:
-            request_body["messages"][-1]["generationSettings"] = {
-                "tools": [{"function_declaration": tool} for tool in tools]
-            }
+            request_body["tools"] = [{"function": tool} for tool in tools]
 
         headers = {
             "Authorization": f"Api-Key {self.api_key}",
@@ -182,7 +180,7 @@ class LLMClient:
         }
 
         response = await self.client.post(
-            "https://llm.api.cloud.yandex.net/llm/v1alpha/chat",
+            "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
             headers=headers,
             json=request_body,
         )
@@ -190,27 +188,37 @@ class LLMClient:
 
         data = response.json()
         latency_ms = int((time.monotonic() - start_time) * 1000)
-        result_message = data.get("result", {}).get("message", {})
+
+        # foundationModels v1 response: result.alternatives[0].message
+        result = data.get("result", {})
+        alternatives = result.get("alternatives", [])
+        alt = alternatives[0] if alternatives else {}
+        result_message = alt.get("message", {})
+        finish_reason = alt.get("status", "ALTERNATIVE_STATUS_FINAL")
 
         tool_calls: list[ToolCall] | None = None
         content: str | None = None
 
-        if "functionCall" in result_message:
-            fc = result_message["functionCall"]
+        # Tool call response: message.toolCallList.toolCalls[].functionCall
+        tool_call_list = result_message.get("toolCallList", {})
+        raw_tool_calls = tool_call_list.get("toolCalls", [])
+        if raw_tool_calls:
             tool_calls = [
                 ToolCall(
-                    name=fc.get("name", ""),
-                    arguments=fc.get("args", {}),
+                    name=tc.get("functionCall", {}).get("name", ""),
+                    arguments=tc.get("functionCall", {}).get("arguments", {}),
                 )
+                for tc in raw_tool_calls
             ]
         else:
             content = result_message.get("text", "")
 
-        usage_data = data.get("result", {}).get("usage", {})
+        # Usage: fields are strings in v1 API
+        usage_data = result.get("usage", {})
         usage = TokenUsage(
-            prompt_tokens=usage_data.get("inputTokensCount", 0),
-            completion_tokens=usage_data.get("outputTokensCount", 0),
-            total_tokens=usage_data.get("totalTokensCount", 0),
+            prompt_tokens=int(usage_data.get("inputTokens", 0)),
+            completion_tokens=int(usage_data.get("completionTokens", 0)),
+            total_tokens=int(usage_data.get("totalTokens", 0)),
         )
 
         llm_requests_total.labels(model=self.model, status="success").inc()
@@ -228,7 +236,7 @@ class LLMClient:
             usage=usage,
             model=self.model,
             latency_ms=latency_ms,
-            finish_reason=data.get("result", {}).get("status", "COMPLETED"),
+            finish_reason=finish_reason,
         )
 
     async def stream_complete(

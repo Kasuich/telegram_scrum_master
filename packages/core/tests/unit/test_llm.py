@@ -38,30 +38,45 @@ ENV = {
 
 MOCK_TEXT_RESPONSE = {
     "result": {
-        "message": {"text": "Hello, World!", "role": "assistant"},
+        "alternatives": [
+            {
+                "message": {"role": "assistant", "text": "Hello, World!"},
+                "status": "ALTERNATIVE_STATUS_FINAL",
+            }
+        ],
         "usage": {
-            "inputTokensCount": 10,
-            "outputTokensCount": 5,
-            "totalTokensCount": 15,
+            "inputTokens": "10",
+            "completionTokens": "5",
+            "totalTokens": "15",
         },
-        "status": "COMPLETED",
     }
 }
 
 MOCK_TOOL_CALL_RESPONSE = {
     "result": {
-        "message": {
-            "functionCall": {
-                "name": "tracker_create_issue",
-                "args": {"queue": "TEST", "summary": "Fix bug"},
+        "alternatives": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "toolCallList": {
+                        "toolCalls": [
+                            {
+                                "functionCall": {
+                                    "name": "tracker_create_issue",
+                                    "arguments": {"queue": "TEST", "summary": "Fix bug"},
+                                }
+                            }
+                        ]
+                    },
+                },
+                "status": "ALTERNATIVE_STATUS_TOOL_CALLS",
             }
-        },
+        ],
         "usage": {
-            "inputTokensCount": 20,
-            "outputTokensCount": 10,
-            "totalTokensCount": 30,
+            "inputTokens": "20",
+            "completionTokens": "10",
+            "totalTokens": "30",
         },
-        "status": "COMPLETED",
     }
 }
 
@@ -176,7 +191,7 @@ class TestLLMClientInit:
 
             set_config(None)  # clear cached singleton
             client = LLMClient()
-            assert client.model == "yandexgpt-pro"
+            assert client.model == "yandexgpt"
             assert client.temperature == 0.7
             assert client.max_tokens == 4000
             assert client.timeout == 60
@@ -276,8 +291,8 @@ class TestLLMClientComplete:
             assert isinstance(result, LLMResponse)
             assert result.content == "Hello, World!"
             assert result.tool_calls is None
-            assert result.model == "yandexgpt-pro"
-            assert result.finish_reason == "COMPLETED"
+            assert result.model == "yandexgpt"
+            assert result.finish_reason == "ALTERNATIVE_STATUS_FINAL"
 
     @pytest.mark.asyncio
     async def test_text_response_token_usage(self) -> None:
