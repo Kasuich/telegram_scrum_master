@@ -161,7 +161,7 @@ class AppConfig(BaseSettings):
     )
 
     # Environment
-    environment: Literal["development", "staging", "production"] = Field(
+    environment: Literal["development", "test", "staging", "production"] = Field(
         default="development",
         description="Runtime environment",
     )
