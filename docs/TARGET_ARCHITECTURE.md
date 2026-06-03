@@ -56,10 +56,11 @@ flowchart LR
 | **Scheduler / cron** | 🟡 Схема-only | `ScheduledJob` есть, нет демона-исполнителя |
 | **call_agent (делегирование)** | 🔴 Нет | оркестратор не умеет агент→агент |
 | **Meeting Summarizer** | 🔴 Нет | агент #1 из must-have |
+| **Meeting Capture (Telemost запись/STT)** | 🔴 Нет | дизайн готов (`meeting_capture.md`), отдельный тяжёлый сервис |
 | **Correspondence Analyzer** | 🔴 Нет | агент #2 |
 | **Analytics Agent + метрики** | 🔴 Нет | флаг есть, реализации нет |
 | **Алерты (дедлайны/SLA)** | 🔴 Нет | флаг `enable_alerts`, нет системы |
-| **Дашборд (3 UI)** | 🔴 Нет | весь observability-слой есть в данных |
+| **GUI: 3 кабинета (user/admin/dev)** | 🔴 Нет | отдельная плоскость: `web-ui` + `console-api` (см. §6.1) |
 | **RBAC (User/Role)** | 🔴 Нет схемы | нужны новые таблицы |
 | **Слой памяти (профили/проект/граф)** | 🔴 Нет схемы | future, нужны новые таблицы |
 | **Networked A2A (agent cards/registry)** | 🔴 Нет | сознательно отложено (см. §5) |
@@ -86,9 +87,10 @@ flowchart TB
 
     subgraph gaps["🔴 НУЖНЫ новые таблицы"]
         direction LR
-        G1["users · roles<br/>role_bindings<br/>→ для RBAC"]
+        G1["users · roles<br/>role_bindings<br/>→ для RBAC + GUI-auth"]
         G2["person_profiles<br/>project_memory<br/>team_edges<br/>→ для памяти PM"]
         G3["tracker_snapshots<br/>→ для метрик/лидерборда"]
+        G5["meetings · transcripts<br/>→ для Meeting Capture"]
         G4["agent_cards · a2a_tasks<br/>→ только если networked A2A"]
     end
 
@@ -107,11 +109,13 @@ flowchart TB
 | Meeting/Correspondence/Analytics агенты | ✅ полное | агенты = код, конфиг в `agent_specs`; схема готова |
 | Фидбек-петля | ✅ полное | `action_feedback` готова, нужен дашборд для сбора |
 | Метрики/лидерборд | 🟡 частично | нужна таблица `tracker_snapshots` (read-модель Трекера) |
+| **GUI (3 кабинета)** | 🟡 частично | данные есть (`actions/traces/configs/feedback`); нужны `users`+сессии для auth |
+| **Meeting Capture** | 🔴 нет | нужны `meetings`, `transcripts` (+ object storage для аудио) |
 | RBAC / multi-PM | 🔴 нет | нужны `users`, `roles`, `role_bindings` |
 | Память PM (профили/проект/граф) | 🔴 нет | нужны `person_profiles`, `project_memory`, `team_edges` |
 | Networked A2A | 🔴 нет | нужны `agent_cards`, `a2a_tasks` — **но это отложено** |
 
-**Итог:** **~70% будущих шагов покрыты текущей схемой.** Фаза 0-5 (до дашборда) требует только **2 новых таблицы** (`tracker_snapshots` для метрик, опционально). RBAC и память — отдельные блоки схемы, нужны только при масштабировании за пределы одной команды и в «будущем» соответственно. Критично: **layered config заложен правильно** (`agent_instances.overlay`) — это самое больное для ретрофита, и оно уже есть.
+**Итог:** **~70% будущих шагов покрыты текущей схемой.** Ядро (оркестрация, автономия, observability, scheduling, фидбек, layered config) не требует изменений схемы. Новые таблицы нужны только для **изолированных подсистем**: GUI-auth (`users`+сессии), Meeting Capture (`meetings`, `transcripts`), метрики (`tracker_snapshots`), RBAC и память — по мере роста. Критично: **layered config заложен правильно** (`agent_instances.overlay`) — это самое больное для ретрофита, и оно уже есть.
 
 Одна техническая чистка: таблица `langchain_checkpoints` в миграции **не используется** (мы не на LangGraph) — её можно удалить при следующей миграции.
 
@@ -189,67 +193,161 @@ Networked A2A (agent cards, registry, `/a2a` endpoint, call_chain, loop-preventi
 
 ## 6. Целевая архитектура (компоненты)
 
+Три **плоскости** с разными задачами, безопасностью и темпом релизов. Они общаются через общий `core` и одну БД, но деплоятся независимо.
+
 ```mermaid
 flowchart TB
-    subgraph entry["Точки входа"]
+    subgraph people["👥 Люди"]
         direction LR
-        TG["Telegram<br/>(aiogram)"]
-        WEB["Web / curl"]
-        CRON["Scheduler<br/>(cron tick)"]
+        TGU["Telegram<br/>(чат + confirm)"]
+        BROWSER["Браузер<br/>(3 кабинета)"]
     end
 
-    subgraph api["platform-api :8000 — тонкий HTTP/транспорт"]
-        ROUTES["/chat · /confirm · /agents/*<br/>/actions · /metrics"]
-        TGADAPTER["Telegram webhook<br/>+ inline-кнопки confirm"]
-    end
-
-    subgraph orch["pm-orchestrator :8001 — мозг"]
+    %% ===== ПЛОСКОСТЬ РАНТАЙМА АГЕНТОВ =====
+    subgraph runtime["⚙️ Плоскость рантайма агентов"]
         direction TB
-        RPC["JSON-RPC 2.0 /rpc"]
-        SVC["OrchestratorService<br/>discover · invoke · resume"]
-        subgraph agents["Агенты (автодискавери)"]
-            PM["PM Orchestrator"]
-            MS["Meeting Summarizer"]
-            CA["Correspondence Analyzer"]
-            AN["Analytics Agent"]
+        API["platform-api :8000<br/>тонкий транспорт<br/>/chat · /confirm · /agents/*"]
+        subgraph orch["pm-orchestrator :8001 — мозг"]
+            SVC["OrchestratorService<br/>discover · invoke · resume"]
+            AGENTS["Агенты (автодискавери):<br/>PM Orchestrator · Meeting Summarizer<br/>Correspondence · Analytics"]
+            RUNNER["ReActRunner + Autonomy Gate"]
+            SCHED["Scheduler daemon<br/>tick + SKIP LOCKED"]
         end
-        RUNNER["ReActRunner<br/>+ Autonomy Gate"]
-        SCHED["Scheduler daemon<br/>tick + SKIP LOCKED"]
     end
 
-    subgraph corelib["packages/core — общая библиотека"]
-        direction LR
-        TOOLS["ToolRegistry<br/>tracker_* · alert · call_agent · schedule_task"]
-        LLMC["LLM client<br/>YandexGPT + fallback"]
-        EFFCFG["Effective Config<br/>spec + overlay"]
+    %% ===== ПЛОСКОСТЬ КОНСОЛИ (GUI) =====
+    subgraph console["🖥️ Плоскость консоли (отдельно от платформы)"]
+        direction TB
+        UI["web-ui (SPA)<br/>user · admin/PM · dev<br/>(один фронт, ролевые view)"]
+        CAPI["console-api :8002<br/>read-models · admin-мутации<br/>auth + RBAC · kill-switch"]
+        UI --> CAPI
     end
 
-    PG[("PostgreSQL<br/>actions · traces · confirms<br/>agent_specs · instances<br/>scheduled_jobs · feedback<br/>runtime_configs · tracker_snapshots")]
-    TRACKER["Яндекс Трекер API v3"]
+    %% ===== ПЛОСКОСТЬ ЗАХВАТА ВСТРЕЧ =====
+    subgraph capture["🎥 Meeting Capture (отдельный тяжёлый сервис)"]
+        direction TB
+        DISP["Dispatcher<br/>(state machine)"]
+        BOT["Bot: headless Chromium<br/>joiner + recorder"]
+        STT["Transcription<br/>SpeechKit / Whisper"]
+        DISP --> BOT --> STT
+    end
+
+    CORE["packages/core — общая библиотека<br/>ToolRegistry (tracker_* · alert · call_agent · schedule_task)<br/>LLM client · Effective Config (spec+overlay)"]
+    PG[("PostgreSQL<br/>actions·traces·confirms · agent_specs·instances<br/>scheduled_jobs·feedback·runtime_configs<br/>+ tracker_snapshots · meetings·transcripts · users·roles")]
+    TRACKER["Яндекс Трекер v3"]
+    OBJ[("S3 / Object Storage<br/>(Yandex Object Storage / MinIO)<br/>аудио записей")]
     GRAF["Prometheus + Grafana"]
 
-    TG --> TGADAPTER --> ROUTES
-    WEB --> ROUTES
-    CRON --> SCHED
-    ROUTES -->|"JSON-RPC"| RPC
-    RPC --> SVC --> agents --> RUNNER
-    RUNNER --> TOOLS
-    RUNNER --> LLMC
-    RUNNER --> EFFCFG
+    TGU --> API
+    BROWSER --> UI
+    API -->|"JSON-RPC"| SVC --> AGENTS --> RUNNER
     SCHED --> SVC
-    TOOLS --> TRACKER
+    RUNNER --> CORE
+    CORE --> TRACKER
     RUNNER --> PG
-    EFFCFG --> PG
+    CAPI --> PG
     SCHED --> PG
-    orch --> GRAF
-    api --> GRAF
+    STT -->|"транскрипт → call_agent"| SVC
+    BOT --> OBJ
+    DISP --> PG
+    runtime --> GRAF
+    console --> GRAF
+    capture --> GRAF
 
-    style entry fill:#e3f2fd,color:#000
-    style orch fill:#fff3e0,color:#000
-    style corelib fill:#e8f5e9,color:#000
+    style runtime fill:#fff3e0,color:#000
+    style console fill:#e3f2fd,color:#000
+    style capture fill:#fce4ec,color:#000
+    style CORE fill:#e8f5e9,color:#000
 ```
 
-Жирным выделены **новые** компоненты относительно текущего состояния: Telegram-адаптер, агенты MS/CA/AN, Scheduler daemon, новые тулзы (`alert`, `call_agent`, `schedule_task`), `tracker_snapshots`, Effective Config (spec+overlay).
+**Почему три плоскости, а не один монолит:** разные требования к безопасности (консоль = auth/RBAC/мутации, рантайм = горячий путь без auth), разный темп релизов (фронт меняется часто, ядро редко), разный профиль нагрузки (Meeting Capture = тяжёлый Chromium-воркер, остальное — лёгкое async). Общее — библиотека `core` и одна БД.
+
+---
+
+## 6.1. GUI — отдельная плоскость (почему не в платформе)
+
+**Вопрос: почему 3 кабинета не были в первой версии и стоит ли их отделять?** Да, стоит — и вот почему GUI это **отдельная плоскость, а не часть `platform-api`**:
+
+| Аспект | Рантайм (`platform-api`) | Консоль (`console-api` + `web-ui`) |
+|--------|--------------------------|-------------------------------------|
+| Назначение | приём сообщений агенту, confirm | наблюдение, управление, настройка |
+| Путь | горячий, тонкий, без auth | human-facing, нужен auth + RBAC |
+| Данные | проксирует в оркестратор (RPC) | читает read-модели напрямую из БД |
+| Мутации | нет (только запуск агента) | да (kill-switch, пороги, правка промпта) |
+| Темп релизов | редко (ядро стабильно) | часто (UI/UX итерации) |
+| Технология | Python/FastAPI | SPA (React/Vue) + Python BFF |
+
+Смешивать их в одном сервисе — значит тащить auth/RBAC и тяжёлые аналитические запросы в горячий путь агента. Поэтому:
+
+```mermaid
+flowchart TB
+    subgraph front["web-ui — ОДИН SPA, три ролевые проекции"]
+        direction LR
+        U["👤 Пользователь<br/>мои задачи · лента по мне<br/>фидбек · лидерборд"]
+        P["👔 Админ / PM<br/>дашборд команды · лента «почему»<br/>очередь confirm · пороги · kill-switch"]
+        D["🛠️ Разработчик<br/>реестр агентов · playground промпта<br/>тех-трейсы · токены · scheduled jobs"]
+    end
+
+    CAPI["console-api :8002<br/>ролевые view + RBAC + auth<br/>(один бэкенд, не три)"]
+    BACKBONE[("Единый бэкбон данных:<br/>actions · traces · runtime_configs<br/>action_feedback · tracker_snapshots<br/>agent_specs · instances")]
+
+    U & P & D --> CAPI --> BACKBONE
+
+    style front fill:#e3f2fd,color:#000
+    style CAPI fill:#bbdefb,color:#000
+```
+
+**Ключевая идея (из `discovery/05_ui.md`):** в основе — одно «действие агента» (`Action` + `trace_id`), три роли смотрят на него под разным углом. Поэтому **один `console-api` с ролевыми view + RBAC, а не три бэкенда** и **один `web-ui` с тремя режимами, а не три фронта**.
+
+**Приоритет (из discovery):** dev-кабинет (реестр агентов + редактор промпта + трейсы) нужен **рано** — без него неудобно отлаживать агентов, это инструмент разработки, а не «если успеем». Admin-минимум (лента + kill-switch + пороги) — для безопасного теста на команде. Геймификация и детальная стоимость — позже.
+
+---
+
+## 6.2. Meeting Capture — отдельный сервис (Telemost → транскрипт)
+
+Подсистема «бот ходит на встречи, пишет и транскрибирует». Подробный дизайн — в [`meeting_capture.md`](meeting_capture.md); здесь — место в целевой архитектуре.
+
+**Почему отдельный сервис, а не агент/тулза в оркестраторе:**
+- Это **самый тяжёлый воркер** платформы: реальный Chromium + виртуальное аудио-устройство для захвата звука. CPU/RAM-ёмкий, 1 инстанс ≈ 1 встреча.
+- Совершенно другой профиль нагрузки и масштабирования (пул воркеров по числу одновременных встреч) — нельзя ставить рядом с лёгкими async-агентами на тест-VPS.
+- **Без LLM** — это детерминированный конвейер (join → record → STT). LLM включается только дальше, в Meeting Summarizer.
+
+```mermaid
+flowchart LR
+    subgraph trig["Триггеры"]
+        CAL["📅 Календарь"]
+        MAN["✋ Ручная ссылка"]
+    end
+
+    subgraph cap["meeting-capture (отдельный деплой, без LLM)"]
+        direction TB
+        D["Dispatcher<br/>state machine"]
+        B["Bot: Chromium заходит<br/>как «PM Assistant»<br/>пишет аудио + субтитры"]
+        T["Transcription<br/>SpeechKit (RU) / Whisper<br/>+ диаризация"]
+        D -->|"join(url) в T-1мин"| B --> T
+    end
+
+    MS["🧠 Meeting Summarizer<br/>(агент в оркестраторе)"]
+    ORCH["PM Orchestrator → Трекер"]
+
+    CAL & MAN --> D
+    T -->|"транскрипт → call_agent"| MS --> ORCH
+
+    style cap fill:#fce4ec,color:#000
+    style MS fill:#e8f5e9,color:#000
+```
+
+**Связь с платформой — через тулзы и call_agent:**
+- PM Orchestrator управляет захватом детерминированными тулзами: `schedule_meeting_bot(url)`, `get_meeting_transcript(meeting_id)`.
+- Готовый транскрипт идёт в Meeting Summarizer (тот же `call_agent`-механизм, что и для остальных агентов).
+- Оркестратор остаётся «мозгом» — захват спрятан за инструментами.
+
+**Стратегия снижения риска (Telemost не имеет бот-API):**
+1. **MVP / Shadow:** ручная загрузка аудио или транскрипта → проверяем Meeting Summarizer, не дожидаясь бота.
+2. **Далее:** бот-участник через браузерную автоматизацию (Playwright), адаптер на Телемост; субтитры платформы как дешёвый источник, свой STT (SpeechKit) как fallback с диаризацией.
+3. Адаптеры на Zoom/Meet — той же абстракцией позже.
+
+**Новые таблицы:** `meetings` (id, team_id, link, scheduled_at, status, ...), `transcripts` (meeting_id, text, segments с таймкодами/спикерами). Аудио — в **S3** (Yandex Object Storage / MinIO), в БД только ключ объекта; политика TTL на аудио под 152-ФЗ (см. §10 «Хранилище файлов»).
 
 ---
 
@@ -361,37 +459,46 @@ flowchart LR
         C["Scheduler daemon<br/>+ alert tool<br/>дедлайны/SLA"]
     end
 
-    subgraph s4["Шаг 4 — Прозрачность"]
-        D["Дашборд (dev+admin минимум)<br/>+ Effective Config (spec/overlay)<br/>+ фидбек-петля"]
+    subgraph s4["Шаг 4 — Консоль (GUI)"]
+        D["console-api + web-ui<br/>dev-кабинет + admin-минимум<br/>+ Effective Config + фидбек"]
     end
 
-    subgraph s5["Шаг 5 — Расширение"]
-        E["Correspondence + Analytics<br/>+ tracker_snapshots<br/>+ метрики/лидерборд"]
+    subgraph s5["Шаг 5 — Захват встреч"]
+        E["meeting-capture сервис<br/>Telemost-бот + STT<br/>(отдельный тяжёлый деплой)"]
+    end
+
+    subgraph s6["Шаг 6 — Расширение"]
+        G["Correspondence + Analytics<br/>+ tracker_snapshots + метрики"]
     end
 
     subgraph fut["Будущее"]
         F["RBAC (multi-team)<br/>Память (профили/проект/граф)<br/>Networked A2A"]
     end
 
-    now --> s1 --> s2 --> s3 --> s4 --> s5 --> fut
+    now --> s1 --> s2 --> s3 --> s4 --> s5 --> s6 --> fut
 
     style now fill:#e8f5e9,color:#000
     style s1 fill:#fff3e0,color:#000
     style fut fill:#eceff1,color:#000
 ```
 
+> Шаг 2 запускает Meeting Summarizer на **ручной загрузке транскрипта** — это даёт ценность сразу. Тяжёлый Telemost-бот (Шаг 5) автоматизирует вход, но не блокирует продукт.
+
 ### Матрица ценность / усилие
 
 | Шаг | Ценность | Усилие | DB-изменения |
 |-----|:--------:|:------:|--------------|
 | 1. Telegram + персист + call_agent | 🔥 высокая (демо, мультиагент) | средне | нет |
-| 2. Meeting Summarizer | 🔥 высокая (ядро продукта) | средне | нет |
+| 2. Meeting Summarizer (ручной транскрипт) | 🔥 высокая (ядро продукта) | средне | нет |
 | 3. Scheduler + алерты | высокая (проактивность) | средне | нет (`scheduled_jobs` есть) |
-| 4. Дашборд + Effective Config | высокая (доверие, тюнинг) | высокое | нет |
-| 5. Correspondence/Analytics/метрики | средняя | высокое | +`tracker_snapshots` |
-| Будущее: RBAC | низкая пока 1 команда | высокое | +`users/roles/bindings` |
+| 4. Консоль: dev+admin минимум + Effective Config | высокая (отладка, доверие, тюнинг) | высокое | +`users`+сессии (auth) |
+| 5. Meeting Capture (Telemost-бот) | высокая (полная автоматизация встреч) | очень высокое | +`meetings/transcripts` + object storage |
+| 6. Correspondence/Analytics/метрики | средняя | высокое | +`tracker_snapshots` |
+| Будущее: RBAC | низкая пока 1 команда | высокое | +`roles/role_bindings` |
 | Будущее: память | высокая, но рано | очень высокое | +`profiles/project/edges` |
 | Будущее: networked A2A | низкая пока 1 процесс | высокое | +`agent_cards/a2a_tasks` |
+
+> Meeting Capture стоит в Шаге 5, а не выше, потому что усилие/инфра очень высокие (Chromium-пул, STT, хрупкость UI-автоматизации), а ценность Meeting Summarizer уже снята в Шаге 2 ручной загрузкой. Dev-кабинет (Шаг 4) по discovery нужен рано для отладки — при наличии ресурсов его можно частично двигать параллельно Шагам 2-3.
 
 ---
 
@@ -412,14 +519,32 @@ flowchart LR
 - `schedule_task` tool — агент сам ставит задачи. Guardrails: квота, TTL, max_runs, confirm на recurring.
 - `alert` tool — уведомление в Telegram.
 
-### Шаг 4 — Дашборд + Effective Config
-- Минимум: dev-UI (реестр агентов, редактор промпта, просмотр трейсов) + admin-минимум (лента действий, kill-switch, пороги).
-- **Effective Config**: `OrchestratorService` при старте/запросе мёржит `agent_specs` + `agent_instances.overlay` поверх значений класса.
-- Фидбек: сбор `action_feedback` через UI → сигнал для тюнинга промптов.
+### Шаг 4 — Консоль (GUI) + Effective Config
+- **`web-ui`** — отдельный SPA (React/Vue), статический деплой (nginx). Три ролевых режима в одном приложении.
+- **`console-api`** — новый сервис (`services/console-api`, FastAPI, порт 8002): ролевые view + auth (сессии) + RBAC. Читает read-модели из БД напрямую (`actions/traces/runtime_configs/action_feedback/tracker_snapshots`), мутации (kill-switch, пороги, правка `agent_specs`/overlay).
+- Приоритет: dev-кабинет (реестр агентов, playground промпта, трейсы) — рано; admin-минимум (лента, kill-switch, пороги) — для безопасного теста.
+- **Effective Config**: `OrchestratorService` мёржит `agent_specs` + `agent_instances.overlay` поверх значений класса → правка промпта без деплоя.
+- Auth: `users` + сессии (JWT/cookie). Полный RBAC — позже (Будущее).
 
-### Шаг 5 — Расширение
+### Шаг 5 — Meeting Capture (отдельный сервис)
+- **`services/meeting-capture`** — отдельный деплой-юнит, **не на тест-VPS с лёгкими агентами** (Chromium + аудио-захват, CPU/RAM-ёмкий, пул воркеров).
+- Dispatcher (state machine) → Bot (Playwright/Chromium join+record) → Transcription (SpeechKit RU / Whisper + диаризация).
+- Тулзы для оркестратора: `schedule_meeting_bot(url)`, `get_meeting_transcript(meeting_id)`; транскрипт → `call_agent:meeting_summarizer`.
+- Новые таблицы: `meetings`, `transcripts`. Аудио — в **S3** (см. ниже).
+- MVP-страховка: ручная загрузка аудио/транскрипта работает уже с Шага 2.
+
+### Шаг 6 — Расширение
 - `Correspondence Analyzer`, `Analytics Agent` — новые классы агентов.
 - `tracker_snapshots` — read-модель: cron тянет story points / счётчики из Трекера → метрики, лидерборд, burndown.
+
+### Хранилище файлов (S3) — для Meeting Capture и вложений
+Появляется на Шаге 5 (раньше файлы не нужны — всё в Postgres JSONB).
+- **Что хранить:** аудиозаписи встреч (тяжёлые, бинарные), при необходимости — экспортируемые отчёты/вложения.
+- **Где:** **Yandex Object Storage** (S3-совместимый, родной для стека) или MinIO для локалки/on-prem (152-ФЗ).
+- **Как:** клиент в `core/storage.py` (boto3/aioboto3, S3-совместимый API). В БД (`recordings`/`transcripts`) хранится только **ключ объекта**, не сам файл.
+- **Доступ:** pre-signed URL для проигрывания записи в консоли (не отдаём напрямую).
+- **Политика хранения (152-ФЗ):** TTL на аудио — например, удалять после успешной транскрибации или через N дней; конфигурируется per-team.
+- **Конфиг:** `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` в `.env` (отдельная секция в `config.py`).
 
 ### Будущее
 - **RBAC**: `users`, `roles`, `role_bindings` (user_id, role, scope_type, scope_id). 4 роли из `06_org_roles.md`.
@@ -430,13 +555,16 @@ flowchart LR
 
 ## 11. Открытые развилки (требуют решения)
 
-1. **Источник транскриптов встреч** — Telemost API / запись + Whisper / ручная вставка. Определяет триггер Meeting Summarizer. *Рекомендация для старта: ручная вставка.*
+1. **Источник транскриптов встреч** — Telemost-бот / запись + STT / ручная вставка. *Рекомендация для старта: ручная вставка (Шаг 2), бот позже (Шаг 5).*
 2. **Code-first vs control-plane** — рекомендован гибрид (§4). Подтвердить.
 3. **Когда вводить RBAC** — рекомендация: только при выходе за пределы одной тестовой команды.
 4. **Чистка `langchain_checkpoints`** — таблица не используется, удалить в следующей миграции.
+5. **S3-провайдер** — Yandex Object Storage (прод, родной для стека) vs MinIO (локалка/on-prem). Рекомендация: абстракция через S3-совместимый клиент, провайдер — через конфиг.
+6. **Фронтенд-стек** — React vs Vue для `web-ui`; нужен ли SSR (вероятно нет — internal-инструмент).
+7. **STT-движок** — SpeechKit (качество RU + диаризация + on-prem) vs Whisper (self-hosted, дешевле). Рекомендация: SpeechKit, субтитры Телемоста как дешёвый источник где есть.
 
 ---
 
 ## 12. Сводка одним абзацем
 
-Фундамент платформы и самый сложный механизм (автономия уровня 2 с human-in-the-loop) **готовы и работают**. Текущая БД-схема покрывает **~70% будущих шагов** без изменений — критичный layered config уже заложен правильно. Ближайшая ценность — **замкнуть демо через Telegram и добавить Meeting Summarizer** (ядро продукта), затем проактивные алерты и дашборд. Тяжёлые элементы видения (networked A2A, LangGraph, LiteLLM) сознательно заменены на более лёгкие эквиваленты — и это правильно для текущего масштаба; они добавляются только при реальной потребности. Новые таблицы нужны лишь для RBAC и памяти — а это «будущее», не ближайшие шаги.
+Фундамент платформы и самый сложный механизм (автономия уровня 2 с human-in-the-loop) **готовы и работают**. Текущая БД-схема покрывает **~70% будущих шагов** без изменений — критичный layered config уже заложен правильно. Целевая система — **три независимые плоскости** поверх общего `core` и одной БД: рантайм агентов (`platform-api` + `pm-orchestrator`), консоль (`console-api` + `web-ui` — отдельно от платформы, со своим auth/RBAC), и захват встреч (`meeting-capture` — отдельный тяжёлый сервис с S3 для аудио). Ближайшая ценность — **замкнуть демо через Telegram и добавить Meeting Summarizer** (на ручном транскрипте, без тяжёлого бота), затем проактивные алерты, консоль и только потом — полный Telemost-захват. Тяжёлые элементы видения (networked A2A, LangGraph, LiteLLM) сознательно заменены на лёгкие эквиваленты и добавляются только при реальной потребности. Новые таблицы нужны лишь изолированным подсистемам (GUI-auth, Meeting Capture, метрики, RBAC, память), а файловое хранилище (S3) появляется только с захватом встреч на Шаге 5.
