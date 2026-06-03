@@ -21,10 +21,8 @@ os.environ.setdefault("TRACKER_ORG_ID", "stub")
 from core.agent import BaseAgent, LLMSettings  # noqa: E402
 from core.bot import BaseBot  # noqa: E402
 from core.entry_point import EntryPoint  # noqa: E402
-from core.llm import Message  # noqa: E402
 from core.registry import get_bot_registry  # noqa: E402
 from core.tools import platform_tool  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # 1. Define tools
