@@ -15,6 +15,17 @@ core = { workspace = true }
 [tool.hatch.build.targets.wheel]
 packages = ["src/platform_api"]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.25",
+    "pytest-mock>=3.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
