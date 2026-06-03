@@ -18,6 +18,7 @@ from core import (
     config,
     db,
     entry_point,
+    react,
     exceptions,
     llm,
     logging,
@@ -124,6 +125,7 @@ from core.prompts import (
     format_error_message,
     format_tool_descriptions,
 )
+from core.react import AgentResult, PendingConfirm, ReActRunner
 from core.registry import BotRegistry, get_bot_registry
 from core.tools import (
     Tool,
@@ -155,6 +157,10 @@ __all__ = [
     "EntryPoint",
     "BotRegistry",
     "get_bot_registry",
+    "react",
+    "ReActRunner",
+    "AgentResult",
+    "PendingConfirm",
     "Config",
     "DatabaseConfig",
     "YandexConfig",
