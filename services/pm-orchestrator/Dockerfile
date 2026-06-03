@@ -18,6 +18,4 @@ COPY --from=builder /app/.venv .venv
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-COPY services/pm-orchestrator/src ./src
-
-CMD ["python", "-m", "pm_orchestrator"]
+CMD ["uvicorn", "pm_orchestrator.rpc:app", "--host", "0.0.0.0", "--port", "8001"]

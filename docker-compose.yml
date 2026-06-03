@@ -14,32 +14,12 @@ services:
       timeout: 5s
       retries: 5
 
-  platform-api:
-    build:
-      context: .
-      dockerfile: services/platform-api/Dockerfile
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
-      YC_API_KEY: ${YC_API_KEY}
-      YC_FOLDER_ID: ${YC_FOLDER_ID}
-      TRACKER_TOKEN: ${TRACKER_TOKEN}
-      TRACKER_ORG_ID: ${TRACKER_ORG_ID}
-      TRACKER_ORG_TYPE: ${TRACKER_ORG_TYPE:-360}
-      TRACKER_QUEUE: ${TRACKER_QUEUE:-TEST}
-      ENVIRONMENT: ${ENVIRONMENT}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    depends_on:
-      postgres:
-        condition: service_healthy
-
   pm-orchestrator:
     build:
       context: .
       dockerfile: services/pm-orchestrator/Dockerfile
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       YC_API_KEY: ${YC_API_KEY}
       YC_FOLDER_ID: ${YC_FOLDER_ID}
       TRACKER_TOKEN: ${TRACKER_TOKEN}
@@ -48,9 +28,22 @@ services:
       TRACKER_QUEUE: ${TRACKER_QUEUE:-TEST}
       ENVIRONMENT: ${ENVIRONMENT}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8001:8001"
+
+  platform-api:
+    build:
+      context: .
+      dockerfile: services/platform-api/Dockerfile
+    restart: unless-stopped
+    environment:
+      ORCHESTRATOR_URL: http://pm-orchestrator:8001
+      ENVIRONMENT: ${ENVIRONMENT}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      - pm-orchestrator
 
 volumes:
   postgres_data:

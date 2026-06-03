@@ -4,11 +4,21 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "core",
-    "langgraph>=0.2",
-    "langchain-community>=0.2",
-    "pydantic-settings>=2.0",
-    "litellm>=1.40",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.0",
 ]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.25",
+    "pytest-mock>=3.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [tool.uv.sources]
 core = { workspace = true }

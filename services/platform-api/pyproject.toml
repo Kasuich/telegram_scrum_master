@@ -4,13 +4,16 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "core",
+    "pm-orchestrator",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.29",
     "pydantic-settings>=2.0",
+    "httpx>=0.25",
 ]
 
 [tool.uv.sources]
 core = { workspace = true }
+pm-orchestrator = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/platform_api"]
