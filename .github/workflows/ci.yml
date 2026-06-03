@@ -31,4 +31,4 @@ jobs:
         run: uv run ruff format --check .
 
       - name: Run tests
-        run: uv run pytest packages/core/tests/unit --tb=short -q
+        run: uv run pytest packages/core/tests/unit services/platform-api/tests --tb=short -q
