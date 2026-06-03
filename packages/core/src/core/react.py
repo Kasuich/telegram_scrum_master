@@ -184,7 +184,10 @@ class ReActRunner:
             except Exception as exc:
                 state["steps"].append(_step("tool_error", tool_name=tool_name, error=str(exc)))
                 await self._update_action_status(confirm_id, "failed")
-                feedback = f"Инструмент «{tool_name}» завершился с ошибкой: {exc}. Сообщи об ошибке пользователю."
+                feedback = (
+                    f"Инструмент «{tool_name}» завершился с ошибкой: {exc}. "
+                    "Сообщи об ошибке пользователю."
+                )
         else:
             state["steps"].append(_step("confirm_rejected", tool_name=tool_name))
             await self._update_action_status(confirm_id, "failed")
@@ -239,7 +242,9 @@ class ReActRunner:
                 err = f"Tool '{tool_call.name}' is not registered"
                 logger.warning("Agent %s: %s", self.agent.name, err)
                 steps.append(_step("tool_error", tool_name=tool_call.name, error=err))
-                messages.append({"role": "user", "content": f"Ошибка: {err}. Сообщи об этом пользователю."})
+                messages.append(
+                    {"role": "user", "content": f"Ошибка: {err}. Сообщи об этом пользователю."}
+                )
                 continue
 
             tool = registry.get(tool_call.name)
