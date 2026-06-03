@@ -155,14 +155,21 @@ class BaseAgent:
                 response = await client.complete(messages, tools=tool_schemas or None)
                 logger.debug(
                     "Agent '%s' used model '%s' (attempt %d/%d)",
-                    self.name, llm_cfg.model, idx + 1, len(configs),
+                    self.name,
+                    llm_cfg.model,
+                    idx + 1,
+                    len(configs),
                 )
                 return response, idx + 1
             except LLMError as exc:
                 last_error = exc
                 logger.warning(
                     "Agent '%s': model '%s' failed (attempt %d/%d): %s",
-                    self.name, llm_cfg.model, idx + 1, len(configs), exc,
+                    self.name,
+                    llm_cfg.model,
+                    idx + 1,
+                    len(configs),
+                    exc,
                 )
             finally:
                 await client.close()
@@ -209,8 +216,7 @@ class BaseAgent:
         tool_calls_out: list[dict[str, Any]] | None = None
         if response.tool_calls:
             tool_calls_out = [
-                {"name": tc.name, "arguments": tc.arguments}
-                for tc in response.tool_calls
+                {"name": tc.name, "arguments": tc.arguments} for tc in response.tool_calls
             ]
 
         return AgentResponse(

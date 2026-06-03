@@ -67,10 +67,7 @@ class BaseBot:
         BotRegistry().register(self)
 
     def __repr__(self) -> str:
-        return (
-            f"BaseBot(bot_id={self.bot_id!r}, name={self.name!r}, "
-            f"platforms={self.platforms!r})"
-        )
+        return f"BaseBot(bot_id={self.bot_id!r}, name={self.name!r}, platforms={self.platforms!r})"
 
 
 __all__ = [
