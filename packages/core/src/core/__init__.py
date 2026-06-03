@@ -18,13 +18,13 @@ from core import (
     config,
     db,
     entry_point,
-    react,
     exceptions,
     llm,
     logging,
     metrics,
     models,
     prompts,
+    react,
     registry,
     tools,
 )
@@ -127,6 +127,13 @@ from core.prompts import (
 )
 from core.react import AgentResult, PendingConfirm, ReActRunner
 from core.registry import BotRegistry, get_bot_registry
+from core.tools import (
+    Tool,
+    ToolParameter,
+    ToolRegistry,
+    get_registry,
+    platform_tool,
+)
 from core.tracker import TrackerClient, TrackerError
 from core.tracker_tools import (
     tracker_close_issue,
@@ -135,13 +142,6 @@ from core.tracker_tools import (
     tracker_get_issue,
     tracker_search_issues,
     tracker_update_issue,
-)
-from core.tools import (
-    Tool,
-    ToolParameter,
-    ToolRegistry,
-    get_registry,
-    platform_tool,
 )
 
 __all__ = [

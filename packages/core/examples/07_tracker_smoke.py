@@ -22,13 +22,14 @@ for line in Path(".env").read_text().splitlines():
     k, _, v = line.partition("=")
     os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
-from core.config import get_config
-from core.tracker import TrackerClient, TrackerError
+from core.config import get_config  # noqa: E402
+from core.tracker import TrackerClient, TrackerError  # noqa: E402
 
 
 async def _detect_org_type(token: str, org_id: str) -> str:
     """Auto-detect correct org header type."""
     import httpx
+
     async with httpx.AsyncClient(timeout=10) as client:
         for org_type in ("cloud", "360"):
             hdr = "X-Cloud-Org-ID" if org_type == "cloud" else "X-Org-ID"
