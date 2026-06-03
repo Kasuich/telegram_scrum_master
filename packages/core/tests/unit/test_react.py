@@ -252,7 +252,7 @@ class TestAutoExecute:
         assert len(calls_made) == 2
         second_messages = calls_made[1]
         texts = [m.get("text", "") for m in second_messages]
-        assert any("Tool 'search_issues' returned" in t for t in texts)
+        assert any("search_issues" in t for t in texts)
 
 
 # ---------------------------------------------------------------------------

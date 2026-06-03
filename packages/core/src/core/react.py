@@ -76,13 +76,16 @@ def _step(kind: str, **kwargs: Any) -> dict[str, Any]:
 
 
 def _tool_result_message(tool_name: str, result: Any) -> str:
-    return f"Tool '{tool_name}' returned: {result}"
+    return (
+        f"Инструмент «{tool_name}» выполнен успешно. Результат: {result}. "
+        "Сообщи пользователю о результате кратко и по-русски."
+    )
 
 
 def _tool_rejected_message(tool_name: str) -> str:
     return (
-        f"Tool '{tool_name}' was rejected by the user. "
-        "Explain what you wanted to do and ask if they'd like to proceed differently."
+        f"Пользователь отклонил вызов инструмента «{tool_name}». "
+        "Объясни, что хотел сделать, и спроси как поступить иначе."
     )
 
 
@@ -181,14 +184,13 @@ class ReActRunner:
             except Exception as exc:
                 state["steps"].append(_step("tool_error", tool_name=tool_name, error=str(exc)))
                 await self._update_action_status(confirm_id, "failed")
-                feedback = f"Tool '{tool_name}' failed: {exc}"
+                feedback = f"Инструмент «{tool_name}» завершился с ошибкой: {exc}. Сообщи об ошибке пользователю."
         else:
             state["steps"].append(_step("confirm_rejected", tool_name=tool_name))
             await self._update_action_status(confirm_id, "failed")
             feedback = _tool_rejected_message(tool_name)
 
-        # Inject assistant "I called the tool" + result back into history
-        state["messages"].append({"role": "assistant", "content": f"[Calling tool '{tool_name}']"})
+        # Feed tool result back as user message so LLM can summarise for the user
         state["messages"].append({"role": "user", "content": feedback})
 
         await self._resolve_confirm(confirm_id, approved)
@@ -237,10 +239,7 @@ class ReActRunner:
                 err = f"Tool '{tool_call.name}' is not registered"
                 logger.warning("Agent %s: %s", self.agent.name, err)
                 steps.append(_step("tool_error", tool_name=tool_call.name, error=err))
-                messages.append(
-                    {"role": "assistant", "content": f"[Tried to use '{tool_call.name}']"}
-                )
-                messages.append({"role": "user", "content": f"Error: {err}"})
+                messages.append({"role": "user", "content": f"Ошибка: {err}. Сообщи об этом пользователю."})
                 continue
 
             tool = registry.get(tool_call.name)
@@ -316,7 +315,6 @@ class ReActRunner:
                 )
                 feedback = f"Tool '{tool_call.name}' failed: {err_msg}"
 
-            messages.append({"role": "assistant", "content": f"[Called tool '{tool_call.name}']"})
             messages.append({"role": "user", "content": feedback})
 
         # Max iterations reached
