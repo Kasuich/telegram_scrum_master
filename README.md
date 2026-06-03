@@ -1,166 +1,207 @@
 # PM Agent Platform
 
-Мульти-агентная платформа для автоматизации работы Project Manager.
-Агенты ведут Яндекс Трекер, делают саммари встреч, анализируют переписку и присылают алерты.
+Мультиагентная платформа для автоматизации работы Project Manager.
+Агент понимает запросы на естественном языке, работает с Яндекс Трекером и запрашивает подтверждение перед рискованными действиями.
 
-→ [Полное описание платформы и архитектура](docs/README.md)
+**Документация:**
+- [Архитектура системы](docs/ARCHITECTURE.md)
+- [Как добавить нового агента](docs/ADDING_AGENTS.md)
 
 ---
 
-## Быстрый старт для разработчика
+## Быстрый старт
 
 ### Что нужно
 
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) — менеджер зависимостей Python
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) — менеджер зависимостей
 - Docker + Docker Compose
-- Доступ к Yandex AI Studio (API key + folder ID)
+- Yandex AI Studio: API key + folder ID
+- Яндекс Трекер: OAuth token + org ID
 
-### 1. Клонировать и установить зависимости
+### 1. Клонировать и установить
 
 ```bash
 git clone https://github.com/Artem216/digital_breakthrough_2026.git
 cd digital_breakthrough_2026
 git checkout develop
-
 uv sync --all-packages
 ```
 
-### 2. Настроить окружение
+### 2. Настроить переменные
 
 ```bash
-cp .env.example .env.test
+cp packages/core/.env.example packages/core/.env
 ```
 
-Открыть `.env.test` и заполнить:
+Заполнить в `packages/core/.env`:
 
 ```env
-DB_USER=pm_agent_test
-DB_NAME=pm_agent_test
-DB_PASSWORD=любой_пароль
+# Yandex Cloud (LLM)
+YC_API_KEY=ваш_ключ
+YC_FOLDER_ID=b1g...
 
-YC_API_KEY=<ключ из Yandex AI Studio>
-YC_FOLDER_ID=<ID фолдера в Яндекс Облаке>
+# Яндекс Трекер
+TRACKER_TOKEN=ваш_oauth_token
+TRACKER_ORG_ID=ваш_org_id
+TRACKER_ORG_TYPE=cloud          # или 360 для Яндекс 360
+TRACKER_QUEUE=DARKHORSE         # ключ вашей очереди
 
-ENVIRONMENT=test
+# БД (для локального запуска без Docker)
+DATABASE_URL=postgresql+asyncpg://pm_agent:pm_agent@localhost:5432/pm_agent
+
+ENVIRONMENT=development
 LOG_LEVEL=DEBUG
 ```
 
-**Где взять YC_API_KEY:**
-1. Открыть [Yandex AI Studio](https://console.yandex.cloud/) → API keys
-2. Создать ключ, скопировать
-
-**Где взять YC_FOLDER_ID:**
-1. Консоль Яндекс Облака → выбрать фолдер → в URL: `folders/b1g...` — это и есть ID
-
-### 3. Запустить локально
+### 3. Запустить локально (без Docker)
 
 ```bash
+# Терминал 1 — оркестратор (порт 8001)
+uv run --package pm-orchestrator uvicorn pm_orchestrator.rpc:app --reload --port 8001
+
+# Терминал 2 — HTTP API (порт 8000)
+uv run --package platform-api uvicorn platform_api.main:app --reload --port 8000
+```
+
+### 4. Запустить в Docker
+
+```bash
+# Заполнить .env.test (скопировать из .env.example)
+cp .env.example .env.test
+
 docker compose -f docker-compose.yml -f docker-compose.test.yml --env-file .env.test up --build
 ```
 
-Сервисы поднимутся на:
+Сервисы:
 
 | Сервис | URL |
-|---|---|
-| Platform API | http://localhost:8100 |
-| Platform API docs | http://localhost:8100/docs |
-| PostgreSQL | localhost:5433 |
+|--------|-----|
+| Platform API | http://localhost:8000 |
+| Swagger UI | http://localhost:8000/docs |
+| PM Orchestrator | http://localhost:8001 |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 |
 
-Проверить что всё работает:
+---
+
+## Использование API
+
+### Отправить сообщение агенту
+
 ```bash
-curl http://localhost:8100/health
-# {"status": "ok"}
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "найди открытые задачи", "session_id": "demo"}'
 ```
 
-### 4. Остановить
+### Создать задачу (вызовет confirm)
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.test.yml down
+# 1. Отправляем запрос — получаем pending_confirm
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "заведи задачу: починить логин, приоритет critical", "session_id": "demo"}'
+
+# В ответе: {"pending_confirm": {"confirm_id": "abc123", "prompt": "...", ...}}
+
+# 2. Подтверждаем
+curl -X POST http://localhost:8000/confirm/abc123 \
+  -H "Content-Type: application/json" \
+  -d '{"approved": true}'
 ```
 
-Удалить данные БД тоже:
+### Конкретный агент
+
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.test.yml down -v
+curl -X POST http://localhost:8000/agents/pm_agent/chat \
+  -d '{"message": "привет", "session_id": "s1"}'
+```
+
+### Список агентов
+
+```bash
+curl http://localhost:8000/agents
+# [{"name": "pm_agent", "description": "..."}]
+```
+
+### Лог действий
+
+```bash
+curl "http://localhost:8000/actions?session_id=demo"
 ```
 
 ---
 
-## Как выкатить изменения на тест-сервер
+## Добавить нового агента
 
-### Флоу
+1. Создать файл `services/pm-orchestrator/src/pm_orchestrator/agents/my_agent.py`
+2. Определить класс, унаследованный от `BaseAgent`
+3. Перезапустить оркестратор
 
-```
-1. Сделать ветку от develop
-   git checkout develop && git pull
-   git checkout -b feature/my-feature
+Подробный гайд: [docs/ADDING_AGENTS.md](docs/ADDING_AGENTS.md)
 
-2. Разработать, закоммитить
+---
 
-3. Запушить и открыть PR в develop
-   git push -u origin feature/my-feature
-   gh pr create --base develop
+## Разработка
 
-4. CI проверит: lint + тесты (автоматически)
-
-5. Смержить PR в develop
-
-6. GitHub Actions автоматически задеплоит на тест-сервер
-   → через ~2 минуты изменения доступны по адресу:
-   http://158.160.200.44:8100
-```
-
-### CI/CD пайплайн
-
-```
-PR открыт / push в develop
-        │
-        ▼
-┌─────────────────┐
-│  CI (ci.yml)    │
-│  ─────────────  │
-│  uv sync        │
-│  ruff check     │  ← линтер
-│  ruff format    │  ← форматирование
-│  pytest         │  ← тесты
-└────────┬────────┘
-         │ только если зелёный
-         ▼
-┌────────────────────────────┐
-│  Deploy → Test             │
-│  (deploy-test.yml)         │
-│  ──────────────────────    │
-│  rsync кода на VPS         │  ← GitHub Actions → сервер
-│  записать .env из Secrets  │  ← секреты НЕ хранятся на сервере
-│  docker compose up --build │  ← пересобирает только изменившееся
-│  docker compose ps         │  ← проверка что поднялось
-└────────────────────────────┘
-```
-
-### Просмотр статуса деплоя
+### Тесты
 
 ```bash
-# Последние runs
-gh run list --repo Artem216/digital_breakthrough_2026 --limit 5
+# Все тесты
+uv run pytest packages/core/tests/unit services/ -v
 
-# Следить за текущим run в реальном времени
-gh run watch --repo Artem216/digital_breakthrough_2026
+# С покрытием
+uv run pytest packages/core/tests/unit --cov=core
+
+# Smoke-тесты на реальный YandexGPT (нужны ключи)
+cd packages/core && python -m pytest tests/smoke/ -v
 ```
 
-### Посмотреть логи на сервере
+### Линтер и форматирование
 
 ```bash
-ssh -i ~/.ssh/yc_vps kasuich@158.160.200.44
+uv run ruff check .          # проверить
+uv run ruff check --fix .    # автофикс
+uv run ruff format .         # форматировать
+```
 
-# Состояние контейнеров
-sudo docker ps
+### Добавить зависимость
 
-# Логи конкретного сервиса
-sudo docker logs test-platform-api-1 -f
-sudo docker logs test-pm-orchestrator-1 -f
+```bash
+uv add --package pm-orchestrator requests
+uv add --package platform-api somelib
+```
 
-# Все логи
-sudo docker compose -f /opt/pm-agent/test/docker-compose.yml \
-  -f /opt/pm-agent/test/docker-compose.test.yml logs -f
+---
+
+## Деплой на тест-сервер
+
+```
+feature/* → PR → develop → GitHub Actions → тест-сервер (автоматически)
+```
+
+**CI** (при каждом push/PR):
+- `ruff check` + `ruff format --check`
+- `pytest packages/core/tests/unit services/`
+
+**CD** (при merge в develop):
+- rsync кода на VPS
+- `docker compose up --build`
+
+### Статус деплоя
+
+```bash
+gh run list --limit 5
+gh run watch
+```
+
+### Логи на сервере
+
+```bash
+ssh user@your-vps
+
+docker logs test-pm-orchestrator-1 -f
+docker logs test-platform-api-1 -f
 ```
 
 ---
@@ -170,102 +211,57 @@ sudo docker compose -f /opt/pm-agent/test/docker-compose.yml \
 ```
 digital_breakthrough_2026/
 │
-├── packages/
-│   └── core/                    # Общая библиотека (модели БД, клиенты, утилиты)
-│       └── src/core/
+├── packages/core/               # Общая библиотека
+│   └── src/core/
+│       ├── agent.py             # BaseAgent, LLMSettings
+│       ├── react.py             # ReActRunner (LLM → tool → confirm)
+│       ├── llm.py               # YandexGPT клиент
+│       ├── tools.py             # @platform_tool декоратор
+│       ├── tracker.py           # Яндекс Трекер клиент
+│       ├── tracker_tools.py     # Tracker инструменты для агентов
+│       └── models.py            # SQLAlchemy ORM (11 таблиц)
 │
 ├── services/
-│   ├── platform-api/            # FastAPI сервер — REST + A2A endpoint
-│   │   ├── src/platform_api/
-│   │   ├── Dockerfile
-│   │   └── pyproject.toml
+│   ├── pm-orchestrator/ :8001   # Мозг: агенты + JSON-RPC сервер
+│   │   └── src/pm_orchestrator/
+│   │       ├── agents/          # ← Добавить нового агента сюда
+│   │       │   └── pm_agent.py
+│   │       ├── orchestrator.py  # OrchestratorService
+│   │       └── rpc.py           # JSON-RPC 2.0 endpoint
 │   │
-│   └── pm-orchestrator/         # PM Orchestrator агент (LangGraph)
-│       ├── src/pm_orchestrator/
-│       ├── Dockerfile
-│       └── pyproject.toml
+│   └── platform-api/ :8000      # Тонкий HTTP транспорт
+│       └── src/platform_api/
+│           ├── main.py          # FastAPI роуты
+│           └── rpc_client.py    # Клиент оркестратора
 │
-├── tests/                       # Тесты (pytest)
-│
+├── monitoring/                  # Prometheus + Grafana + Alertmanager
 ├── docs/
-│   └── README.md                # Подробная архитектура и описание платформы
+│   ├── ARCHITECTURE.md          # Архитектура + диаграммы
+│   └── ADDING_AGENTS.md         # Гайд по добавлению агентов
 │
-├── .github/
-│   └── workflows/
-│       ├── ci.yml               # Линтер + тесты на каждый PR
-│       └── deploy-test.yml      # Деплой на тест-сервер при push в develop
-│
-├── docker-compose.yml           # Базовая конфигурация (prod)
-├── docker-compose.test.yml      # Тест-оверрайды (порты 8100, debug)
-├── pyproject.toml               # uv workspace, ruff, pytest
-├── uv.lock                      # Зафиксированные зависимости
-└── .env.example                 # Шаблон для .env.test
+├── docker-compose.yml
+├── docker-compose.test.yml
+└── .github/workflows/
+    ├── ci.yml                   # lint + test
+    └── deploy-test.yml          # деплой на VPS
 ```
 
 ---
 
-## Ветки
-
-| Ветка | Назначение |
-|---|---|
-| `main` | Продакшн (пока пустой) |
-| `develop` | Тестовая среда — всё, что автоматически деплоится на сервер |
-| `feature/*` | Фича-ветки → PR → develop |
-
----
-
-## GitHub Secrets (для CI/CD)
-
-Настроены в репозитории → Settings → Secrets and variables → Actions:
+## GitHub Secrets
 
 | Secret | Описание |
-|---|---|
+|--------|---------|
 | `VPS_HOST` | IP тест-сервера |
-| `VPS_USER` | Пользователь `deploy` на сервере |
-| `VPS_SSH_KEY` | Приватный SSH ключ для деплоя |
+| `VPS_USER` | Пользователь на сервере |
+| `VPS_SSH_KEY` | SSH ключ для деплоя |
 | `TEST_DB_PASSWORD` | Пароль PostgreSQL |
 | `YC_API_KEY` | Yandex AI Studio API key |
 | `YC_FOLDER_ID` | Yandex Cloud folder ID |
-
----
-
-## Локальная разработка без Docker
-
-```bash
-# Установить зависимости
-uv sync --all-packages
-
-# Запустить только PostgreSQL
-docker compose -f docker-compose.yml -f docker-compose.test.yml --env-file .env.test up postgres -d
-
-# Запустить platform-api напрямую
-export $(cat .env.test | xargs)
-uv run --package platform-api uvicorn platform_api.main:app --reload --port 8100
-
-# Запустить pm-orchestrator напрямую
-uv run --package pm-orchestrator python -m pm_orchestrator
-```
-
----
-
-## Полезные команды
-
-```bash
-# Запустить линтер
-uv run ruff check .
-
-# Автофикс линтера
-uv run ruff check --fix .
-
-# Форматирование
-uv run ruff format .
-
-# Тесты
-uv run pytest -v
-
-# Обновить зависимости
-uv lock --upgrade
-
-# Добавить зависимость в сервис
-uv add --package platform-api httpx
-```
+| `TRACKER_TOKEN` | Яндекс Трекер OAuth token |
+| `TRACKER_ORG_ID` | ID организации Трекера |
+| `TRACKER_ORG_TYPE` | `cloud` или `360` |
+| `TRACKER_QUEUE` | Ключ очереди, напр. `DARKHORSE` |
+| `TELEGRAM_BOT_TOKEN` | Токен Telegram бота (для алертов) |
+| `TELEGRAM_CHAT_ID` | ID чата для алертов |
+| `GRAFANA_USER` / `GRAFANA_PASSWORD` | Логин Grafana |
