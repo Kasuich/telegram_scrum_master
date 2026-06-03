@@ -12,7 +12,7 @@ Provides foundational components for multi-agent platform:
 
 __version__ = "0.1.0"
 
-from core import config, db, exceptions, llm, logging, metrics, models, prompts, tools
+from core import agent, bot, config, db, entry_point, exceptions, llm, logging, metrics, models, prompts, registry, tools
 from core.config import (
     AppConfig,
     Config,
@@ -110,18 +110,37 @@ from core.tools import (
     get_registry,
     platform_tool,
 )
+from core.agent import (
+    AgentResponse,
+    BaseAgent,
+    LLMSettings,
+)
+from core.bot import BaseBot
+from core.entry_point import EntryPoint
+from core.registry import BotRegistry, get_bot_registry
 
 __all__ = [
     "__version__",
+    "agent",
+    "bot",
     "config",
     "db",
+    "entry_point",
     "exceptions",
     "llm",
     "logging",
     "metrics",
     "models",
     "prompts",
+    "registry",
     "tools",
+    "LLMSettings",
+    "BaseAgent",
+    "AgentResponse",
+    "BaseBot",
+    "EntryPoint",
+    "BotRegistry",
+    "get_bot_registry",
     "Config",
     "DatabaseConfig",
     "YandexConfig",
