@@ -42,6 +42,7 @@ class PMAgent(BaseAgent):
         "tracker_comment_issue",
         "tracker_close_issue",
         "call_agent",
+        "schedule_task",
     ]
     llm_configs = [
         LLMSettings(model="gpt-oss-120b", temperature=0.3),

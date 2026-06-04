@@ -11,7 +11,9 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from core.models import Organization, Team
+from sqlalchemy import select
+
+from core.models import AgentInstance, Organization, Team
 
 
 async def ensure_default_team(
@@ -55,4 +57,39 @@ async def ensure_default_team(
     return team
 
 
-__all__ = ["ensure_default_team"]
+async def ensure_agent_instances(
+    session: Any,
+    team_id: str,
+    agent_names: list[str],
+) -> dict[str, AgentInstance]:
+    """Idempotently create AgentInstance rows for each agent name.
+
+    Returns a mapping ``agent_name → AgentInstance``. Used so that
+    ``ScheduledJob.agent_instance_id`` (NOT NULL FK) can always be resolved.
+    Does not commit — the caller owns the transaction.
+    """
+    tid = uuid.UUID(team_id)
+    result: dict[str, AgentInstance] = {}
+
+    for name in agent_names:
+        stmt = select(AgentInstance).where(
+            AgentInstance.team_id == tid,
+            AgentInstance.name == name,
+        )
+        row = (await session.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            row = AgentInstance(
+                id=uuid.uuid4(),
+                team_id=tid,
+                name=name,
+                overlay={},
+                enabled=True,
+            )
+            session.add(row)
+            await session.flush()
+        result[name] = row
+
+    return result
+
+
+__all__ = ["ensure_default_team", "ensure_agent_instances"]

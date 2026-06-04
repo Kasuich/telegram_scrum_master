@@ -43,11 +43,13 @@ async def lifespan(app: FastAPI):
     from core.scheduler import SchedulerDaemon
 
     from pm_orchestrator.tools.call_agent import register_call_agent_tool
+    from pm_orchestrator.tools.schedule_task import register_schedule_task_tool
 
     _svc.discover_agents()
     _svc.configure_persistence()
     await _svc.ensure_schema_and_seed()
     register_call_agent_tool(_svc)
+    register_schedule_task_tool(_svc)
 
     scheduler_task = None
     if get_config().app.scheduler_enabled:
