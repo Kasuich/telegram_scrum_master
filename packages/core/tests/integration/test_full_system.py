@@ -20,41 +20,31 @@ ENV = {
     "TRACKER_ORG_ID": "12345678901234567890",
 }
 
-# foundationModels v1 format: result.alternatives[].message, string token counts
+# OpenAI Responses API format: output[] items, integer token counts
 MOCK_LLM_RESPONSE = {
-    "result": {
-        "alternatives": [
-            {
-                "message": {"role": "assistant", "text": "Task created successfully."},
-                "status": "ALTERNATIVE_STATUS_FINAL",
-            }
-        ],
-        "usage": {"inputTokens": "50", "completionTokens": "20", "totalTokens": "70"},
-    }
+    "output": [
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Task created successfully."}],
+        }
+    ],
+    "output_text": "Task created successfully.",
+    "usage": {"input_tokens": 50, "output_tokens": 20, "total_tokens": 70},
+    "status": "completed",
 }
 
 MOCK_TOOL_CALL_RESPONSE = {
-    "result": {
-        "alternatives": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "toolCallList": {
-                        "toolCalls": [
-                            {
-                                "functionCall": {
-                                    "name": "create_task",
-                                    "arguments": {"title": "Fix bug", "queue": "TEST"},
-                                }
-                            }
-                        ]
-                    },
-                },
-                "status": "ALTERNATIVE_STATUS_TOOL_CALLS",
-            }
-        ],
-        "usage": {"inputTokens": "40", "completionTokens": "15", "totalTokens": "55"},
-    }
+    "output": [
+        {
+            "type": "function_call",
+            "call_id": "fc_1",
+            "name": "create_task",
+            "arguments": '{"title": "Fix bug", "queue": "TEST"}',
+        }
+    ],
+    "usage": {"input_tokens": 40, "output_tokens": 15, "total_tokens": 55},
+    "status": "completed",
 }
 
 

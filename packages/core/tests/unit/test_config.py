@@ -116,7 +116,7 @@ class TestLLMConfig:
     def test_default_values(self) -> None:
         """LLM config with all defaults."""
         config = LLMConfig()
-        assert config.yandexgpt_model == "yandexgpt"
+        assert config.yandexgpt_model == "gpt-oss-120b"
         assert config.yandexgpt_temperature == 0.7
         assert config.yandexgpt_max_tokens == 4000
         assert config.yandexgpt_top_p == 0.9

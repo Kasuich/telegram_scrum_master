@@ -39,47 +39,29 @@ ENV = {
 # ---------------------------------------------------------------------------
 
 MOCK_TEXT_RESPONSE = {
-    "result": {
-        "alternatives": [
-            {
-                "message": {"role": "assistant", "text": "All good!"},
-                "status": "ALTERNATIVE_STATUS_FINAL",
-            }
-        ],
-        "usage": {
-            "inputTokens": "10",
-            "completionTokens": "5",
-            "totalTokens": "15",
-        },
-    }
+    "output": [
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "All good!"}],
+        }
+    ],
+    "output_text": "All good!",
+    "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+    "status": "completed",
 }
 
 MOCK_TOOL_CALL_RESPONSE = {
-    "result": {
-        "alternatives": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "toolCallList": {
-                        "toolCalls": [
-                            {
-                                "functionCall": {
-                                    "name": "my_tool",
-                                    "arguments": {"param": "value"},
-                                }
-                            }
-                        ]
-                    },
-                },
-                "status": "ALTERNATIVE_STATUS_TOOL_CALLS",
-            }
-        ],
-        "usage": {
-            "inputTokens": "20",
-            "completionTokens": "10",
-            "totalTokens": "30",
-        },
-    }
+    "output": [
+        {
+            "type": "function_call",
+            "call_id": "fc_1",
+            "name": "my_tool",
+            "arguments": '{"param": "value"}',
+        }
+    ],
+    "usage": {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30},
+    "status": "completed",
 }
 
 
@@ -152,7 +134,7 @@ def entry_point(agent):
 class TestLLMSettings:
     def test_defaults(self):
         s = LLMSettings()
-        assert s.model == "yandexgpt"
+        assert s.model == "gpt-oss-120b"
         assert s.temperature is None
         assert s.max_tokens is None
 
@@ -199,7 +181,7 @@ class TestBaseAgentClassValidation:
         a = _Agent()
         cfgs = a._effective_llm_configs()
         assert len(cfgs) == 1
-        assert cfgs[0].model == "yandexgpt"
+        assert cfgs[0].model == "gpt-oss-120b"
 
 
 # ---------------------------------------------------------------------------

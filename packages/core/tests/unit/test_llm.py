@@ -33,51 +33,33 @@ ENV = {
 }
 
 # ---------------------------------------------------------------------------
-# Mock API responses (YandexGPT format)
+# Mock API responses (OpenAI Responses API format)
 # ---------------------------------------------------------------------------
 
 MOCK_TEXT_RESPONSE = {
-    "result": {
-        "alternatives": [
-            {
-                "message": {"role": "assistant", "text": "Hello, World!"},
-                "status": "ALTERNATIVE_STATUS_FINAL",
-            }
-        ],
-        "usage": {
-            "inputTokens": "10",
-            "completionTokens": "5",
-            "totalTokens": "15",
-        },
-    }
+    "output": [
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Hello, World!"}],
+        }
+    ],
+    "output_text": "Hello, World!",
+    "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+    "status": "completed",
 }
 
 MOCK_TOOL_CALL_RESPONSE = {
-    "result": {
-        "alternatives": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "toolCallList": {
-                        "toolCalls": [
-                            {
-                                "functionCall": {
-                                    "name": "tracker_create_issue",
-                                    "arguments": {"queue": "TEST", "summary": "Fix bug"},
-                                }
-                            }
-                        ]
-                    },
-                },
-                "status": "ALTERNATIVE_STATUS_TOOL_CALLS",
-            }
-        ],
-        "usage": {
-            "inputTokens": "20",
-            "completionTokens": "10",
-            "totalTokens": "30",
-        },
-    }
+    "output": [
+        {
+            "type": "function_call",
+            "call_id": "fc_1",
+            "name": "tracker_create_issue",
+            "arguments": '{"queue": "TEST", "summary": "Fix bug"}',
+        }
+    ],
+    "usage": {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30},
+    "status": "completed",
 }
 
 
@@ -191,7 +173,7 @@ class TestLLMClientInit:
 
             set_config(None)  # clear cached singleton
             client = LLMClient()
-            assert client.model == "yandexgpt"
+            assert client.model == "gpt-oss-120b"
             assert client.temperature == 0.7
             assert client.max_tokens == 4000
             assert client.timeout == 60
@@ -291,8 +273,8 @@ class TestLLMClientComplete:
             assert isinstance(result, LLMResponse)
             assert result.content == "Hello, World!"
             assert result.tool_calls is None
-            assert result.model == "yandexgpt"
-            assert result.finish_reason == "ALTERNATIVE_STATUS_FINAL"
+            assert result.model == "gpt-oss-120b"
+            assert result.finish_reason == "completed"
 
     @pytest.mark.asyncio
     async def test_text_response_token_usage(self) -> None:

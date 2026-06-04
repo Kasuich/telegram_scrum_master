@@ -43,29 +43,31 @@ ENV = {
 
 def _text_response(text: str) -> dict[str, Any]:
     return {
-        "result": {
-            "alternatives": [{"message": {"role": "assistant", "text": text}, "status": "FINAL"}],
-            "usage": {"inputTokens": "10", "completionTokens": "5", "totalTokens": "15"},
-        }
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text}],
+            }
+        ],
+        "output_text": text,
+        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        "status": "completed",
     }
 
 
 def _tool_call_response(name: str, args: dict[str, Any]) -> dict[str, Any]:
     return {
-        "result": {
-            "alternatives": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "toolCallList": {
-                            "toolCalls": [{"functionCall": {"name": name, "arguments": args}}]
-                        },
-                    },
-                    "status": "TOOL_CALLS",
-                }
-            ],
-            "usage": {"inputTokens": "20", "completionTokens": "10", "totalTokens": "30"},
-        }
+        "output": [
+            {
+                "type": "function_call",
+                "call_id": "fc_1",
+                "name": name,
+                "arguments": json.dumps(args),
+            }
+        ],
+        "usage": {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30},
+        "status": "completed",
     }
 
 

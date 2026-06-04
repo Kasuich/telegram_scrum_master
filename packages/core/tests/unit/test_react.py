@@ -49,34 +49,31 @@ ENV = {
 
 def _text_response(text: str) -> dict[str, Any]:
     return {
-        "result": {
-            "alternatives": [
-                {
-                    "message": {"role": "assistant", "text": text},
-                    "status": "ALTERNATIVE_STATUS_FINAL",
-                }
-            ],
-            "usage": {"inputTokens": "10", "completionTokens": "5", "totalTokens": "15"},
-        }
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text}],
+            }
+        ],
+        "output_text": text,
+        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        "status": "completed",
     }
 
 
 def _tool_call_response(name: str, args: dict[str, Any]) -> dict[str, Any]:
     return {
-        "result": {
-            "alternatives": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "toolCallList": {
-                            "toolCalls": [{"functionCall": {"name": name, "arguments": args}}]
-                        },
-                    },
-                    "status": "ALTERNATIVE_STATUS_TOOL_CALLS",
-                }
-            ],
-            "usage": {"inputTokens": "20", "completionTokens": "10", "totalTokens": "30"},
-        }
+        "output": [
+            {
+                "type": "function_call",
+                "call_id": "fc_1",
+                "name": name,
+                "arguments": json.dumps(args),
+            }
+        ],
+        "usage": {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30},
+        "status": "completed",
     }
 
 
@@ -200,8 +197,8 @@ class TestTextReply:
 
         assert result.reply == "Second reply"
         # Second LLM call should have had the first exchange in history
-        second_call_messages = mock_post.call_args_list[1][1]["json"]["messages"]
-        roles = [m["role"] for m in second_call_messages]
+        second_call_input = mock_post.call_args_list[1][1]["json"]["input"]
+        roles = [m["role"] for m in second_call_input]
         assert "user" in roles
         assert "assistant" in roles
 
@@ -241,7 +238,7 @@ class TestAutoExecute:
         calls_made = []
 
         async def _post_spy(*args, **kwargs):
-            calls_made.append(kwargs.get("json", {}).get("messages", []))
+            calls_made.append(kwargs.get("json", {}).get("input", []))
             if len(calls_made) == 1:
                 return _http_ok(_tool_call_response("search_issues", {"query": "q"}))
             return _http_ok(_text_response("Done"))
@@ -250,8 +247,8 @@ class TestAutoExecute:
             await runner.invoke("Find stuff", "s4")
 
         assert len(calls_made) == 2
-        second_messages = calls_made[1]
-        texts = [m.get("text", "") for m in second_messages]
+        second_input = calls_made[1]
+        texts = [m.get("content", "") for m in second_input]
         assert any("search_issues" in t for t in texts)
 
 
