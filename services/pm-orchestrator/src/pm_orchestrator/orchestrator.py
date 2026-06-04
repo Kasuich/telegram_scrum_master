@@ -93,11 +93,12 @@ class OrchestratorService:
             return
         try:
             from core.db import create_all_tables, get_session
-            from core.seed import ensure_default_team
+            from core.seed import ensure_agent_instances, ensure_default_team
 
             await create_all_tables()
             async with get_session() as session:
                 await ensure_default_team(session, self._team_id)
+                await ensure_agent_instances(session, self._team_id, list(self._runners))
             logger.info("Schema ensured and default team seeded")
         except Exception as exc:
             logger.warning("DB init failed, falling back to in-memory: %s", exc)
