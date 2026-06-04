@@ -20,6 +20,7 @@ get_actions(session_id?, limit?)
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -38,10 +39,23 @@ _svc = OrchestratorService()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from core.config import get_config
+    from core.scheduler import SchedulerDaemon
+
     _svc.discover_agents()
     _svc.configure_persistence()
     await _svc.ensure_schema_and_seed()
+
+    scheduler_task = None
+    if get_config().app.scheduler_enabled:
+        daemon = SchedulerDaemon(_svc)
+        scheduler_task = asyncio.create_task(daemon.run(), name="scheduler")
+
     yield
+
+    if scheduler_task is not None:
+        scheduler_task.cancel()
+        await asyncio.gather(scheduler_task, return_exceptions=True)
 
 
 app = FastAPI(title="PM Orchestrator JSON-RPC", lifespan=lifespan)

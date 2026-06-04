@@ -26,6 +26,7 @@ from core import (
     prompts,
     react,
     registry,
+    scheduler,
     seed,
     tools,
 )
@@ -129,6 +130,7 @@ from core.prompts import (
 )
 from core.react import AgentResult, PendingConfirm, ReActRunner
 from core.registry import BotRegistry, get_bot_registry
+from core.scheduler import SchedulerDaemon, compute_next_run
 from core.seed import ensure_default_team
 from core.tools import (
     Tool,
@@ -161,6 +163,7 @@ __all__ = [
     "models",
     "prompts",
     "registry",
+    "scheduler",
     "seed",
     "tools",
     "LLMSettings",
@@ -201,6 +204,8 @@ __all__ = [
     "close_engine",
     "reset_engine",
     "Checkpointer",
+    "SchedulerDaemon",
+    "compute_next_run",
     "ensure_default_team",
     "Message",
     "ToolCall",
