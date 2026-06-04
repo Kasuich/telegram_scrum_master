@@ -39,6 +39,8 @@ _svc = OrchestratorService()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _svc.discover_agents()
+    _svc.configure_persistence()
+    await _svc.ensure_schema_and_seed()
     yield
 
 

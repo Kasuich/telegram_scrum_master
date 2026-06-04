@@ -26,4 +26,6 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Exclude smoke tests (real API calls) by default; run them with `-m smoke`.
+addopts = "-m 'not smoke'"
 markers = ["smoke: real API calls — skipped by default, run with -m smoke"]

@@ -26,6 +26,7 @@ from core import (
     prompts,
     react,
     registry,
+    seed,
     tools,
 )
 from core.agent import (
@@ -49,6 +50,7 @@ from core.config import (
 from core.db import (
     Checkpointer,
     close_engine,
+    create_all_tables,
     create_db_engine,
     get_engine,
     get_session,
@@ -127,6 +129,7 @@ from core.prompts import (
 )
 from core.react import AgentResult, PendingConfirm, ReActRunner
 from core.registry import BotRegistry, get_bot_registry
+from core.seed import ensure_default_team
 from core.tools import (
     Tool,
     ToolParameter,
@@ -158,6 +161,7 @@ __all__ = [
     "models",
     "prompts",
     "registry",
+    "seed",
     "tools",
     "LLMSettings",
     "BaseAgent",
@@ -192,10 +196,12 @@ __all__ = [
     "get_engine",
     "get_session",
     "get_session_factory",
+    "create_all_tables",
     "health_check",
     "close_engine",
     "reset_engine",
     "Checkpointer",
+    "ensure_default_team",
     "Message",
     "ToolCall",
     "TokenUsage",

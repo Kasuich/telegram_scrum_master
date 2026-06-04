@@ -114,6 +114,20 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         await session.close()
 
 
+async def create_all_tables(engine: AsyncEngine | None = None) -> None:
+    """Create all ORM tables if they don't exist (idempotent).
+
+    Used for bootstrapping the test-VPS / dev databases where Alembic
+    migrations are not run automatically. ``checkfirst`` is implied by
+    ``create_all`` so existing tables and enum types are left untouched.
+    """
+    from core.models import Base
+
+    eng = engine or get_engine()
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
 async def health_check() -> dict[str, Any]:
     """
     Check database connectivity and pool health.
@@ -279,6 +293,7 @@ __all__ = [
     "get_engine",
     "get_session_factory",
     "get_session",
+    "create_all_tables",
     "health_check",
     "close_engine",
     "reset_engine",

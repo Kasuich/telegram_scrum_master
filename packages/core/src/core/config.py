@@ -197,6 +197,14 @@ class AppConfig(BaseSettings):
         description="Service bind port",
     )
 
+    # Default team for single-tenant deployments. When set together with a
+    # database_url, the orchestrator persists actions/traces/confirms under
+    # this team. Read from env var DEFAULT_TEAM_ID.
+    default_team_id: str | None = Field(
+        default=None,
+        description="Default team UUID for DB persistence (single-tenant)",
+    )
+
 
 class RuntimeConfig(BaseSettings):
     """Runtime configuration that can be overridden per team."""

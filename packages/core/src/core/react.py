@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -36,6 +37,36 @@ from core.tools import get_registry
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_ITERATIONS = 8
+
+# Stable namespace for deriving a UUID from an arbitrary session string
+# (e.g. a Telegram chat id) so it can be stored in Trace.session_id.
+_SESSION_NS = uuid.UUID("6f9b9af4-7a3e-5c2d-9b1a-0e1f2a3b4c5d")
+
+
+def _session_uuid(session_id: str) -> uuid.UUID:
+    """Coerce a session identifier into a UUID.
+
+    If ``session_id`` is already a valid UUID string it is used as-is;
+    otherwise a deterministic UUIDv5 is derived from it. This lets callers
+    use opaque strings (chat ids, "s1", ...) while the DB stores UUIDs.
+    """
+    try:
+        return uuid.UUID(session_id)
+    except (ValueError, AttributeError, TypeError):
+        return uuid.uuid5(_SESSION_NS, str(session_id))
+
+
+@dataclass
+class _RunCtx:
+    """Per-call persistence context.
+
+    Threaded through a single ``invoke``/``resume`` call so that concurrent
+    calls on a shared :class:`ReActRunner` never clobber each other's session.
+    ``db_session is None`` selects the in-memory store.
+    """
+
+    db_session: Any | None = None
+    team_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +168,21 @@ class ReActRunner:
     # Public API
     # ------------------------------------------------------------------
 
-    async def invoke(self, message: str, session_id: str) -> AgentResult:
+    def _make_ctx(self, db_session: Any | None, team_id: str | None) -> _RunCtx:
+        """Build the per-call context, defaulting to instance-level values."""
+        return _RunCtx(
+            db_session=db_session if db_session is not None else self.db_session,
+            team_id=team_id if team_id is not None else self.team_id,
+        )
+
+    async def invoke(
+        self,
+        message: str,
+        session_id: str,
+        *,
+        db_session: Any | None = None,
+        team_id: str | None = None,
+    ) -> AgentResult:
         """Start a new turn or continue an existing session.
 
         Parameters
@@ -147,12 +192,26 @@ class ReActRunner:
         session_id:
             Opaque string that identifies the conversation. Re-use the same
             value across turns to maintain history.
+        db_session:
+            Optional per-call SQLAlchemy ``AsyncSession``. Overrides the
+            instance-level session for this call. When ``None`` (and no
+            instance session is set) the in-memory store is used.
+        team_id:
+            Owning team UUID, required for DB persistence.
         """
-        state = await self._load_session(session_id)
+        ctx = self._make_ctx(db_session, team_id)
+        state = await self._load_session(ctx, session_id)
         state["messages"].append({"role": "user", "content": message})
-        return await self._run_loop(session_id, state)
+        return await self._run_loop(ctx, session_id, state)
 
-    async def resume(self, confirm_id: str, approved: bool) -> AgentResult:
+    async def resume(
+        self,
+        confirm_id: str,
+        approved: bool,
+        *,
+        db_session: Any | None = None,
+        team_id: str | None = None,
+    ) -> AgentResult:
         """Continue a paused session after the user responds to a confirm.
 
         Parameters
@@ -162,8 +221,11 @@ class ReActRunner:
             ``invoke`` / ``resume`` call.
         approved:
             ``True`` → execute the pending tool; ``False`` → skip it.
+        db_session / team_id:
+            See :meth:`invoke`.
         """
-        confirm = await self._load_confirm(confirm_id)
+        ctx = self._make_ctx(db_session, team_id)
+        confirm = await self._load_confirm(ctx, confirm_id)
         if confirm is None:
             raise AgentError(f"Confirm not found: {confirm_id!r}")
 
@@ -171,7 +233,7 @@ class ReActRunner:
         tool_name = confirm["tool_name"]
         tool_args = confirm["tool_args"]
 
-        state = await self._load_session(session_id)
+        state = await self._load_session(ctx, session_id)
 
         if approved:
             try:
@@ -179,31 +241,31 @@ class ReActRunner:
                 state["steps"].append(
                     _step("tool_result", tool_name=tool_name, tool_args=tool_args, result=result)
                 )
-                await self._update_action_status(confirm_id, "completed", result)
+                await self._update_action_status(ctx, confirm_id, "completed", result)
                 feedback = _tool_result_message(tool_name, result)
             except Exception as exc:
                 state["steps"].append(_step("tool_error", tool_name=tool_name, error=str(exc)))
-                await self._update_action_status(confirm_id, "failed")
+                await self._update_action_status(ctx, confirm_id, "failed")
                 feedback = (
                     f"Инструмент «{tool_name}» завершился с ошибкой: {exc}. "
                     "Сообщи об ошибке пользователю."
                 )
         else:
             state["steps"].append(_step("confirm_rejected", tool_name=tool_name))
-            await self._update_action_status(confirm_id, "failed")
+            await self._update_action_status(ctx, confirm_id, "failed")
             feedback = _tool_rejected_message(tool_name)
 
         # Feed tool result back as user message so LLM can summarise for the user
         state["messages"].append({"role": "user", "content": feedback})
 
-        await self._resolve_confirm(confirm_id, approved)
-        return await self._run_loop(session_id, state)
+        await self._resolve_confirm(ctx, confirm_id, approved)
+        return await self._run_loop(ctx, session_id, state)
 
     # ------------------------------------------------------------------
     # Core loop
     # ------------------------------------------------------------------
 
-    async def _run_loop(self, session_id: str, state: dict[str, Any]) -> AgentResult:
+    async def _run_loop(self, ctx: _RunCtx, session_id: str, state: dict[str, Any]) -> AgentResult:
         messages: list[dict[str, Any]] = state["messages"]
         steps: list[dict[str, Any]] = state["steps"]
         tool_schemas = self.agent._resolve_tool_schemas()
@@ -229,7 +291,7 @@ class ReActRunner:
                 messages.append({"role": "assistant", "content": reply})
                 state["messages"] = messages
                 state["steps"] = steps
-                await self._save_session(session_id, state)
+                await self._save_session(ctx, session_id, state)
                 return AgentResult(reply=reply, session_id=session_id, steps=list(steps))
 
             # --- Tool call ---
@@ -271,10 +333,11 @@ class ReActRunner:
                 state["messages"] = messages
                 state["steps"] = steps
                 await self._save_confirm(
-                    confirm_id, session_id, tool_call.name, tool_call.arguments
+                    ctx, confirm_id, session_id, tool_call.name, tool_call.arguments
                 )
-                await self._save_session(session_id, state)
+                await self._save_session(ctx, session_id, state)
                 await self._persist_action(
+                    ctx,
                     confirm_id=confirm_id,
                     session_id=session_id,
                     tool_name=tool_call.name,
@@ -298,6 +361,7 @@ class ReActRunner:
                     )
                 )
                 await self._persist_action(
+                    ctx,
                     confirm_id=None,
                     session_id=session_id,
                     tool_name=tool_call.name,
@@ -311,6 +375,7 @@ class ReActRunner:
                 err_msg = str(exc)
                 steps.append(_step("tool_error", tool_name=tool_call.name, error=err_msg))
                 await self._persist_action(
+                    ctx,
                     confirm_id=None,
                     session_id=session_id,
                     tool_name=tool_call.name,
@@ -327,7 +392,7 @@ class ReActRunner:
         steps.append(_step("final", content=reply, reason="max_iterations"))
         state["messages"] = messages
         state["steps"] = steps
-        await self._save_session(session_id, state)
+        await self._save_session(ctx, session_id, state)
         return AgentResult(reply=reply, session_id=session_id, steps=list(steps))
 
     # ------------------------------------------------------------------
@@ -346,42 +411,48 @@ class ReActRunner:
     # Session state (DB or in-memory)
     # ------------------------------------------------------------------
 
-    async def _load_session(self, session_id: str) -> dict[str, Any]:
-        if self.db_session is not None:
-            return await self._db_load_session(session_id)
+    async def _load_session(self, ctx: _RunCtx, session_id: str) -> dict[str, Any]:
+        if ctx.db_session is not None:
+            return await self._db_load_session(ctx, session_id)
         return dict(self._mem_sessions.get(session_id, {"messages": [], "steps": []}))
 
-    async def _save_session(self, session_id: str, state: dict[str, Any]) -> None:
-        if self.db_session is not None:
-            await self._db_save_session(session_id, state)
+    async def _save_session(self, ctx: _RunCtx, session_id: str, state: dict[str, Any]) -> None:
+        if ctx.db_session is not None:
+            await self._db_save_session(ctx, session_id, state)
         else:
             self._mem_sessions[session_id] = {
                 "messages": list(state["messages"]),
                 "steps": list(state["steps"]),
             }
 
-    async def _load_confirm(self, confirm_id: str) -> dict[str, Any] | None:
-        if self.db_session is not None:
-            return await self._db_load_confirm(confirm_id)
+    async def _load_confirm(self, ctx: _RunCtx, confirm_id: str) -> dict[str, Any] | None:
+        if ctx.db_session is not None:
+            return await self._db_load_confirm(ctx, confirm_id)
         return self._mem_confirms.get(confirm_id)
 
     async def _save_confirm(
-        self, confirm_id: str, session_id: str, tool_name: str, tool_args: dict[str, Any]
+        self,
+        ctx: _RunCtx,
+        confirm_id: str,
+        session_id: str,
+        tool_name: str,
+        tool_args: dict[str, Any],
     ) -> None:
         data = {"session_id": session_id, "tool_name": tool_name, "tool_args": tool_args}
-        if self.db_session is not None:
-            await self._db_save_confirm(confirm_id, data)
+        if ctx.db_session is not None:
+            await self._db_save_confirm(ctx, confirm_id, data)
         else:
             self._mem_confirms[confirm_id] = data
 
-    async def _resolve_confirm(self, confirm_id: str, approved: bool) -> None:
-        if self.db_session is not None:
-            await self._db_resolve_confirm(confirm_id, approved)
+    async def _resolve_confirm(self, ctx: _RunCtx, confirm_id: str, approved: bool) -> None:
+        if ctx.db_session is not None:
+            await self._db_resolve_confirm(ctx, confirm_id, approved)
         else:
             self._mem_confirms.pop(confirm_id, None)
 
     async def _persist_action(
         self,
+        ctx: _RunCtx,
         *,
         confirm_id: str | None,
         session_id: str,
@@ -391,9 +462,10 @@ class ReActRunner:
         status: str,
         output: Any = None,
     ) -> None:
-        if self.db_session is None:
+        if ctx.db_session is None:
             return
         await self._db_persist_action(
+            ctx,
             confirm_id=confirm_id,
             session_id=session_id,
             tool_name=tool_name,
@@ -403,31 +475,34 @@ class ReActRunner:
             output=output,
         )
 
-    async def _update_action_status(self, confirm_id: str, status: str, output: Any = None) -> None:
-        if self.db_session is None:
+    async def _update_action_status(
+        self, ctx: _RunCtx, confirm_id: str, status: str, output: Any = None
+    ) -> None:
+        if ctx.db_session is None:
             return
-        await self._db_update_action_status(confirm_id, status, output)
+        await self._db_update_action_status(ctx, confirm_id, status, output)
 
     # ------------------------------------------------------------------
     # DB implementations
     # ------------------------------------------------------------------
 
-    async def _db_load_session(self, session_id: str) -> dict[str, Any]:
+    async def _db_load_session(self, ctx: _RunCtx, session_id: str) -> dict[str, Any]:
         from sqlalchemy import select
 
         from core.models import Trace
 
-        stmt = select(Trace).where(Trace.session_id == uuid.UUID(session_id))
-        row = (await self.db_session.execute(stmt)).scalar_one_or_none()
+        sid = _session_uuid(session_id)
+        stmt = select(Trace).where(Trace.session_id == sid)
+        row = (await ctx.db_session.execute(stmt)).scalar_one_or_none()
         if row is None:
             trace = Trace(
                 id=uuid.uuid4(),
-                session_id=uuid.UUID(session_id),
+                session_id=sid,
                 steps=[],
                 metadata_json={"messages": []},
             )
-            self.db_session.add(trace)
-            await self.db_session.flush()
+            ctx.db_session.add(trace)
+            await ctx.db_session.flush()
             return {"messages": [], "steps": [], "_trace_id": str(trace.id)}
         meta = row.metadata_json or {}
         return {
@@ -436,19 +511,19 @@ class ReActRunner:
             "_trace_id": str(row.id),
         }
 
-    async def _db_save_session(self, session_id: str, state: dict[str, Any]) -> None:
+    async def _db_save_session(self, ctx: _RunCtx, session_id: str, state: dict[str, Any]) -> None:
         from sqlalchemy import select
 
         from core.models import Trace
 
-        stmt = select(Trace).where(Trace.session_id == uuid.UUID(session_id))
-        row = (await self.db_session.execute(stmt)).scalar_one_or_none()
+        stmt = select(Trace).where(Trace.session_id == _session_uuid(session_id))
+        row = (await ctx.db_session.execute(stmt)).scalar_one_or_none()
         if row is not None:
             row.steps = list(state["steps"])
             row.metadata_json = {**(row.metadata_json or {}), "messages": list(state["messages"])}
-            await self.db_session.flush()
+            await ctx.db_session.flush()
 
-    async def _db_load_confirm(self, confirm_id: str) -> dict[str, Any] | None:
+    async def _db_load_confirm(self, ctx: _RunCtx, confirm_id: str) -> dict[str, Any] | None:
         from sqlalchemy import select
 
         from core.models import Action, Confirm, Trace
@@ -459,7 +534,7 @@ class ReActRunner:
             .join(Trace, Action.trace_id == Trace.id)
             .where(Confirm.id == uuid.UUID(confirm_id))
         )
-        row = (await self.db_session.execute(stmt)).one_or_none()
+        row = (await ctx.db_session.execute(stmt)).one_or_none()
         if row is None:
             return None
         confirm, action, trace = row
@@ -469,11 +544,11 @@ class ReActRunner:
             "tool_args": dict(action.input),
         }
 
-    async def _db_save_confirm(self, confirm_id: str, data: dict[str, Any]) -> None:
+    async def _db_save_confirm(self, ctx: _RunCtx, confirm_id: str, data: dict[str, Any]) -> None:
         # Confirm is linked to Action; saved in _db_persist_action
         pass
 
-    async def _db_resolve_confirm(self, confirm_id: str, approved: bool) -> None:
+    async def _db_resolve_confirm(self, ctx: _RunCtx, confirm_id: str, approved: bool) -> None:
         from datetime import timezone
 
         from sqlalchemy import select
@@ -481,14 +556,15 @@ class ReActRunner:
         from core.models import Confirm
 
         stmt = select(Confirm).where(Confirm.id == uuid.UUID(confirm_id))
-        row = (await self.db_session.execute(stmt)).scalar_one_or_none()
+        row = (await ctx.db_session.execute(stmt)).scalar_one_or_none()
         if row is not None:
             row.status = "approved" if approved else "rejected"
             row.responded_at = datetime.now(timezone.utc)
-            await self.db_session.flush()
+            await ctx.db_session.flush()
 
     async def _db_persist_action(
         self,
+        ctx: _RunCtx,
         *,
         confirm_id: str | None,
         session_id: str,
@@ -502,16 +578,16 @@ class ReActRunner:
 
         from core.models import Action, Confirm, Trace
 
-        if self.team_id is None:
+        if ctx.team_id is None:
             return  # team_id required for DB persistence
 
-        stmt = select(Trace).where(Trace.session_id == uuid.UUID(session_id))
-        trace = (await self.db_session.execute(stmt)).scalar_one_or_none()
+        stmt = select(Trace).where(Trace.session_id == _session_uuid(session_id))
+        trace = (await ctx.db_session.execute(stmt)).scalar_one_or_none()
         trace_id = trace.id if trace else None
 
         action = Action(
             id=uuid.UUID(confirm_id) if confirm_id else uuid.uuid4(),
-            team_id=uuid.UUID(self.team_id),
+            team_id=uuid.UUID(ctx.team_id),
             tool_name=tool_name,
             input=dict(tool_args),
             output={"result": str(output)} if output is not None else None,
@@ -519,8 +595,8 @@ class ReActRunner:
             status=status,
             trace_id=trace_id,
         )
-        self.db_session.add(action)
-        await self.db_session.flush()
+        ctx.db_session.add(action)
+        await ctx.db_session.flush()
 
         if status == "pending" and confirm_id:
             confirm_prompt = f"Agent wants to call '{tool_name}' (risk={risk}) with: {tool_args}"
@@ -530,23 +606,23 @@ class ReActRunner:
                 prompt=confirm_prompt,
                 status="pending",
             )
-            self.db_session.add(confirm)
-            await self.db_session.flush()
+            ctx.db_session.add(confirm)
+            await ctx.db_session.flush()
 
     async def _db_update_action_status(
-        self, confirm_id: str, status: str, output: Any = None
+        self, ctx: _RunCtx, confirm_id: str, status: str, output: Any = None
     ) -> None:
         from sqlalchemy import select
 
         from core.models import Action
 
         stmt = select(Action).where(Action.id == uuid.UUID(confirm_id))
-        action = (await self.db_session.execute(stmt)).scalar_one_or_none()
+        action = (await ctx.db_session.execute(stmt)).scalar_one_or_none()
         if action is not None:
             action.status = status
             if output is not None:
                 action.output = {"result": str(output)}
-            await self.db_session.flush()
+            await ctx.db_session.flush()
 
 
 __all__ = [
