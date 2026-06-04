@@ -23,7 +23,7 @@ class MyAgent(BaseAgent):
     Отвечай кратко на русском языке."""
     tools = []                                  # имена @platform_tool
     llm_configs = [
-        LLMSettings(model="yandexgpt", temperature=0.3),
+        LLMSettings(model="gpt-oss-120b", temperature=0.3),
         LLMSettings(model="yandexgpt-lite", temperature=0.3),  # fallback
     ]
 ```
@@ -100,7 +100,7 @@ class MyAgent(BaseAgent):
     ]
 
     llm_configs = [
-        LLMSettings(model="yandexgpt", temperature=0.3),
+        LLMSettings(model="gpt-oss-120b", temperature=0.3),
         LLMSettings(model="yandexgpt-lite", temperature=0.3),  # fallback
     ]
 ```
@@ -150,7 +150,7 @@ services/pm-orchestrator/src/pm_orchestrator/agents/
 ```python
 llm_configs = [
     # Primary: точная модель для сложных задач
-    LLMSettings(model="yandexgpt", temperature=0.1),
+    LLMSettings(model="gpt-oss-120b", temperature=0.1),
 
     # Fallback: быстрая/дешёвая если primary недоступна
     LLMSettings(model="yandexgpt-lite", temperature=0.1),

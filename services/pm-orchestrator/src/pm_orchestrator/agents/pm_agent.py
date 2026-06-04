@@ -43,6 +43,5 @@ class PMAgent(BaseAgent):
         "tracker_close_issue",
     ]
     llm_configs = [
-        LLMSettings(model="yandexgpt", temperature=0.3),
-        LLMSettings(model="yandexgpt-lite", temperature=0.3),
+        LLMSettings(model="gpt-oss-120b", temperature=0.3),
     ]

@@ -1,10 +1,15 @@
 """
-LLM integration with LiteLLM and YandexGPT support.
+LLM integration via Yandex Cloud's OpenAI-compatible Responses API.
+
+Default model: gpt-oss-120b (served at ``/v1/responses``). Request/response
+follow the OpenAI Responses schema (``instructions`` + ``input`` items,
+``output`` items with ``function_call`` / ``message``).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import AsyncGenerator
 from typing import Any, Literal
@@ -15,6 +20,9 @@ from pydantic import BaseModel, Field
 from core.config import get_config
 from core.exceptions import LLMError
 from core.metrics import llm_latency_seconds, llm_requests_total, llm_tokens_total
+
+# Yandex Cloud OpenAI-compatible Responses API endpoint.
+_RESPONSES_URL = "https://ai.api.cloud.yandex.net/v1/responses"
 
 
 class Message(BaseModel):
@@ -65,11 +73,11 @@ class LLMResponse(BaseModel):
 
 class LLMClient:
     """
-    LLM client wrapper for YandexGPT via LiteLLM.
+    LLM client for Yandex Cloud's OpenAI-compatible Responses API.
 
     Features:
-    - Tool calling support
-    - Streaming responses
+    - Tool calling support (OpenAI function tools)
+    - Streaming responses (client-side char chunking)
     - Automatic retries with exponential backoff
     - Token usage tracking
     """
@@ -153,73 +161,35 @@ class LLMClient:
         start_time: float,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Internal completion implementation (foundationModels v1 API)."""
-        normalized_messages = []
-        for msg in messages:
-            if isinstance(msg, Message):
-                normalized_messages.append({"role": msg.role, "text": msg.content})
-            else:
-                normalized_messages.append(msg)
+        """Internal completion implementation (OpenAI Responses API)."""
+        instructions, input_items = self._split_messages(messages)
 
         request_body: dict[str, Any] = {
-            "modelUri": f"gpt://{self.folder_id}/{self.model}/latest",
-            "completionOptions": {
-                "stream": stream,
-                "temperature": kwargs.get("temperature", self.temperature),
-                "maxTokens": str(kwargs.get("max_tokens", self.max_tokens)),
-            },
-            "messages": normalized_messages,
+            "model": f"gpt://{self.folder_id}/{self.model}/latest",
+            "input": input_items,
+            "temperature": kwargs.get("temperature", self.temperature),
+            "max_output_tokens": kwargs.get("max_tokens", self.max_tokens),
         }
-
+        if instructions:
+            request_body["instructions"] = instructions
         if tools:
-            request_body["tools"] = [{"function": tool} for tool in tools]
+            # OpenAI Responses function tools are flattened (not nested under "function")
+            request_body["tools"] = [{"type": "function", **tool} for tool in tools]
 
         headers = {
             "Authorization": f"Api-Key {self.api_key}",
+            "OpenAI-Project": self.folder_id,
             "Content-Type": "application/json",
         }
 
-        response = await self.client.post(
-            "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
-            headers=headers,
-            json=request_body,
-        )
+        response = await self.client.post(_RESPONSES_URL, headers=headers, json=request_body)
         response.raise_for_status()
 
         data = response.json()
         latency_ms = int((time.monotonic() - start_time) * 1000)
 
-        # foundationModels v1 response: result.alternatives[0].message
-        result = data.get("result", {})
-        alternatives = result.get("alternatives", [])
-        alt = alternatives[0] if alternatives else {}
-        result_message = alt.get("message", {})
-        finish_reason = alt.get("status", "ALTERNATIVE_STATUS_FINAL")
-
-        tool_calls: list[ToolCall] | None = None
-        content: str | None = None
-
-        # Tool call response: message.toolCallList.toolCalls[].functionCall
-        tool_call_list = result_message.get("toolCallList", {})
-        raw_tool_calls = tool_call_list.get("toolCalls", [])
-        if raw_tool_calls:
-            tool_calls = [
-                ToolCall(
-                    name=tc.get("functionCall", {}).get("name", ""),
-                    arguments=tc.get("functionCall", {}).get("arguments", {}),
-                )
-                for tc in raw_tool_calls
-            ]
-        else:
-            content = result_message.get("text", "")
-
-        # Usage: fields are strings in v1 API
-        usage_data = result.get("usage", {})
-        usage = TokenUsage(
-            prompt_tokens=int(usage_data.get("inputTokens", 0)),
-            completion_tokens=int(usage_data.get("completionTokens", 0)),
-            total_tokens=int(usage_data.get("totalTokens", 0)),
-        )
+        content, tool_calls, finish_reason = self._parse_output(data)
+        usage = self._parse_usage(data)
 
         llm_requests_total.labels(model=self.model, status="success").inc()
         llm_latency_seconds.labels(model=self.model).observe(latency_ms / 1000)
@@ -237,6 +207,73 @@ class LLMClient:
             model=self.model,
             latency_ms=latency_ms,
             finish_reason=finish_reason,
+        )
+
+    @staticmethod
+    def _split_messages(
+        messages: list[Message | dict[str, Any]],
+    ) -> tuple[str, list[dict[str, str]]]:
+        """Split chat messages into Responses-API ``instructions`` + ``input``.
+
+        System messages are concatenated into ``instructions``; the rest become
+        ``input`` items ``{"role", "content"}``. Plain dicts may use ``content``
+        or the legacy ``text`` key.
+        """
+        instructions_parts: list[str] = []
+        input_items: list[dict[str, str]] = []
+        for msg in messages:
+            if isinstance(msg, Message):
+                role, content = msg.role, msg.content
+            else:
+                role = msg.get("role", "user")
+                content = msg.get("content", msg.get("text", ""))
+            if role == "system":
+                if content:
+                    instructions_parts.append(content)
+            else:
+                input_items.append({"role": role, "content": content})
+        return "\n\n".join(instructions_parts), input_items
+
+    @staticmethod
+    def _parse_output(
+        data: dict[str, Any],
+    ) -> tuple[str | None, list[ToolCall] | None, str | None]:
+        """Parse Responses-API ``output`` into (content, tool_calls, finish_reason)."""
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+
+        for item in data.get("output", []):
+            item_type = item.get("type")
+            if item_type == "function_call":
+                raw_args = item.get("arguments", {})
+                if isinstance(raw_args, str):
+                    try:
+                        args = json.loads(raw_args) if raw_args else {}
+                    except json.JSONDecodeError:
+                        args = {}
+                else:
+                    args = raw_args or {}
+                tool_calls.append(ToolCall(name=item.get("name", ""), arguments=args))
+            elif item_type == "message":
+                for part in item.get("content", []):
+                    if part.get("type") in ("output_text", "text"):
+                        text_parts.append(part.get("text", ""))
+
+        content: str | None = None
+        if not tool_calls:
+            content = "".join(text_parts) if text_parts else data.get("output_text", "")
+
+        finish_reason = data.get("status", "completed")
+        return content, (tool_calls or None), finish_reason
+
+    @staticmethod
+    def _parse_usage(data: dict[str, Any]) -> TokenUsage:
+        """Parse Responses-API ``usage`` (input_tokens / output_tokens / total_tokens)."""
+        u = data.get("usage", {})
+        return TokenUsage(
+            prompt_tokens=int(u.get("input_tokens", 0) or 0),
+            completion_tokens=int(u.get("output_tokens", 0) or 0),
+            total_tokens=int(u.get("total_tokens", 0) or 0),
         )
 
     async def stream_complete(
