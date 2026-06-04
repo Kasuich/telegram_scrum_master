@@ -18,6 +18,7 @@ from typing import Any
 
 from core.agent import BaseAgent
 from core.config import RuntimeConfig, get_config
+from core.effective_config import EffectiveAgentConfig, build_effective_config
 from core.react import AgentResult, ReActRunner
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,59 @@ class OrchestratorService:
             self._db_enabled = False
 
     # ------------------------------------------------------------------
+    # Effective config
+    # ------------------------------------------------------------------
+
+    async def _load_effective_config(self, agent_name: str) -> EffectiveAgentConfig | None:
+        """Load AgentSpec + AgentInstance overlay from DB and build effective config.
+
+        Returns ``None`` when DB is disabled or records don't exist (callers
+        fall back to class defaults in that case).
+        """
+        if not self._db_enabled or self._team_id is None:
+            return None
+
+        runner = self._runners.get(agent_name)
+        if runner is None:
+            return None
+
+        try:
+            from core.db import get_session
+            from core.models import AgentInstance, AgentSpec
+            from sqlalchemy import select
+
+            async with get_session() as session:
+                spec_row = (
+                    await session.execute(select(AgentSpec).where(AgentSpec.name == agent_name))
+                ).scalar_one_or_none()
+
+                instance_row = (
+                    await session.execute(
+                        select(AgentInstance).where(
+                            AgentInstance.team_id == __import__("uuid").UUID(self._team_id),
+                            AgentInstance.name == agent_name,
+                        )
+                    )
+                ).scalar_one_or_none()
+
+            spec_data = (
+                {
+                    "prompt": spec_row.prompt,
+                    "model": spec_row.model,
+                    "autonomy": spec_row.autonomy,
+                }
+                if spec_row
+                else None
+            )
+            overlay_data = instance_row.overlay if instance_row else None
+
+            return build_effective_config(runner.agent, spec_data, overlay_data)
+
+        except Exception as exc:
+            logger.warning("Failed to load effective config for %s: %s", agent_name, exc)
+            return None
+
+    # ------------------------------------------------------------------
     # Agent info
     # ------------------------------------------------------------------
 
@@ -126,15 +180,29 @@ class OrchestratorService:
 
     async def invoke(self, agent_name: str, message: str, session_id: str) -> AgentResult:
         runner = self._runner(agent_name)
+        eff = await self._load_effective_config(agent_name)
+        eff_prompt = eff.prompt if eff else None
+        eff_rc = eff.runtime_config if eff else None
+
         if self._db_enabled:
             from core.db import get_session
 
             async with get_session() as session:
                 result = await runner.invoke(
-                    message, session_id, db_session=session, team_id=self._team_id
+                    message,
+                    session_id,
+                    db_session=session,
+                    team_id=self._team_id,
+                    effective_prompt=eff_prompt,
+                    effective_runtime_config=eff_rc,
                 )
         else:
-            result = await runner.invoke(message, session_id)
+            result = await runner.invoke(
+                message,
+                session_id,
+                effective_prompt=eff_prompt,
+                effective_runtime_config=eff_rc,
+            )
         self._index_confirms(agent_name, result)
         self._log_actions(result)
         return result
@@ -144,15 +212,29 @@ class OrchestratorService:
         if agent_name is None:
             raise KeyError(f"Confirm not found: {confirm_id!r}")
         runner = self._runner(agent_name)
+        eff = await self._load_effective_config(agent_name)
+        eff_prompt = eff.prompt if eff else None
+        eff_rc = eff.runtime_config if eff else None
+
         if self._db_enabled:
             from core.db import get_session
 
             async with get_session() as session:
                 result = await runner.resume(
-                    confirm_id, approved, db_session=session, team_id=self._team_id
+                    confirm_id,
+                    approved,
+                    db_session=session,
+                    team_id=self._team_id,
+                    effective_prompt=eff_prompt,
+                    effective_runtime_config=eff_rc,
                 )
         else:
-            result = await runner.resume(confirm_id, approved)
+            result = await runner.resume(
+                confirm_id,
+                approved,
+                effective_prompt=eff_prompt,
+                effective_runtime_config=eff_rc,
+            )
         self._confirm_index.pop(confirm_id, None)
         self._log_actions(result)
         return result

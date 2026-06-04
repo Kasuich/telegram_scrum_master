@@ -43,19 +43,20 @@ flowchart LR
 
 | Возможность (видение) | Статус | Комментарий |
 |----------------------|:------:|-------------|
-| Ядро платформы (config, db, llm, tools) | ✅ Готово | YandexGPT напрямую (не LiteLLM — проще, работает) |
-| ReAct-цикл + Autonomy Gate (L2) | ✅ Готово | `core/react.py` — авто-low, confirm medium/high, resume |
+| Ядро платформы (config, db, llm, tools) | ✅ Готово | Responses API gpt-oss-120b (не LiteLLM — проще, работает) |
+| ReAct-цикл + Autonomy Gate (L2) | ✅ Готово | `core/react.py` — авто-low, confirm medium/high, resume; системный промпт исправлен |
 | Tracker-интеграция (6 тулзов) | ✅ Готово | полный CRUD + поиск + переходы |
 | Code-first агенты + автодискавери | ✅ Готово | агент = класс в `agents/`, без деплоя БД |
 | JSON-RPC оркестратор (in-process) | ✅ Готово | multi-agent в одном процессе |
-| Observability backbone (Action/Trace/Confirm) | ✅ Схема + запись | таблицы есть, ReActRunner пишет |
+| Observability backbone (Action/Trace/Confirm) | ✅ DB-персист работает | B1: `ReActRunner` пишет в БД per-request, сид команды/инстансов при старте |
 | Мониторинг (Prometheus/Grafana) | ✅ Готово | инфра-метрики + app-метрики |
 | CI/CD на тест-VPS | ✅ Готово | push develop → авто-деплой |
-| **Telegram-адаптер** | 🔴 Нет | следующий шаг, нужен для confirm/демо |
-| **Control plane (агенты из БД)** | 🟡 Схема-only | `AgentSpec`/`AgentInstance` есть, оркестратор их не читает |
-| **Scheduler / cron** | 🟡 Схема-only | `ScheduledJob` есть, нет демона-исполнителя |
-| **call_agent (делегирование)** | 🔴 Нет | оркестратор не умеет агент→агент |
-| **Meeting Summarizer** | 🔴 Нет | агент #1 из must-have |
+| **Effective Config (класс < spec < overlay)** | ✅ Готово | B5: `build_effective_config`, промпт/пороги из БД без деплоя |
+| **call_agent (делегирование агент→агент)** | ✅ Готово | B4: `@platform_tool`, защита от рекурсии и циклов, ContextVar цепочка |
+| **Scheduler daemon** | ✅ Готово | B2: `SchedulerDaemon`, SKIP LOCKED, graceful cancel |
+| **schedule_task tool** | ✅ Готово | B3: `@platform_tool`, cron-валидация, квота, AgentInstance |
+| **Telegram-адаптер** | 🔴 Нет | Трек A, следующий шаг |
+| **Meeting Summarizer** | 🔴 Нет | Трек C, агент #1 из must-have |
 | **Meeting Capture (Telemost запись/STT)** | 🔴 Нет | дизайн готов (`meeting_capture.md`), отдельный тяжёлый сервис |
 | **Correspondence Analyzer** | 🔴 Нет | агент #2 |
 | **Analytics Agent + метрики** | 🔴 Нет | флаг есть, реализации нет |
@@ -507,23 +508,23 @@ flowchart LR
 ### Шаг 1 — Замкнуть демо
 - **Telegram-адаптер** (`platform-api`, aiogram): webhook → `/chat`, inline-кнопки ✅/❌ → `/confirm/{id}`. Сессия = chat_id.
 - **DB-персист в оркестраторе** ✅ (B1): `OrchestratorService` открывает сессию per-request и пробрасывает `db_session`+`team_id` в `ReActRunner` (per-call `_RunCtx`). Схема создаётся идемпотентно на старте, сидится команда по умолчанию (`DEFAULT_TEAM_ID`). `traces/actions/confirms` пишутся в БД. Не-UUID session_id маппится через uuid5.
-- **`call_agent` tool**: `@platform_tool`, вызывает `OrchestratorService.invoke(target_agent, ...)`. Регистрируется автоматически для каждого агента.
+- **`call_agent` tool** ✅ (B4): `@platform_tool`, in-process делегирование через `OrchestratorService.invoke`; защита от рекурсии (MAX_DEPTH=3) и циклов (ContextVar цепочка). Стабильный sub-session_id по пути делегирования.
 
 ### Шаг 2 — Meeting Summarizer
 - Новый файл `agents/meeting_summarizer.py` (BaseAgent, без тулзов Трекера — только рассуждение).
 - Вход: транскрипт (пока — ручная вставка в чат; источник транскриптов — открытая развилка).
 - PM Orchestrator получает `call_agent:meeting_summarizer` автоматически.
 
-### Шаг 3 — Scheduler
-- Демон в `pm-orchestrator`: `asyncio` loop `* * * * *`, `SELECT ... FOR UPDATE SKIP LOCKED` по `scheduled_jobs.next_run <= now()`.
-- `schedule_task` tool — агент сам ставит задачи. Guardrails: квота, TTL, max_runs, confirm на recurring.
-- `alert` tool — уведомление в Telegram.
+### Шаг 3 — Scheduler ✅ (B2 + B3)
+- `SchedulerDaemon` в `pm-orchestrator`: asyncio loop 60с, `SELECT ... FOR UPDATE SKIP LOCKED` по `scheduled_jobs.next_run <= now()`. Graceful cancel. Безопасен для нескольких реплик.
+- `schedule_task` tool — агент сам ставит задачи. Guardrails: cron-валидация, квота 20/команда, max_runs.
+- `alert` tool — уведомление в Telegram (ещё не реализован, ждёт Трек A).
 
 ### Шаг 4 — Консоль (GUI) + Effective Config
 - **`web-ui`** — отдельный SPA (React/Vue), статический деплой (nginx). Три ролевых режима в одном приложении.
 - **`console-api`** — новый сервис (`services/console-api`, FastAPI, порт 8002): ролевые view + auth (сессии) + RBAC. Читает read-модели из БД напрямую (`actions/traces/runtime_configs/action_feedback/tracker_snapshots`), мутации (kill-switch, пороги, правка `agent_specs`/overlay).
 - Приоритет: dev-кабинет (реестр агентов, playground промпта, трейсы) — рано; admin-минимум (лента, kill-switch, пороги) — для безопасного теста.
-- **Effective Config**: `OrchestratorService` мёржит `agent_specs` + `agent_instances.overlay` поверх значений класса → правка промпта без деплоя.
+- **Effective Config** ✅ (B5): `OrchestratorService` при каждом `invoke` загружает `AgentSpec` + `AgentInstance.overlay` и строит `EffectiveAgentConfig` через `build_effective_config(agent, spec, overlay)`. Промпт, модель, пороги автономии редактируются через консоль без деплоя. Приоритет: `класс < spec < overlay`.
 - Auth: `users` + сессии (JWT/cookie). Полный RBAC — позже (Будущее).
 
 ### Шаг 5 — Meeting Capture (отдельный сервис)

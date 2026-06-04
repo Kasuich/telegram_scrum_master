@@ -46,7 +46,7 @@ class PMReportAgent(BaseAgent):
     prompt = "Ты PM-ассистент. Сегодня {current_date}. Отвечай кратко."
     tools = ["get_sprint_status"]        # имена из @platform_tool
     llm_configs = [
-        LLMSettings(model="yandexgpt-pro", temperature=0.3),   # primary
+        LLMSettings(model="gpt-oss-120b", temperature=0.3),   # primary
         LLMSettings(model="yandexgpt-lite", temperature=0.3),  # fallback
     ]
 ```
@@ -120,7 +120,7 @@ entry_point = EntryPoint({
 
 ```python
 llm_configs = [
-    LLMSettings(model="yandexgpt-pro",  temperature=0.3),  # пробуется первым
+    LLMSettings(model="gpt-oss-120b",  temperature=0.3),  # пробуется первым
     LLMSettings(model="yandexgpt-lite", temperature=0.3),  # fallback при ошибке
 ]
 ```
@@ -131,7 +131,7 @@ llm_configs = [
 
 | Параметр | Тип | По умолчанию | Описание |
 |----------|-----|------|----------|
-| `model` | `str` | `"yandexgpt-pro"` | Модель YandexGPT |
+| `model` | `str` | `"gpt-oss-120b"` | Модель YandexGPT |
 | `temperature` | `float \| None` | `None` | Температура (наследует из конфига) |
 | `max_tokens` | `int \| None` | `None` | Макс. токенов |
 | `timeout` | `int \| None` | `None` | Таймаут запроса (сек) |

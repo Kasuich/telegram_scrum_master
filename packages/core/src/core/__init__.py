@@ -17,6 +17,7 @@ from core import (
     bot,
     config,
     db,
+    effective_config,
     entry_point,
     exceptions,
     llm,
@@ -59,6 +60,7 @@ from core.db import (
     health_check,
     reset_engine,
 )
+from core.effective_config import EffectiveAgentConfig, build_effective_config
 from core.entry_point import EntryPoint
 from core.exceptions import (
     A2AError,
@@ -163,6 +165,7 @@ __all__ = [
     "models",
     "prompts",
     "registry",
+    "effective_config",
     "scheduler",
     "seed",
     "tools",
@@ -204,6 +207,8 @@ __all__ = [
     "close_engine",
     "reset_engine",
     "Checkpointer",
+    "EffectiveAgentConfig",
+    "build_effective_config",
     "SchedulerDaemon",
     "compute_next_run",
     "ensure_default_team",
