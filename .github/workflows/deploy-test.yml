@@ -42,6 +42,7 @@ jobs:
             TRACKER_ORG_ID=${{ secrets.TRACKER_ORG_ID }}
             TRACKER_ORG_TYPE=${{ secrets.TRACKER_ORG_TYPE }}
             TRACKER_QUEUE=${{ secrets.TRACKER_QUEUE }}
+            DEFAULT_TEAM_ID=00000000-0000-0000-0000-000000000001
             TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
             TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
             GRAFANA_USER=${{ secrets.GRAFANA_USER }}

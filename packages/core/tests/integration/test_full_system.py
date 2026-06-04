@@ -20,24 +20,40 @@ ENV = {
     "TRACKER_ORG_ID": "12345678901234567890",
 }
 
+# foundationModels v1 format: result.alternatives[].message, string token counts
 MOCK_LLM_RESPONSE = {
     "result": {
-        "message": {"text": "Task created successfully.", "role": "assistant"},
-        "usage": {"inputTokensCount": 50, "outputTokensCount": 20, "totalTokensCount": 70},
-        "status": "COMPLETED",
+        "alternatives": [
+            {
+                "message": {"role": "assistant", "text": "Task created successfully."},
+                "status": "ALTERNATIVE_STATUS_FINAL",
+            }
+        ],
+        "usage": {"inputTokens": "50", "completionTokens": "20", "totalTokens": "70"},
     }
 }
 
 MOCK_TOOL_CALL_RESPONSE = {
     "result": {
-        "message": {
-            "functionCall": {
-                "name": "create_task",
-                "args": {"title": "Fix bug", "queue": "TEST"},
+        "alternatives": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "toolCallList": {
+                        "toolCalls": [
+                            {
+                                "functionCall": {
+                                    "name": "create_task",
+                                    "arguments": {"title": "Fix bug", "queue": "TEST"},
+                                }
+                            }
+                        ]
+                    },
+                },
+                "status": "ALTERNATIVE_STATUS_TOOL_CALLS",
             }
-        },
-        "usage": {"inputTokensCount": 40, "outputTokensCount": 15, "totalTokensCount": 55},
-        "status": "COMPLETED",
+        ],
+        "usage": {"inputTokens": "40", "completionTokens": "15", "totalTokens": "55"},
     }
 }
 

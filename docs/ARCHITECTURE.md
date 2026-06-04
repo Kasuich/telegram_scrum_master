@@ -242,4 +242,3 @@ digital_breakthrough_2026/
 - Meeting Capture агент
 - Correspondence/Analytics агенты
 - Полноценный UI
-- Персист сессий в БД (сейчас in-memory)

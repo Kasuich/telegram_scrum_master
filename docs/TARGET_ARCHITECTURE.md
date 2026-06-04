@@ -506,7 +506,7 @@ flowchart LR
 
 ### Шаг 1 — Замкнуть демо
 - **Telegram-адаптер** (`platform-api`, aiogram): webhook → `/chat`, inline-кнопки ✅/❌ → `/confirm/{id}`. Сессия = chat_id.
-- **DB-персист в оркестраторе**: сейчас `OrchestratorService` хранит сессии in-memory; передать `db_session` в `ReActRunner` (он уже умеет писать в `traces/actions/confirms`).
+- **DB-персист в оркестраторе** ✅ (B1): `OrchestratorService` открывает сессию per-request и пробрасывает `db_session`+`team_id` в `ReActRunner` (per-call `_RunCtx`). Схема создаётся идемпотентно на старте, сидится команда по умолчанию (`DEFAULT_TEAM_ID`). `traces/actions/confirms` пишутся в БД. Не-UUID session_id маппится через uuid5.
 - **`call_agent` tool**: `@platform_tool`, вызывает `OrchestratorService.invoke(target_agent, ...)`. Регистрируется автоматически для каждого агента.
 
 ### Шаг 2 — Meeting Summarizer
