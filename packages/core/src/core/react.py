@@ -58,15 +58,22 @@ def _session_uuid(session_id: str) -> uuid.UUID:
 
 @dataclass
 class _RunCtx:
-    """Per-call persistence context.
+    """Per-call context: persistence + effective-config overrides.
 
     Threaded through a single ``invoke``/``resume`` call so that concurrent
     calls on a shared :class:`ReActRunner` never clobber each other's session.
     ``db_session is None`` selects the in-memory store.
+
+    Optional effective-config fields (``None`` → fall back to class defaults):
+    - ``effective_prompt``: overrides ``agent.prompt`` as the system message.
+    - ``effective_runtime_config``: overrides ``runner.runtime_config`` for the
+      Autonomy Gate (auto_risk / confirm_risk / always_confirm_tools).
     """
 
     db_session: Any | None = None
     team_id: str | None = None
+    effective_prompt: str | None = None
+    effective_runtime_config: Any | None = None  # RuntimeConfig | None
 
 
 # ---------------------------------------------------------------------------
@@ -168,11 +175,19 @@ class ReActRunner:
     # Public API
     # ------------------------------------------------------------------
 
-    def _make_ctx(self, db_session: Any | None, team_id: str | None) -> _RunCtx:
+    def _make_ctx(
+        self,
+        db_session: Any | None,
+        team_id: str | None,
+        effective_prompt: str | None = None,
+        effective_runtime_config: Any | None = None,
+    ) -> _RunCtx:
         """Build the per-call context, defaulting to instance-level values."""
         return _RunCtx(
             db_session=db_session if db_session is not None else self.db_session,
             team_id=team_id if team_id is not None else self.team_id,
+            effective_prompt=effective_prompt,
+            effective_runtime_config=effective_runtime_config,
         )
 
     async def invoke(
@@ -182,6 +197,8 @@ class ReActRunner:
         *,
         db_session: Any | None = None,
         team_id: str | None = None,
+        effective_prompt: str | None = None,
+        effective_runtime_config: Any | None = None,
     ) -> AgentResult:
         """Start a new turn or continue an existing session.
 
@@ -199,7 +216,7 @@ class ReActRunner:
         team_id:
             Owning team UUID, required for DB persistence.
         """
-        ctx = self._make_ctx(db_session, team_id)
+        ctx = self._make_ctx(db_session, team_id, effective_prompt, effective_runtime_config)
         state = await self._load_session(ctx, session_id)
         state["messages"].append({"role": "user", "content": message})
         return await self._run_loop(ctx, session_id, state)
@@ -211,6 +228,8 @@ class ReActRunner:
         *,
         db_session: Any | None = None,
         team_id: str | None = None,
+        effective_prompt: str | None = None,
+        effective_runtime_config: Any | None = None,
     ) -> AgentResult:
         """Continue a paused session after the user responds to a confirm.
 
@@ -221,10 +240,10 @@ class ReActRunner:
             ``invoke`` / ``resume`` call.
         approved:
             ``True`` → execute the pending tool; ``False`` → skip it.
-        db_session / team_id:
+        db_session / team_id / effective_prompt / effective_runtime_config:
             See :meth:`invoke`.
         """
-        ctx = self._make_ctx(db_session, team_id)
+        ctx = self._make_ctx(db_session, team_id, effective_prompt, effective_runtime_config)
         confirm = await self._load_confirm(ctx, confirm_id)
         if confirm is None:
             raise AgentError(f"Confirm not found: {confirm_id!r}")
@@ -280,8 +299,13 @@ class ReActRunner:
                 self.agent.name,
             )
 
-            # --- LLM call ---
-            llm_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
+            # --- LLM call — prepend system prompt on every turn ---
+            # The system message is NOT stored in state["messages"] so it can
+            # be swapped live via ctx.effective_prompt without a restart.
+            system_prompt = ctx.effective_prompt or self.agent.prompt
+            system_msg = Message(role="system", content=system_prompt) if system_prompt else None
+            history = [Message(role=m["role"], content=m["content"]) for m in messages]
+            llm_messages = [system_msg, *history] if system_msg else history
             llm_response, _ = await self.agent._call_with_fallback(llm_messages, tool_schemas)
 
             if not llm_response.tool_calls:
@@ -310,7 +334,7 @@ class ReActRunner:
                 continue
 
             tool = registry.get(tool_call.name)
-            rc = self.runtime_config
+            rc = ctx.effective_runtime_config or self.runtime_config
             needs_confirm = tool.name in rc.always_confirm_tools or (
                 tool.risk in rc.confirm_risk and tool.risk not in rc.auto_risk
             )

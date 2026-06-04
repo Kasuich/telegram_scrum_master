@@ -198,13 +198,17 @@ digital_breakthrough_2026/
 ├── packages/
 │   └── core/                    # Общая библиотека
 │       └── src/core/
-│           ├── agent.py         # BaseAgent, LLMSettings
-│           ├── react.py         # ReActRunner, AgentResult
+│           ├── agent.py         # BaseAgent, LLMSettings (default: gpt-oss-120b)
+│           ├── react.py         # ReActRunner, AgentResult, _RunCtx (effective config)
 │           ├── llm.py           # LLMClient → Responses API (gpt-oss-120b)
 │           ├── tools.py         # @platform_tool, ToolRegistry
+│           ├── effective_config.py  # build_effective_config (class < spec < overlay)
+│           ├── scheduler.py     # SchedulerDaemon, compute_next_run
+│           ├── seed.py          # ensure_default_team, ensure_agent_instances
 │           ├── tracker.py       # TrackerClient
 │           ├── tracker_tools.py # tracker_* @platform_tool
-│           ├── config.py        # Pydantic settings
+│           ├── config.py        # Pydantic settings (DEFAULT_TEAM_ID, SCHEDULER_ENABLED)
+│           ├── metrics.py       # Prometheus counters/histograms
 │           └── models.py        # SQLAlchemy ORM (11 таблиц)
 │
 ├── services/
@@ -212,8 +216,11 @@ digital_breakthrough_2026/
 │   │   └── src/pm_orchestrator/
 │   │       ├── agents/
 │   │       │   └── pm_agent.py  # ← Добавить нового агента сюда
-│   │       ├── orchestrator.py  # OrchestratorService
-│   │       └── rpc.py           # JSON-RPC сервер
+│   │       ├── tools/
+│   │       │   ├── call_agent.py    # call_agent @platform_tool (делегирование)
+│   │       │   └── schedule_task.py # schedule_task @platform_tool (cron-задачи)
+│   │       ├── orchestrator.py  # OrchestratorService + effective config loading
+│   │       └── rpc.py           # JSON-RPC сервер + SchedulerDaemon lifecycle
 │   │
 │   └── platform-api/            # HTTP транспорт (порт 8000)
 │       └── src/platform_api/
@@ -224,6 +231,30 @@ digital_breakthrough_2026/
 ├── docker-compose.yml
 └── .github/workflows/           # CI (lint + test) + CD (deploy to VPS)
 ```
+
+---
+
+## Встроенные инструменты оркестратора
+
+| Инструмент | Risk | Описание |
+|------------|------|----------|
+| `call_agent` | low | Делегировать задачу другому агенту in-process |
+| `schedule_task` | medium | Запланировать cron-задачу для агента |
+| `tracker_*` (6 шт.) | low/medium/high | Яндекс Трекер CRUD |
+
+## Effective Config (класс < spec < overlay)
+
+Промпт и пороги автономии можно менять **без деплоя** через таблицы `agent_specs` и `agent_instances.overlay`:
+
+```
+class defaults → AgentSpec (prompt, model) → AgentInstance.overlay (prompt, autonomy thresholds)
+```
+
+Функция `build_effective_config(agent, spec_data, overlay_data)` возвращает `EffectiveAgentConfig` с итоговыми `prompt`, `llm_configs`, `runtime_config`.
+
+## Scheduler daemon
+
+`SchedulerDaemon` (asyncio-таск в `pm-orchestrator`) каждые 60 сек обрабатывает просроченные `ScheduledJob` через `SELECT … FOR UPDATE SKIP LOCKED` — безопасно для нескольких реплик.
 
 ---
 
@@ -238,7 +269,7 @@ digital_breakthrough_2026/
 ## Что отложено
 
 - Networked A2A (агент→агент через сеть)
-- Telegram-бот (следующий шаг)
+- Telegram-бот (Трек A)
 - Meeting Capture агент
 - Correspondence/Analytics агенты
-- Полноценный UI
+- GUI-консоль (Трек D)
