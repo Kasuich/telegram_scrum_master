@@ -205,6 +205,12 @@ class AppConfig(BaseSettings):
         description="Default team UUID for DB persistence (single-tenant)",
     )
 
+    # Enable the scheduler daemon (set to false in tests/dev to avoid asyncio loops).
+    scheduler_enabled: bool = Field(
+        default=True,
+        description="Enable the background scheduler daemon",
+    )
+
 
 class RuntimeConfig(BaseSettings):
     """Runtime configuration that can be overridden per team."""
