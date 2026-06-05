@@ -600,7 +600,7 @@ class ReActRunner:
     ) -> None:
         from sqlalchemy import select
 
-        from core.models import Action, Confirm, Trace
+        from core.models import Action, AgentInstance, Confirm, Trace
 
         if ctx.team_id is None:
             return  # team_id required for DB persistence
@@ -608,10 +608,19 @@ class ReActRunner:
         stmt = select(Trace).where(Trace.session_id == _session_uuid(session_id))
         trace = (await ctx.db_session.execute(stmt)).scalar_one_or_none()
         trace_id = trace.id if trace else None
+        agent_instance = (
+            await ctx.db_session.execute(
+                select(AgentInstance).where(
+                    AgentInstance.team_id == uuid.UUID(ctx.team_id),
+                    AgentInstance.name == self.agent.name,
+                )
+            )
+        ).scalar_one_or_none()
 
         action = Action(
             id=uuid.UUID(confirm_id) if confirm_id else uuid.uuid4(),
             team_id=uuid.UUID(ctx.team_id),
+            agent_instance_id=agent_instance.id if agent_instance else None,
             tool_name=tool_name,
             input=dict(tool_args),
             output={"result": str(output)} if output is not None else None,
