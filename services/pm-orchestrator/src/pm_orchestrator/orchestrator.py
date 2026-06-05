@@ -17,7 +17,7 @@ import pkgutil
 from typing import Any
 
 from core.agent import BaseAgent
-from core.config import RuntimeConfig, get_config
+from core.config import get_config
 from core.effective_config import EffectiveAgentConfig, build_effective_config
 from core.react import AgentResult, ReActRunner
 
@@ -59,11 +59,10 @@ class OrchestratorService:
                     logger.info("Registered agent: %s", obj.name)
 
     def _register(self, agent: BaseAgent) -> None:
-        rc = RuntimeConfig(
-            auto_risk=["low"],
-            confirm_risk=["medium", "high"],
+        self._runners[agent.name] = ReActRunner(
+            agent=agent,
+            runtime_config=get_config().runtime,
         )
-        self._runners[agent.name] = ReActRunner(agent=agent, runtime_config=rc)
 
     # ------------------------------------------------------------------
     # Persistence setup

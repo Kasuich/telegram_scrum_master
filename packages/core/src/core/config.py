@@ -242,6 +242,11 @@ class RuntimeConfig(BaseSettings):
         description="Tools that always require confirmation regardless of risk",
     )
 
+    skip_tool_confirm: bool = Field(
+        default=False,
+        description="Run all tools immediately (no pending_confirm / resume step)",
+    )
+
     # Feature flags
     enable_a2a: bool = Field(
         default=True,

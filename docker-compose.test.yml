@@ -14,6 +14,7 @@ services:
   pm-orchestrator:
     environment:
       LOG_LEVEL: DEBUG
+      RUNTIME_SKIP_TOOL_CONFIRM: ${RUNTIME_SKIP_TOOL_CONFIRM:-true}
 
 volumes:
   postgres_test_data:

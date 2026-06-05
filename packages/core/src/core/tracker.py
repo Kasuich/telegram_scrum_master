@@ -44,7 +44,6 @@ class TrackerClient:
         base_url: str | None = None,
         timeout: float = 30.0,
     ) -> None:
-        # Only load config when at least one param is missing
         if token is None or org_id is None or org_type is None or base_url is None:
             cfg = get_config().tracker
             token = token or cfg.tracker_token
@@ -58,10 +57,6 @@ class TrackerClient:
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
 
-    # ------------------------------------------------------------------
-    # Context manager / lifecycle
-    # ------------------------------------------------------------------
-
     async def __aenter__(self) -> TrackerClient:
         self._client = httpx.AsyncClient(timeout=self._timeout)
         return self
@@ -73,10 +68,6 @@ class TrackerClient:
         if self._client:
             await self._client.aclose()
             self._client = None
-
-    # ------------------------------------------------------------------
-    # HTTP helpers
-    # ------------------------------------------------------------------
 
     def _headers(self) -> dict[str, str]:
         org_header = "X-Cloud-Org-ID" if self._org_type == "cloud" else "X-Org-ID"
@@ -111,8 +102,13 @@ class TrackerClient:
         return response.json()
 
     # ------------------------------------------------------------------
-    # Issues
+    # Issues — read / write
     # ------------------------------------------------------------------
+
+    async def get_issue(self, issue_key: str, *, fields: str | None = None) -> dict[str, Any]:
+        """Return issue by key, e.g. 'DARKHORSE-1'. Optional comma-separated fields filter."""
+        params = {"fields": fields} if fields else None
+        return await self._request("GET", f"/issues/{issue_key}", params=params)
 
     async def create_issue(
         self,
@@ -124,6 +120,14 @@ class TrackerClient:
         assignee: str | None = None,
         issue_type: str | None = None,
         tags: list[str] | None = None,
+        deadline: str | None = None,
+        followers: list[str] | None = None,
+        story_points: int | float | None = None,
+        sprint: str | list[str] | None = None,
+        parent: str | None = None,
+        project: str | None = None,
+        components: list[str] | None = None,
+        custom_fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a new issue and return its full representation."""
         body: dict[str, Any] = {"queue": queue, "summary": summary}
@@ -137,15 +141,33 @@ class TrackerClient:
             body["type"] = issue_type
         if tags:
             body["tags"] = tags
+        if deadline:
+            body["deadline"] = deadline
+        if followers:
+            body["followers"] = followers
+        if story_points is not None:
+            body["storyPoints"] = story_points
+        if sprint is not None:
+            body["sprint"] = sprint
+        if parent:
+            body["parent"] = parent
+        if project:
+            body["project"] = project
+        if components:
+            body["components"] = components
+        if custom_fields:
+            body.update(custom_fields)
         return await self._request("POST", "/issues/", json=body)
 
-    async def get_issue(self, issue_key: str) -> dict[str, Any]:
-        """Return issue by key, e.g. 'DARKHORSE-1'."""
-        return await self._request("GET", f"/issues/{issue_key}")
+    async def patch_issue(self, issue_key: str, fields: dict[str, Any]) -> dict[str, Any]:
+        """Patch issue fields (supports add/remove operators for array fields)."""
+        if not fields:
+            raise TrackerError("patch_issue requires at least one field")
+        return await self._request("PATCH", f"/issues/{issue_key}", json=fields)
 
     async def update_issue(self, issue_key: str, **fields: Any) -> dict[str, Any]:
-        """Patch arbitrary issue fields."""
-        return await self._request("PATCH", f"/issues/{issue_key}", json=fields)
+        """Patch arbitrary issue fields (alias for patch_issue with kwargs)."""
+        return await self.patch_issue(issue_key, fields)
 
     async def comment_issue(self, issue_key: str, text: str) -> dict[str, Any]:
         """Add a comment to an issue."""
@@ -158,15 +180,9 @@ class TrackerClient:
         queue: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """
-        Search issues using Yandex Query Language (YQL).
-
-        Examples::
-            await client.search_issues('Queue: DARKHORSE AND Status: "In Progress"')
-            await client.search_issues("assignee: me()", queue="DARKHORSE")
-        """
+        """Search issues using Yandex Query Language (YQL)."""
         yql = query
-        if queue and "Queue:" not in query:
+        if queue and "Queue:" not in query and "queue:" not in query.lower():
             yql = f'Queue: "{queue}" AND ({query})'
         result = await self._request(
             "POST",
@@ -175,37 +191,164 @@ class TrackerClient:
         )
         return result if isinstance(result, list) else []
 
-    async def transition_issue(self, issue_key: str, transition_id: str) -> dict[str, Any]:
-        """Execute a workflow transition (e.g. 'close', 'inProgress')."""
-        transitions = await self._request("GET", f"/issues/{issue_key}/transitions")
+    # ------------------------------------------------------------------
+    # Followers
+    # ------------------------------------------------------------------
+
+    async def followers_add(self, issue_key: str, logins: list[str]) -> dict[str, Any]:
+        return await self.patch_issue(issue_key, {"followers": {"add": logins}})
+
+    async def followers_remove(self, issue_key: str, logins: list[str]) -> dict[str, Any]:
+        return await self.patch_issue(issue_key, {"followers": {"remove": logins}})
+
+    async def followers_set(self, issue_key: str, logins: list[str]) -> dict[str, Any]:
+        return await self.patch_issue(issue_key, {"followers": logins})
+
+    # ------------------------------------------------------------------
+    # Workflow transitions
+    # ------------------------------------------------------------------
+
+    async def list_transitions(self, issue_key: str) -> list[dict[str, Any]]:
+        """List available workflow transitions for an issue."""
+        result = await self._request("GET", f"/issues/{issue_key}/transitions")
+        return result if isinstance(result, list) else []
+
+    async def list_resolutions(self) -> list[dict[str, Any]]:
+        """List organization resolution types (for close transitions)."""
+        result = await self._request("GET", "/resolutions/")
+        return result if isinstance(result, list) else []
+
+    async def transition_issue(
+        self,
+        issue_key: str,
+        transition_id: str,
+        *,
+        resolution: str | None = None,
+        comment: str | None = None,
+        extra_fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Execute a workflow transition by id or display name (e.g. 'close', 'inProgress')."""
+        transitions = await self.list_transitions(issue_key)
         match = next(
             (
                 t
                 for t in transitions
                 if t.get("id") == transition_id
-                or t.get("display", "").lower() == transition_id.lower()
+                or (t.get("display") or "").lower() == transition_id.lower()
             ),
             None,
         )
         if match is None:
-            available = [t.get("id") for t in transitions]
-            raise TrackerError(f"Transition {transition_id!r} not found. Available: {available}")
+            available = [
+                {"id": t.get("id"), "display": t.get("display")} for t in transitions
+            ]
+            raise TrackerError(
+                f"Transition {transition_id!r} not found. Available: {available}"
+            )
+        body: dict[str, Any] = dict(extra_fields or {})
+        if resolution:
+            body["resolution"] = resolution
+        if comment:
+            body["comment"] = comment
         return await self._request(
-            "POST", f"/issues/{issue_key}/transitions/{match['id']}/_execute"
+            "POST",
+            f"/issues/{issue_key}/transitions/{match['id']}/_execute",
+            json=body if body else None,
         )
 
     # ------------------------------------------------------------------
-    # Queues
+    # Links
     # ------------------------------------------------------------------
 
-    async def get_queue(self, queue_key: str) -> dict[str, Any]:
-        """Return queue metadata."""
-        return await self._request("GET", f"/queues/{queue_key}")
+    async def set_parent(self, issue_key: str, parent_key: str) -> dict[str, Any]:
+        """Set parent issue (subtask relationship)."""
+        return await self.patch_issue(issue_key, {"parent": parent_key})
+
+    # ------------------------------------------------------------------
+    # Queues & metadata
+    # ------------------------------------------------------------------
+
+    async def get_queue(self, queue_key: str, *, expand: str | None = None) -> dict[str, Any]:
+        """Return queue metadata. Use expand='team' for teamUsers."""
+        params = {"expand": expand} if expand else None
+        return await self._request("GET", f"/queues/{queue_key}", params=params)
+
+    async def list_users(self, *, per_page: int = 100, page: int = 1) -> list[dict[str, Any]]:
+        """List organization users (paginated)."""
+        result = await self._request(
+            "GET",
+            f"/users/?perPage={per_page}&page={page}",
+        )
+        return result if isinstance(result, list) else []
 
     async def list_queues(self) -> list[dict[str, Any]]:
         """List all accessible queues."""
         result = await self._request("GET", "/queues/")
         return result if isinstance(result, list) else []
+
+    async def get_queue_local_fields(self, queue_key: str) -> list[dict[str, Any]]:
+        """Return local (queue-specific) field definitions."""
+        try:
+            result = await self._request("GET", f"/queues/{queue_key}/localFields")
+            return result if isinstance(result, list) else []
+        except TrackerError as exc:
+            if exc.status_code == 404:
+                return []
+            raise
+
+    async def get_queue_meta(self, queue_key: str) -> dict[str, Any]:
+        """
+        Combined queue metadata for agents: queue info, issue types, priorities, local fields.
+        """
+        queue = await self.get_queue(queue_key)
+        local_fields = await self.get_queue_local_fields(queue_key)
+
+        def _summarize_options(items: Any) -> list[dict[str, str]]:
+            if not isinstance(items, list):
+                return []
+            out: list[dict[str, str]] = []
+            for item in items:
+                if isinstance(item, dict):
+                    out.append(
+                        {
+                            "id": str(item.get("id", "")),
+                            "key": str(item.get("key", "")),
+                            "name": str(item.get("name", item.get("display", ""))),
+                        }
+                    )
+                elif isinstance(item, str):
+                    out.append({"key": item, "name": item})
+            return out
+
+        issue_types = _summarize_options(queue.get("issueTypes") or queue.get("issueTypesConfig"))
+        priorities = _summarize_options(queue.get("priorities") or queue.get("priority"))
+        resolutions_raw = await self.list_resolutions()
+        resolutions = _summarize_options(resolutions_raw)
+
+        field_catalog = [
+            {
+                "id": f.get("id"),
+                "name": f.get("name"),
+                "type": (f.get("schema") or {}).get("type"),
+            }
+            for f in local_fields
+            if isinstance(f, dict)
+        ]
+
+        return {
+            "queue_key": queue.get("key", queue_key),
+            "queue_name": queue.get("name"),
+            "issue_types": issue_types,
+            "priorities": priorities,
+            "resolutions": resolutions,
+            "local_fields": field_catalog,
+            "hint": (
+                "Use standard keys: summary, description, assignee, priority, type, tags, "
+                "deadline, storyPoints, sprint, parent, followers. "
+                "On close pass resolution (default fixed) via tracker_close_issue. "
+                "Custom queue fields use their id from local_fields in custom_fields."
+            ),
+        }
 
 
 __all__ = ["TrackerClient", "TrackerError"]

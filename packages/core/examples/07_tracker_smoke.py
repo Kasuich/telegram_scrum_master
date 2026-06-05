@@ -1,5 +1,5 @@
 """
-Smoke test: create → get → comment → close an issue in real Yandex Tracker.
+Smoke test: full PM workflow in real Yandex Tracker.
 
 Run from packages/core/:
     python examples/07_tracker_smoke.py
@@ -27,7 +27,6 @@ from core.tracker import TrackerClient, TrackerError  # noqa: E402
 
 
 async def _detect_org_type(token: str, org_id: str) -> str:
-    """Auto-detect correct org header type."""
     import httpx
 
     async with httpx.AsyncClient(timeout=10) as client:
@@ -47,39 +46,39 @@ async def main() -> None:
     queue = cfg.tracker_queue
 
     org_type = await _detect_org_type(cfg.tracker_token, cfg.tracker_org_id)
-    print(f"Queue: {queue!r}  Org type detected: {org_type!r}")
-    print(f"  (add TRACKER_ORG_TYPE={org_type} to .env to skip auto-detect)")
+    print(f"Queue: {queue!r}  Org type: {org_type!r}")
 
     async with TrackerClient(org_type=org_type) as client:
-        # 1. Check queue
-        q = await client.get_queue(queue)
-        print(f"\n✅ Queue: {q['key']} — {q.get('name')}")
+        meta = await client.get_queue_meta(queue)
+        print(f"\n✅ Queue meta: {meta['queue_name']} ({meta['queue_key']})")
+        print(f"   Local fields: {len(meta.get('local_fields', []))}")
 
-        # 2. Create issue
         issue = await client.create_issue(
             queue,
-            summary="[SMOKE] Тестовая задача от PM-агента",
-            description="Автоматически создана smoke-тестом. Можно закрыть.",
+            summary="[SMOKE] PM agent full fields test",
+            description="Smoke test. Safe to close.",
             priority="minor",
+            deadline="2026-12-31",
+            story_points=1,
+            tags=["smoke", "pm-agent"],
         )
         key = issue["key"]
-        print(f"✅ Created: {key} — {issue['summary']}")
+        print(f"\n✅ Created: {key}")
         print(f"   URL: https://tracker.yandex.ru/{key}")
 
-        # 3. Get issue
         fetched = await client.get_issue(key)
-        print(f"✅ Get: {fetched['key']} status={fetched.get('status', {}).get('display')}")
+        print(f"✅ Get: status={fetched.get('status', {}).get('display')}")
 
-        # 4. Comment
-        comment = await client.comment_issue(key, "Это автоматический комментарий от PM-агента.")
-        print(f"✅ Comment id={comment.get('id')}")
+        transitions = await client.list_transitions(key)
+        print(f"✅ Transitions: {[t.get('display') for t in transitions[:5]]}")
 
-        # 5. Search
-        results = await client.search_issues("summary: SMOKE", queue=queue)
-        print(f"✅ Search: found {len(results)} issue(s) matching 'SMOKE'")
+        await client.comment_issue(key, "Smoke comment from PM platform.")
+        print("✅ Comment added")
 
-        print(f"\nДля закрытия задачи выполните close: tracker.transition_issue('{key}', 'close')")
-        print("Или закройте вручную в интерфейсе Трекера.")
+        results = await client.search_issues('Summary: "[SMOKE] PM agent"', queue=queue)
+        print(f"✅ Search: {len(results)} issue(s)")
+
+        print(f"\nClose manually or: transition_issue('{key}', 'close')")
 
 
 if __name__ == "__main__":
