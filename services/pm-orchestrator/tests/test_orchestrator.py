@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from core.agent import BaseAgent, LLMSettings
+from core.exceptions import AgentError
 from core.react import AgentResult, PendingConfirm
 from core.tools import ToolRegistry
 from fastapi.testclient import TestClient
@@ -136,6 +139,24 @@ class TestOrchestratorService:
         with patch.object(svc._runners["alpha"], "invoke", AsyncMock(return_value=result)):
             await svc.invoke("alpha", "hi", "s1")
         assert any(a["kind"] == "tool_call" for a in svc.actions)
+
+    async def test_invoke_blocked_when_agent_disabled(self):
+        svc = self._svc(_make_agent("alpha"))
+        svc._db_enabled = True
+        svc._team_id = "00000000-0000-0000-0000-000000000001"
+
+        class FakeSession:
+            async def execute(self, stmt):
+                del stmt
+                return SimpleNamespace(scalar_one_or_none=lambda: SimpleNamespace(enabled=False))
+
+        @asynccontextmanager
+        async def fake_get_session():
+            yield FakeSession()
+
+        with patch("core.db.get_session", fake_get_session):
+            with pytest.raises(AgentError, match="disabled"):
+                await svc.invoke("alpha", "hi", "s1")
 
 
 # ---------------------------------------------------------------------------

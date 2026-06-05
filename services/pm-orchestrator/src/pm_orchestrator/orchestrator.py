@@ -19,6 +19,7 @@ from typing import Any
 from core.agent import BaseAgent
 from core.config import RuntimeConfig, get_config
 from core.effective_config import EffectiveAgentConfig, build_effective_config
+from core.exceptions import AgentError
 from core.react import AgentResult, ReActRunner
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,34 @@ class OrchestratorService:
             logger.warning("Failed to load effective config for %s: %s", agent_name, exc)
             return None
 
+    async def _ensure_agent_enabled(self, agent_name: str) -> None:
+        """Block runtime calls when the console kill-switch disabled an agent."""
+        if not self._db_enabled or self._team_id is None:
+            return
+
+        try:
+            import uuid
+
+            from core.db import get_session
+            from core.models import AgentInstance
+            from sqlalchemy import select
+
+            async with get_session() as session:
+                row = (
+                    await session.execute(
+                        select(AgentInstance).where(
+                            AgentInstance.team_id == uuid.UUID(self._team_id),
+                            AgentInstance.name == agent_name,
+                        )
+                    )
+                ).scalar_one_or_none()
+        except Exception as exc:
+            logger.warning("Failed to check agent enabled state for %s: %s", agent_name, exc)
+            return
+
+        if row is not None and not row.enabled:
+            raise AgentError(f"Agent disabled by console kill-switch: {agent_name}")
+
     # ------------------------------------------------------------------
     # Agent info
     # ------------------------------------------------------------------
@@ -180,6 +209,7 @@ class OrchestratorService:
 
     async def invoke(self, agent_name: str, message: str, session_id: str) -> AgentResult:
         runner = self._runner(agent_name)
+        await self._ensure_agent_enabled(agent_name)
         eff = await self._load_effective_config(agent_name)
         eff_prompt = eff.prompt if eff else None
         eff_rc = eff.runtime_config if eff else None
@@ -212,6 +242,7 @@ class OrchestratorService:
         if agent_name is None:
             raise KeyError(f"Confirm not found: {confirm_id!r}")
         runner = self._runner(agent_name)
+        await self._ensure_agent_enabled(agent_name)
         eff = await self._load_effective_config(agent_name)
         eff_prompt = eff.prompt if eff else None
         eff_rc = eff.runtime_config if eff else None

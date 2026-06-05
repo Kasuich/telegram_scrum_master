@@ -32,6 +32,12 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     ports:
       - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,9 +59,61 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
     depends_on:
-      - pm-orchestrator
-      - postgres
+      pm-orchestrator:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  console-api:
+    build:
+      context: .
+      dockerfile: services/console-api/Dockerfile
+    restart: unless-stopped
+    environment:
+      PLATFORM_API_URL: http://platform-api:8000
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      YC_API_KEY: ${YC_API_KEY}
+      YC_FOLDER_ID: ${YC_FOLDER_ID}
+      TRACKER_TOKEN: ${TRACKER_TOKEN}
+      TRACKER_ORG_ID: ${TRACKER_ORG_ID}
+      TRACKER_ORG_TYPE: ${TRACKER_ORG_TYPE:-360}
+      DEFAULT_TEAM_ID: ${DEFAULT_TEAM_ID:-00000000-0000-0000-0000-000000000001}
+      ENVIRONMENT: ${ENVIRONMENT}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CONSOLE_ADMIN_EMAIL: ${CONSOLE_ADMIN_EMAIL:-admin@example.com}
+      CONSOLE_ADMIN_PASSWORD: ${CONSOLE_ADMIN_PASSWORD:-admin}
+      CONSOLE_CORS_ORIGINS: ${CONSOLE_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    depends_on:
+      platform-api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  web-ui:
+    build:
+      context: .
+      dockerfile: apps/web-ui/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      console-api:
+        condition: service_healthy
 
 volumes:
   postgres_data:

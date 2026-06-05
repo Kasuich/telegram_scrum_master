@@ -1,13 +1,20 @@
 [project]
-name = "pm-orchestrator"
+name = "console-api"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "core",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.29",
+    "httpx>=0.25",
     "pydantic>=2.0",
 ]
+
+[tool.uv.sources]
+core = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/console_api"]
 
 [project.optional-dependencies]
 test = [
@@ -19,12 +26,6 @@ test = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-
-[tool.uv.sources]
-core = { workspace = true }
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/pm_orchestrator"]
 
 [build-system]
 requires = ["hatchling"]
