@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -172,6 +173,7 @@ class Team(Base):
         "RuntimeConfigModel", back_populates="team"
     )
     actions: Mapped[list[Action]] = relationship("Action", back_populates="team")
+    meetings: Mapped[list[Meeting]] = relationship("Meeting", back_populates="team")
 
 
 class AgentSpec(Base):
@@ -465,6 +467,139 @@ class ActionFeedback(Base):
     user: Mapped[User | None] = relationship("User", back_populates="feedback")
 
 
+class Meeting(Base):
+    """Captured Telemost meeting lifecycle state."""
+
+    __tablename__ = "meetings"
+    __table_args__ = (
+        Index("idx_meetings_team_status", "team_id", "status"),
+        Index("idx_meetings_scheduled_at", "scheduled_at"),
+        CheckConstraint(
+            "status IN ("
+            "'scheduled', 'joining', 'waiting_room', 'recording', 'transcribing', "
+            "'ready', 'failed', 'skipped'"
+            ")",
+            name="ck_meetings_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    telemost_url: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="scheduled")
+    language: Mapped[str] = mapped_column(String(16), nullable=False, default="ru-RU")
+    consent_ack: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    recording_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    team: Mapped[Team] = relationship("Team", back_populates="meetings")
+    artifacts: Mapped[list[MeetingArtifact]] = relationship(
+        "MeetingArtifact",
+        back_populates="meeting",
+        cascade="all, delete-orphan",
+    )
+    transcript: Mapped[Transcript | None] = relationship(
+        "Transcript",
+        back_populates="meeting",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class MeetingArtifact(Base):
+    """Object-storage artifact produced by a captured meeting."""
+
+    __tablename__ = "meeting_artifacts"
+    __table_args__ = (
+        Index("idx_meeting_artifacts_meeting_id", "meeting_id"),
+        CheckConstraint(
+            "kind IN ('recording', 'audio', 'screenshot', 'log')",
+            name="ck_meeting_artifacts_kind",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    meeting_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("meetings.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    object_key: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    meeting: Mapped[Meeting] = relationship("Meeting", back_populates="artifacts")
+
+
+class Transcript(Base):
+    """Speaker-attributed transcript for a captured meeting."""
+
+    __tablename__ = "transcripts"
+    __table_args__ = (
+        Index("idx_transcripts_meeting_id", "meeting_id"),
+        UniqueConstraint("meeting_id", name="uq_transcripts_meeting_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    meeting_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("meetings.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="speechkit")
+    segments: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    participants_observed: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    meeting: Mapped[Meeting] = relationship("Meeting", back_populates="transcript")
+
+
 __all__ = [
     "Base",
     "Organization",
@@ -479,4 +614,7 @@ __all__ = [
     "RuntimeConfigModel",
     "ScheduledJob",
     "ActionFeedback",
+    "Meeting",
+    "MeetingArtifact",
+    "Transcript",
 ]

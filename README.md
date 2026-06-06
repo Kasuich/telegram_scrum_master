@@ -98,6 +98,7 @@ docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compos
 |--------|-----|
 | Platform API | http://localhost:8000/docs |
 | PM Orchestrator | http://localhost:8001 |
+| Meeting Capture | http://localhost:8003/health |
 | Prometheus | http://localhost:9090 |
 | Grafana | http://localhost:3000 |
 

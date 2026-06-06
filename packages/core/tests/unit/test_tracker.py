@@ -99,6 +99,11 @@ class TestTrackerClientHeaders:
 
 
 class TestTrackerClientErrors:
+    async def test_missing_token_fails_on_request_not_config_load(self):
+        c = TrackerClient(token="", org_id="org", org_type="360", base_url=_BASE)
+        with pytest.raises(TrackerError, match="TRACKER_TOKEN"):
+            await c.get_issue("TEST-1")
+
     async def test_403_raises_tracker_error(self):
         c = _client()
         with _patch_request(_err(403, "Access denied")):

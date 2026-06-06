@@ -104,8 +104,10 @@ class TrackerConfig(BaseSettings):
     @field_validator("tracker_token")
     @classmethod
     def validate_tracker_token(cls, v: str) -> str:
-        """Validate tracker token is not empty."""
-        if not v or len(v) < 10:
+        """Validate non-empty tracker tokens while allowing services to boot without Tracker."""
+        if not v:
+            return v
+        if len(v) < 10:
             raise ValueError("tracker_token must be at least 10 characters")
         return v
 

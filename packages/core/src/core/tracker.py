@@ -57,6 +57,14 @@ class TrackerClient:
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
 
+    def _ensure_configured(self) -> None:
+        if not self._token:
+            raise TrackerError("Yandex Tracker token is not configured. Set TRACKER_TOKEN.")
+        if not self._org_id:
+            raise TrackerError(
+                "Yandex Tracker organization ID is not configured. Set TRACKER_ORG_ID."
+            )
+
     async def __aenter__(self) -> TrackerClient:
         self._client = httpx.AsyncClient(timeout=self._timeout)
         return self
@@ -84,6 +92,7 @@ class TrackerClient:
         return self._client
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        self._ensure_configured()
         url = f"{self._base}/{path.lstrip('/')}"
         response = await self._http.request(method, url, headers=self._headers(), **kwargs)
         if response.status_code == 403:
