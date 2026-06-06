@@ -109,6 +109,12 @@ class TestTrackerConfig:
             )
         assert "10 characters" in str(exc_info.value)
 
+    def test_empty_token_allowed_for_boot_without_tracker(self) -> None:
+        """Empty token lets services boot; TrackerClient fails only when used."""
+        config = TrackerConfig(tracker_token="", tracker_org_id="")
+        assert config.tracker_token == ""
+        assert config.tracker_org_id == ""
+
 
 class TestLLMConfig:
     """Tests for LLMConfig."""
