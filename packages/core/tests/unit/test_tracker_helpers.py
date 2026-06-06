@@ -3,21 +3,24 @@
 from __future__ import annotations
 
 import pytest
+
 from core.backlog_plan import ensure_queue_meta, parse_backlog_plan, plan_has_issues
+from core.config import reload_config
 from core.tracker_tool_helpers import normalize_deadline
 from core.tracker_tools import _effective_queue
 
 
-@pytest.fixture(autouse=True)
-def _tracker_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_effective_queue_ignores_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRACKER_QUEUE", "DARKHORSE")
-
-
-def test_effective_queue_ignores_default() -> None:
-    assert _effective_queue("") == "DARKHORSE"
-    assert _effective_queue("default") == "DARKHORSE"
-    assert _effective_queue("DEFAULT") == "DARKHORSE"
-    assert _effective_queue("DARKHORSE") == "DARKHORSE"
+    reload_config()
+    try:
+        assert _effective_queue("") == "DARKHORSE"
+        assert _effective_queue("default") == "DARKHORSE"
+        assert _effective_queue("DEFAULT") == "DARKHORSE"
+        assert _effective_queue("DARKHORSE") == "DARKHORSE"
+    finally:
+        monkeypatch.setenv("TRACKER_QUEUE", "TEST")
+        reload_config()
 
 
 def test_normalize_deadline_iso_with_time() -> None:

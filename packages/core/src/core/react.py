@@ -475,6 +475,8 @@ class ReActRunner:
         tool_args = confirm["tool_args"]
 
         state = await self._load_session(ctx, session_id)
+        # Include resume-time steps (tool_result / confirm_rejected) in this turn's output.
+        state["_steps_before_turn"] = len(state["steps"])
 
         if approved:
             try:
@@ -532,7 +534,7 @@ class ReActRunner:
         tool_schemas = self.agent._resolve_tool_schemas()
         registry = get_registry()
         action_only = getattr(self.agent, "action_only", False)
-        steps_before_turn = len(steps)
+        steps_before_turn = state.pop("_steps_before_turn", len(steps))
 
         for iteration in range(self.max_iterations):
             logger.debug(

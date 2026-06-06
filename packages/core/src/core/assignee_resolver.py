@@ -83,8 +83,33 @@ def _env_alias_map() -> dict[str, str]:
     return {}
 
 
-def _match_score(query: str, user: TrackerUser) -> float:
+# Cyrillic nicknames → latin/name fragments for team matching (e.g. «Рома» → Roman).
+_CYRILLIC_NICKNAME_HINTS: dict[str, tuple[str, ...]] = {
+    "рома": ("roman", "roma"),
+    "ромы": ("roman", "roma"),
+    "рому": ("roman", "roma"),
+    "роме": ("roman", "roma"),
+    "коля": ("nikolai", "николай", "nukolaus"),
+    "колю": ("nikolai", "николай", "nukolaus"),
+    "коли": ("nikolai", "николай", "nukolaus"),
+    "сережа": ("sergey", "sergei", "сергей"),
+    "сереже": ("sergey", "sergei", "сергей"),
+    "сергея": ("sergey", "sergei", "сергей"),
+}
+
+
+def _query_variants(query: str) -> list[str]:
     q = _norm(query)
+    if not q:
+        return []
+    variants = [q]
+    hints = _CYRILLIC_NICKNAME_HINTS.get(q)
+    if hints:
+        variants.extend(hints)
+    return variants
+
+
+def _match_score_one(q: str, user: TrackerUser) -> float:
     if not q:
         return 0.0
     parts = [
@@ -113,6 +138,13 @@ def _match_score(query: str, user: TrackerUser) -> float:
             best = max(best, 0.82)
         best = max(best, difflib.SequenceMatcher(None, q, word).ratio())
     return best
+
+
+def _match_score(query: str, user: TrackerUser) -> float:
+    variants = _query_variants(query)
+    if not variants:
+        return 0.0
+    return max(_match_score_one(q, user) for q in variants)
 
 
 def best_user_match(
