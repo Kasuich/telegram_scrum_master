@@ -43,6 +43,7 @@ services:
       dockerfile: services/platform-api/Dockerfile
     restart: unless-stopped
     environment:
+      CHAT_MAX_MESSAGE_LENGTH: ${CHAT_MAX_MESSAGE_LENGTH:-100000}
       ORCHESTRATOR_URL: http://pm-orchestrator:8001
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       YC_API_KEY: ${YC_API_KEY}

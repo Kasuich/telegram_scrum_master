@@ -2,6 +2,14 @@
 Test fixtures for core package tests.
 """
 
+import os
+
+# Minimal env so pydantic Config loads during unit tests without a real .env
+os.environ.setdefault("YC_API_KEY", "test_api_key_" + "x" * 24)
+os.environ.setdefault("YC_FOLDER_ID", "b1gtestfolder00000000")
+os.environ.setdefault("TRACKER_TOKEN", "test_tracker_token_" + "x" * 16)
+os.environ.setdefault("TRACKER_ORG_ID", "12345678901234567890")
+
 import asyncio
 from typing import Any, Generator
 from unittest.mock import MagicMock

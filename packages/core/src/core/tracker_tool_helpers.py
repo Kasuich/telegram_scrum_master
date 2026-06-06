@@ -4,7 +4,57 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date
 from typing import Any
+
+_RU_MONTHS: dict[str, int] = {
+    "января": 1,
+    "февраля": 2,
+    "марта": 3,
+    "апреля": 4,
+    "мая": 5,
+    "июня": 6,
+    "июля": 7,
+    "августа": 8,
+    "сентября": 9,
+    "октября": 10,
+    "ноября": 11,
+    "декабря": 12,
+}
+
+
+def normalize_deadline(value: str) -> str | dict[str, str]:
+    """
+    Normalize deadline for Tracker API (YYYY-MM-DD only).
+
+    Accepts ISO date with time, DD.MM.YYYY, and Russian «7 июня 2026».
+    """
+    s = (value or "").strip()
+    if not s:
+        return ""
+
+    iso = re.match(r"^(\d{4}-\d{2}-\d{2})", s)
+    if iso:
+        return iso.group(1)
+
+    dotted = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})", s)
+    if dotted:
+        d, m, y = int(dotted.group(1)), int(dotted.group(2)), int(dotted.group(3))
+        return date(y, m, d).isoformat()
+
+    ru = re.search(
+        r"(\d{1,2})\s+([а-яё]+)\s+(\d{4})",
+        s.lower().replace("ё", "е"),
+    )
+    if ru:
+        day = int(ru.group(1))
+        month_name = ru.group(2)
+        year = int(ru.group(3))
+        month = _RU_MONTHS.get(month_name)
+        if month:
+            return date(year, month, day).isoformat()
+
+    return {"error": f"Invalid deadline format (use YYYY-MM-DD): {value!r}"}
 
 
 def parse_csv_logins(value: str) -> list[str]:
@@ -200,7 +250,10 @@ def build_patch_body(
     if tag_list:
         fields["tags"] = tag_list
     if deadline:
-        fields["deadline"] = deadline
+        normalized = normalize_deadline(deadline)
+        if isinstance(normalized, dict):
+            return normalized
+        fields["deadline"] = normalized
     if story_points:
         try:
             sp = float(story_points)

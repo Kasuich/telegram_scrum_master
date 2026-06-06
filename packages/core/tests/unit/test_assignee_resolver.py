@@ -51,3 +51,22 @@ def test_extract_mention_na_kolyu():
 def test_extract_mention_dlya_romy():
     m = extract_assignee_mention("Заведи для Ромы задачу CI")
     assert m is not None
+
+
+def test_extract_not_novaya_from_nuzhna_novaya_zadacha():
+    """Regression: «нужна новая задача» must not yield assignee «новая»."""
+    assert extract_assignee_mention("Нам нужна новая задача — разобраться") is None
+
+
+def test_extract_from_chat_transcript_naznachim_kolyu():
+    msg = (
+        "Рома: Нам нужна новая задача.\n"
+        "Артем: Ответственным назначим Колю?\n"
+        "Коля: Ок, сделаю.\n"
+        "Рома: Задача: Коля готовит инструкцию до пятницы."
+    )
+    assert extract_assignee_mention(msg) == "Колю"
+
+
+def test_extract_zadacha_kolya_line():
+    assert extract_assignee_mention("Задача: Коля готовит инструкцию") == "Коля"

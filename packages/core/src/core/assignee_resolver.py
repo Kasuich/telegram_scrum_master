@@ -178,18 +178,57 @@ async def resolve_assignee(
     return AssigneeMatch(login=raw, display=raw, score=0.0, query=raw)
 
 
+_ASSIGNEE_STOPWORDS = frozenset(
+    {
+        "новая",
+        "новую",
+        "новой",
+        "новые",
+        "новый",
+        "задача",
+        "задачу",
+        "задачи",
+        "задачей",
+        "команду",
+        "команды",
+        "команде",
+        "инструкцию",
+        "инструкции",
+        "трекер",
+        "трекера",
+        "ответственным",
+    }
+)
+
+
+def _clean_assignee_token(raw: str) -> str | None:
+    name = raw.strip().strip(".,?!:;\"'«»")
+    if not name or len(name) < 2:
+        return None
+    if _norm(name) in _ASSIGNEE_STOPWORDS:
+        return None
+    return name
+
+
 def extract_assignee_mention(message: str) -> str | None:
-    """Pull a person name from natural Russian phrasing."""
+    """Pull assignee name from Russian chat / PM phrasing."""
     text = message.strip()
+    # Higher priority first (chat transcripts, explicit assignment)
     patterns = [
-        r"(?:на|для)\s+([А-Яа-яA-Za-z][А-Яа-яA-Za-z.\-]*)",
+        r"ответственн\w*\s+назначим\s+([А-Яа-яA-Za-z][А-Яа-яA-Za-z.\-]*)",
+        r"назначим\s+([А-Яа-яA-Za-z][А-Яа-яA-Za-z.\-]*)",
+        r"задача:\s*([А-Яа-яA-Za-z][А-Яа-яA-Za-z.\-]*)",
         r"(?:исполнител[ьяюе]|assignee)\s+([А-Яа-яA-Za-z][А-Яа-яA-Za-z.\-]*)",
+        # «на/для» only as separate words (not «нужна новая»)
+        r"(?:^|\s)(?:на|для)\s+([А-Яа-яA-Za-z][А-Яа-яA-Za-z.\-]*)",
         r"задач[ауеи]?\s+([А-Яа-я][А-Яа-я.\-]*)",
     ]
     for pat in patterns:
-        m = re.search(pat, text, re.IGNORECASE)
+        m = re.search(pat, text, re.IGNORECASE | re.MULTILINE)
         if m:
-            return m.group(1).strip()
+            cleaned = _clean_assignee_token(m.group(1))
+            if cleaned:
+                return cleaned
     return None
 
 

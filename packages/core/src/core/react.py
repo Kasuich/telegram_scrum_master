@@ -177,6 +177,37 @@ def _format_action_tool_line(tool_name: str, result: dict[str, Any]) -> str:
         key = result.get("issue_key", "")
         text = (result.get("text") or "")[:120]
         return f"Комментарий к {key}: {text}"
+    if tool_name == "backlog_plan":
+        if result.get("error"):
+            return f"backlog_plan: {result['error']}"
+        return (
+            f"План: epic={'да' if result.get('create_epic') else 'нет'}, "
+            f"stories={result.get('stories_count', 0)}, "
+            f"tasks={result.get('tasks_count', 0)}"
+        )
+    if tool_name == "tracker_apply_backlog_plan":
+        if result.get("error"):
+            return f"tracker_apply_backlog_plan: {result['error']}"
+        epic = result.get("epic_key")
+        n = result.get("created_count", 0)
+        err_n = result.get("error_count", 0)
+        if n == 0 and err_n == 0:
+            return "Доска: не создано ни одной задачи — план пуст или backlog_plan завершился с ошибкой"
+        line = f"Доска: создано {n} задач"
+        if epic:
+            line += f", эпик {epic}"
+        if err_n:
+            line += f", ошибок {err_n}"
+        tree = result.get("tree") or []
+        if tree:
+            line += "\n" + "\n".join(tree[:6])
+        critical = result.get("critical") or []
+        if critical:
+            crit_parts = [
+                f"{c.get('key')} до {c.get('deadline', '?')}" for c in critical[:3]
+            ]
+            line += "\nCritical: " + "; ".join(crit_parts)
+        return line
     key = result.get("key") or result.get("issue_key", "")
     if key:
         return f"{tool_name}: {key}"
@@ -215,6 +246,12 @@ def _should_auto_finalize_turn(turn_steps: list[dict[str, Any]]) -> bool:
                 "tracker_comment_issue",
             }:
                 return True
+    apply_done = any(
+        s.get("kind") == "tool_result" and s.get("tool_name") == "tracker_apply_backlog_plan"
+        for s in turn_steps
+    )
+    if apply_done:
+        return True
     if len(results) >= 3:
         write_results = [
             s
@@ -251,6 +288,9 @@ def _build_action_report(steps: list[dict[str, Any]]) -> str:
     if not lines:
         return ""
     errors = [ln for ln in lines if ln.startswith("ОШИБКА")]
+    board = [ln for ln in lines if ln.startswith("Доска:")]
+    if board:
+        return board[-1]
     created = [ln for ln in lines if ln.startswith("Создана")]
     if created:
         return created[-1]
@@ -401,6 +441,9 @@ class ReActRunner:
         state["messages"].append({"role": "user", "content": message})
         state["_turn_user_message"] = message
         state["_action_only_nudges"] = 0
+        from core.backlog_context import set_pending_backlog_plan
+
+        set_pending_backlog_plan(None)
         return await self._run_loop(ctx, session_id, state)
 
     async def resume(
@@ -685,13 +728,20 @@ class ReActRunner:
                 continue
 
             # --- Auto-execute ---
+            exec_args = dict(tool_call.arguments)
+            if tool_call.name == "tracker_apply_backlog_plan":
+                from core.backlog_tools import plan_json_looks_invalid
+
+                if plan_json_looks_invalid(str(exec_args.get("plan_json", ""))):
+                    exec_args["plan_json"] = ""
+
             try:
-                result = await self._execute_tool(tool_call.name, tool_call.arguments)
+                result = await self._execute_tool(tool_call.name, exec_args)
                 steps.append(
                     _step(
                         "tool_result",
                         tool_name=tool_call.name,
-                        tool_args=tool_call.arguments,
+                        tool_args=exec_args,
                         result=result,
                     )
                 )
@@ -700,11 +750,70 @@ class ReActRunner:
                     confirm_id=None,
                     session_id=session_id,
                     tool_name=tool_call.name,
-                    tool_args=tool_call.arguments,
+                    tool_args=exec_args,
                     risk=tool.risk,
                     status="completed",
                     output=result,
                 )
+
+                if (
+                    tool_call.name == "backlog_plan"
+                    and isinstance(result, dict)
+                    and result.get("plan")
+                    and not result.get("error")
+                    and (result.get("tasks_count", 0) > 0 or result.get("stories_count", 0) > 0)
+                ):
+                    from core.backlog_context import set_pending_backlog_plan
+                    from core.turn_guards import message_has_backlog_intent
+
+                    set_pending_backlog_plan(result["plan"])
+                    turn_msg = state.get("_turn_user_message", "")
+                    apply_done = any(
+                        s.get("kind") == "tool_result"
+                        and s.get("tool_name") == "tracker_apply_backlog_plan"
+                        for s in steps[steps_before_turn:]
+                    )
+                    if message_has_backlog_intent(turn_msg) and not apply_done:
+                        apply_args = {"plan_json": ""}
+                        apply_tool = registry.get("tracker_apply_backlog_plan")
+                        steps.append(
+                            _step(
+                                "tool_call",
+                                tool_name="tracker_apply_backlog_plan",
+                                tool_args=apply_args,
+                            )
+                        )
+                        try:
+                            apply_result = await self._execute_tool(
+                                "tracker_apply_backlog_plan", apply_args
+                            )
+                            steps.append(
+                                _step(
+                                    "tool_result",
+                                    tool_name="tracker_apply_backlog_plan",
+                                    tool_args=apply_args,
+                                    result=apply_result,
+                                )
+                            )
+                            await self._persist_action(
+                                ctx,
+                                confirm_id=None,
+                                session_id=session_id,
+                                tool_name="tracker_apply_backlog_plan",
+                                tool_args=apply_args,
+                                risk=apply_tool.risk,
+                                status="completed",
+                                output=apply_result,
+                            )
+                        except Exception as apply_exc:
+                            steps.append(
+                                _step(
+                                    "tool_error",
+                                    tool_name="tracker_apply_backlog_plan",
+                                    error=str(apply_exc),
+                                )
+                            )
+
                 feedback = _tool_result_message(
                     tool_call.name, result, action_only=action_only
                 )
@@ -716,7 +825,7 @@ class ReActRunner:
                     confirm_id=None,
                     session_id=session_id,
                     tool_name=tool_call.name,
-                    tool_args=tool_call.arguments,
+                    tool_args=exec_args,
                     risk=tool.risk,
                     status="failed",
                 )

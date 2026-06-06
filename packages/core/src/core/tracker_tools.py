@@ -23,6 +23,7 @@ from core.tracker_tool_helpers import (
     filter_issues_by_hint,
     format_assignee_yql,
     issue_summary,
+    normalize_deadline,
     normalize_tracker_yql,
     parse_csv_logins,
     parse_custom_fields_json,
@@ -30,8 +31,15 @@ from core.tracker_tool_helpers import (
 )
 
 
+_QUEUE_PLACEHOLDERS = frozenset({"default"})
+
+
 def _effective_queue(queue: str) -> str:
-    return queue or get_config().tracker.tracker_queue
+    """Resolve queue: empty or LLM placeholders → TRACKER_QUEUE from config."""
+    q = (queue or "").strip()
+    if not q or q.lower() in _QUEUE_PLACEHOLDERS:
+        return get_config().tracker.tracker_queue
+    return q
 
 
 def _queue_from_issue_key(issue_key: str, fallback: str = "") -> str:
@@ -308,6 +316,13 @@ async def tracker_create_issue(
             flogin, _ = await _resolve_login(name, client, q)
             follower_logins.append(flogin)
 
+        deadline_val: str | None = None
+        if deadline:
+            normalized = normalize_deadline(deadline)
+            if isinstance(normalized, dict):
+                return normalized
+            deadline_val = normalized
+
         issue = await client.create_issue(
             queue=q,
             summary=summary,
@@ -316,7 +331,7 @@ async def tracker_create_issue(
             assignee=assignee_login,
             issue_type=issue_type or None,
             tags=parse_tags(tags) or None,
-            deadline=deadline or None,
+            deadline=deadline_val,
             followers=follower_logins or None,
             story_points=sp_val,
             sprint=sprint or None,
