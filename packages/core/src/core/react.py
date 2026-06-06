@@ -188,14 +188,24 @@ def _format_action_tool_line(tool_name: str, result: dict[str, Any]) -> str:
             return f"tracker_apply_backlog_plan: {result['error']}"
         epic = result.get("epic_key")
         n = result.get("created_count", 0)
+        skip_n = result.get("skipped_count", 0)
         err_n = result.get("error_count", 0)
-        if n == 0 and err_n == 0:
+        if n == 0 and err_n == 0 and skip_n == 0:
             return (
                 "Доска: не создано ни одной задачи, план пуст или backlog_plan завершился с ошибкой"
             )
         line = f"Доска: создано {n} задач"
         if epic:
             line += f", эпик {epic}"
+        if skip_n:
+            line += f", пропущено дублей {skip_n}"
+            skipped = result.get("skipped") or []
+            if skipped:
+                examples = ", ".join(
+                    f"{s.get('key')}" for s in skipped[:2] if s.get("key")
+                )
+                if examples:
+                    line += f" ({examples})"
         if err_n:
             line += f", ошибок {err_n}"
         tree = result.get("tree") or []

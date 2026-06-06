@@ -5,8 +5,48 @@ from __future__ import annotations
 import pytest
 from core.backlog_plan import ensure_queue_meta, parse_backlog_plan, plan_has_issues
 from core.config import reload_config
-from core.tracker_tool_helpers import normalize_deadline
+from core.tracker_tool_helpers import (
+    apply_open_status_filter_to_yql,
+    build_find_yql,
+    filter_terminal_issues,
+    normalize_deadline,
+)
 from core.tracker_tools import _effective_queue
+
+
+def test_build_find_yql_excludes_terminal_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TRACKER_SEARCH_ALL_STATUSES", raising=False)
+    yql = build_find_yql(summary_hint="CI", assignee_login="login")
+    assert 'Status: !"Closed"' in yql
+    assert 'Status: !"Закрыт"' in yql
+    assert 'Status: !"Отменена"' in yql
+    assert "Summary:" in yql
+
+
+def test_build_find_yql_explicit_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TRACKER_SEARCH_ALL_STATUSES", raising=False)
+    yql = build_find_yql(summary_hint="CI", status="Закрыт")
+    assert 'Status: "Закрыт"' in yql
+    assert 'Status: !"' not in yql
+
+
+def test_apply_open_status_filter_skips_when_status_in_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRACKER_SEARCH_ALL_STATUSES", raising=False)
+    q = apply_open_status_filter_to_yql('Summary: "MCP" AND Status: "Закрыт"')
+    assert q == 'Summary: "MCP" AND Status: "Закрыт"'
+
+
+def test_filter_terminal_issues(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TRACKER_SEARCH_ALL_STATUSES", raising=False)
+    issues = [
+        {"key": "A-1", "status": {"key": "open", "display": "Открыт"}},
+        {"key": "A-2", "status": {"key": "closed", "display": "Закрыт"}},
+        {"key": "A-3", "status": {"key": "cancelled", "display": "Отменена"}},
+    ]
+    filtered = filter_terminal_issues(issues)
+    assert [i["key"] for i in filtered] == ["A-1"]
 
 
 def test_effective_queue_ignores_default(monkeypatch: pytest.MonkeyPatch) -> None:

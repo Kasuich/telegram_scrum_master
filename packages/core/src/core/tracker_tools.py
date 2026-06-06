@@ -19,13 +19,16 @@ from core.assignee_resolver import (
     resolve_assignee as match_assignee,
 )
 from core.config import get_config
+from core.issue_dedup import dedup_enabled_for_create, find_duplicate_issue
 from core.tools import platform_tool
 from core.tracker import TrackerClient, TrackerError
 from core.tracker_tool_helpers import (
     build_find_fallback_queries,
+    apply_open_status_filter_to_yql,
     build_find_yql,
     build_patch_body,
     filter_issues_by_hint,
+    filter_terminal_issues,
     format_assignee_yql,
     issue_summary,
     normalize_deadline,
@@ -157,6 +160,8 @@ async def tracker_find_issues(
     NOT for creating new tasks — use tracker_create_issue for «создай/заведи задачу».
     Use when the user mentions a task without key (e.g. «закрой CI», «задача Романа»).
     Filter by summary_hint (words from title), assignee (login), status.
+    By default excludes closed and cancelled issues; pass status= to search a specific one.
+    Set TRACKER_SEARCH_ALL_STATUSES=true to search every status.
     If issue_key is given (DARKHORSE-8), fetches that issue directly.
     Returns candidates — pick the best match, do not ask the user for a key.
     """
@@ -221,6 +226,7 @@ async def tracker_find_issues(
                     yql = fallback
                     break
 
+    issues = filter_terminal_issues(issues, explicit_status=status)
     issues = filter_issues_by_hint(issues, summary_hint)
     result_issues = [issue_summary(i, detailed=True) for i in issues]
     out: dict[str, Any] = {
@@ -244,14 +250,18 @@ async def tracker_search_issues(query: str, queue: str = "") -> dict[str, Any]:
       query='Assignee: shinkarenkorom'
       query='Status: Open'
     Do NOT use assignee = 'name' — use tracker_find_issues or Assignee: login.
+    By default excludes closed/cancelled unless Status: is present in the query.
     """
     q = _effective_queue(queue)
     async with TrackerClient() as client:
         yql = normalize_tracker_yql(query)
+        yql = apply_open_status_filter_to_yql(yql)
         yql = await _resolve_yql_assignees(yql, client, q)
         issues = await client.search_issues(yql, queue=q or None, limit=10)
+    issues = filter_terminal_issues(issues)
     return {
         "count": len(issues),
+        "query_used": yql,
         "issues": [issue_summary(i, detailed=False) for i in issues],
     }
 
@@ -298,6 +308,7 @@ async def tracker_create_issue(
     Use when the user asks to CREATE/ADD a task (создай, заведи, поставь задачу).
     assignee: login or display name — matched to nearest queue team member.
     Optional: description, priority, issue_type, tags, deadline, story_points, sprint, parent, …
+    Returns existing issue if a duplicate is found (closed counts; cancelled does not).
     """
     extra = parse_custom_fields_json(custom_fields)
     if "error" in extra:
@@ -329,13 +340,30 @@ async def tracker_create_issue(
                 return normalized
             deadline_val = normalized
 
+        resolved_type = issue_type or None
+        if dedup_enabled_for_create():
+            dup = await find_duplicate_issue(
+                client,
+                q,
+                summary=summary,
+                issue_type=issue_type or "",
+                parent_key=parent.strip() or None,
+            )
+            if dup:
+                out = issue_summary(dup, detailed=True)
+                out.update(assignee_meta)
+                key = out.get("key", "")
+                out["skipped_duplicate"] = True
+                out["message"] = f"Уже существует: {key}"
+                return out
+
         issue = await client.create_issue(
             queue=q,
             summary=summary,
             description=description or None,
             priority=priority or None,
             assignee=assignee_login,
-            issue_type=issue_type or None,
+            issue_type=resolved_type,
             tags=parse_tags(tags) or None,
             deadline=deadline_val,
             followers=follower_logins or None,

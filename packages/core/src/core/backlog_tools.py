@@ -18,6 +18,7 @@ from core.backlog_plan import (
 )
 from core.backlog_scheduler import compute_deadlines, sort_tasks_for_scheduling
 from core.config import get_config
+from core.issue_dedup import dedup_enabled_for_backlog, find_duplicate_issue
 from core.tools import platform_tool
 from core.tracker import TrackerClient, TrackerError
 from core.tracker_tools import _effective_queue, _resolve_login
@@ -173,6 +174,7 @@ async def _apply_plan_impl(
 
         id_map: dict[str, str] = {}
         created: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
 
         sorted_tasks = sort_tasks_for_scheduling(plan)
@@ -199,6 +201,28 @@ async def _apply_plan_impl(
             parent = parent_key
             if issue.parent_local_id and issue.parent_local_id in id_map:
                 parent = id_map[issue.parent_local_id]
+
+            if dedup_enabled_for_backlog():
+                dup = await find_duplicate_issue(
+                    client,
+                    queue,
+                    summary=issue.summary,
+                    issue_type=type_key,
+                    parent_key=parent,
+                )
+                if dup:
+                    key = str(dup.get("key") or "")
+                    id_map[issue.local_id] = key
+                    skipped.append(
+                        {
+                            "local_id": issue.local_id,
+                            "key": key,
+                            "summary": issue.summary,
+                            "status": (dup.get("status") or {}).get("display"),
+                            "reason": "duplicate",
+                        }
+                    )
+                    return
 
             try:
                 raw = await client.create_issue(
@@ -275,8 +299,10 @@ async def _apply_plan_impl(
 
     return {
         "created_count": len(created),
+        "skipped_count": len(skipped),
         "error_count": len(errors),
         "created": created,
+        "skipped": skipped,
         "errors": errors,
         "id_map": id_map,
         "tree": tree_lines,

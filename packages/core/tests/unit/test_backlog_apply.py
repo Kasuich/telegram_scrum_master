@@ -62,6 +62,7 @@ async def test_apply_backlog_plan_uses_pending_context():
             "issue_types": [{"key": "epic"}, {"key": "story"}, {"key": "task"}],
             "priorities": [{"key": "critical"}, {"key": "normal"}],
         }
+        client.search_issues.return_value = []
         client.create_issue.side_effect = fake_create
 
         result = await tracker_apply_backlog_plan(plan_json="", queue="TEST")
@@ -92,6 +93,7 @@ async def test_apply_backlog_plan_mock():
                 {"key": "normal", "name": "Normal"},
             ],
         }
+        client.search_issues.return_value = []
         client.create_issue.side_effect = fake_create
 
         result = await tracker_apply_backlog_plan(
@@ -104,3 +106,81 @@ async def test_apply_backlog_plan_mock():
     assert result["created_count"] == 3
     assert result["epic_key"] == "TEST-1"
     assert len(result["tree"]) >= 2
+
+
+@pytest.mark.asyncio
+async def test_apply_skips_closed_duplicate_epic_and_reuses_key():
+    counter = {"n": 0}
+
+    async def fake_create(queue, summary, **kwargs):
+        counter["n"] += 1
+        return {"key": f"TEST-{counter['n']}", "summary": summary}
+
+    existing_epic = {
+        "key": "TEST-EXISTING",
+        "summary": "Бот-помощник",
+        "type": {"key": "epic"},
+        "status": {"display": "Закрыт", "key": "closed"},
+    }
+
+    async def fake_search(query, *, queue=None, limit=20):
+        if "Бот-помощник" in query:
+            return [existing_epic]
+        return []
+
+    with patch("core.backlog_tools.TrackerClient") as mock_cls:
+        client = AsyncMock()
+        mock_cls.return_value.__aenter__.return_value = client
+        client.get_queue_meta.return_value = {
+            "queue_key": "TEST",
+            "issue_types": [{"key": "epic"}, {"key": "story"}, {"key": "task"}],
+            "priorities": [{"key": "critical"}, {"key": "normal"}],
+        }
+        client.search_issues.side_effect = fake_search
+        client.create_issue.side_effect = fake_create
+
+        result = await tracker_apply_backlog_plan(
+            plan_json=json.dumps(SAMPLE_PLAN),
+            queue="TEST",
+        )
+
+    assert result["skipped_count"] == 1
+    assert result["created_count"] == 2
+    assert result["epic_key"] == "TEST-EXISTING"
+    assert result["id_map"]["epic-1"] == "TEST-EXISTING"
+    assert result["id_map"]["story-mvp"].startswith("TEST-")
+
+
+@pytest.mark.asyncio
+async def test_apply_creates_when_only_cancelled_match():
+    counter = {"n": 0}
+
+    async def fake_create(queue, summary, **kwargs):
+        counter["n"] += 1
+        return {"key": f"TEST-{counter['n']}", "summary": summary}
+
+    cancelled = {
+        "key": "TEST-OLD",
+        "summary": "Бот-помощник",
+        "type": {"key": "epic"},
+        "status": {"display": "Отменена", "key": "cancelled"},
+    }
+
+    with patch("core.backlog_tools.TrackerClient") as mock_cls:
+        client = AsyncMock()
+        mock_cls.return_value.__aenter__.return_value = client
+        client.get_queue_meta.return_value = {
+            "queue_key": "TEST",
+            "issue_types": [{"key": "epic"}, {"key": "story"}, {"key": "task"}],
+            "priorities": [{"key": "critical"}, {"key": "normal"}],
+        }
+        client.search_issues.return_value = [cancelled]
+        client.create_issue.side_effect = fake_create
+
+        result = await tracker_apply_backlog_plan(
+            plan_json=json.dumps(SAMPLE_PLAN),
+            queue="TEST",
+        )
+
+    assert result["skipped_count"] == 0
+    assert result["created_count"] == 3

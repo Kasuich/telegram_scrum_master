@@ -3,9 +3,94 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import date
 from typing import Any
+
+# Terminal workflow statuses excluded from search by default (closed / cancelled).
+_DEFAULT_TERMINAL_STATUS_KEYS = frozenset({"closed", "cancelled", "canceled"})
+_DEFAULT_TERMINAL_STATUS_NAMES: tuple[str, ...] = (
+    "Closed",
+    "Закрыт",
+    "Закрыта",
+    "Cancelled",
+    "Canceled",
+    "Отменена",
+    "Отменён",
+    "Отменен",
+    "Отменено",
+)
+
+
+def _norm_status(text: str) -> str:
+    return text.lower().replace("ё", "е").strip()
+
+
+def search_open_only_default() -> bool:
+    """False when TRACKER_SEARCH_ALL_STATUSES=true (include closed/cancelled)."""
+    return os.getenv("TRACKER_SEARCH_ALL_STATUSES", "").lower() not in ("1", "true", "yes")
+
+
+def terminal_status_names() -> tuple[str, ...]:
+    raw = os.getenv("TRACKER_TERMINAL_STATUSES", "").strip()
+    if raw:
+        return tuple(s.strip() for s in raw.replace(";", ",").split(",") if s.strip())
+    return _DEFAULT_TERMINAL_STATUS_NAMES
+
+
+def build_status_filter(*, status: str = "") -> list[str]:
+    """YQL status clauses: explicit match, or exclusions for terminal statuses."""
+    if status.strip():
+        return [f'Status: "{status.strip()}"']
+    if not search_open_only_default():
+        return []
+    return [f'Status: !"{name}"' for name in terminal_status_names()]
+
+
+def combine_yql(*parts: str) -> str:
+    cleaned = [p.strip() for p in parts if p and p.strip()]
+    return " AND ".join(cleaned)
+
+
+def yql_quote(value: str) -> str:
+    """Escape a string for YQL double-quoted literals."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def query_has_status_filter(yql: str) -> bool:
+    return bool(re.search(r"\bStatus\s*:", yql, re.IGNORECASE))
+
+
+def apply_open_status_filter_to_yql(yql: str) -> str:
+    """Prepend terminal-status exclusions unless the query already filters Status."""
+    if not search_open_only_default() or query_has_status_filter(yql):
+        return yql
+    exclusions = combine_yql(*build_status_filter())
+    if not exclusions:
+        return yql
+    body = yql.strip() or "Sort: Updated DESC"
+    return f"{exclusions} AND ({body})"
+
+
+def filter_terminal_issues(
+    issues: list[dict[str, Any]], *, explicit_status: str = ""
+) -> list[dict[str, Any]]:
+    """Drop closed/cancelled issues when searching open work by default."""
+    if explicit_status.strip() or not search_open_only_default():
+        return issues
+    terminal_keys = _DEFAULT_TERMINAL_STATUS_KEYS
+    terminal_names = {_norm_status(n) for n in terminal_status_names()}
+    out: list[dict[str, Any]] = []
+    for issue in issues:
+        st = issue.get("status") or {}
+        key = (st.get("key") or "").lower()
+        display = _norm_status(st.get("display") or "")
+        if key in terminal_keys or display in terminal_names:
+            continue
+        out.append(issue)
+    return out
 
 _RU_MONTHS: dict[str, int] = {
     "января": 1,
@@ -92,10 +177,11 @@ def build_find_yql(
         parts.append(f'Summary: "{summary_hint.strip()}"')
     if assignee_login.strip():
         parts.append(format_assignee_yql(assignee_login.strip()))
-    if status.strip():
-        parts.append(f'Status: "{status.strip()}"')
+    parts.extend(build_status_filter(status=status))
     if parts:
-        return " AND ".join(parts)
+        return combine_yql(*parts)
+    if search_open_only_default():
+        return combine_yql(*build_status_filter(), "Sort: Updated DESC")
     return "Sort: Updated DESC"
 
 
@@ -116,7 +202,7 @@ def build_find_fallback_queries(
             queries.append(q)
 
     hint = summary_hint.strip()
-    status_clause = f'Status: "{status.strip()}"' if status.strip() else ""
+    status_clause = combine_yql(*build_status_filter(status=status))
 
     if hint:
         add(f"Summary: {hint}")
