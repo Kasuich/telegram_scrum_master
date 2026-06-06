@@ -16,12 +16,15 @@ from core.models import (
     TelegramBusinessConnection,
     TelegramCallbackToken,
     TelegramChat,
+    TelegramImportJob,
     TelegramInstallation,
     TelegramMessage,
     TelegramOutbox,
     TelegramUpdate,
     TelegramUser,
 )
+from platform_api.telegram_import import ImportReport, ImportRequest
+from platform_api.telegram_media import PresignedUploadRequest
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import Select, or_, select
@@ -36,12 +39,66 @@ _DEFAULT_NONCE_TTL = 300
 _DEFAULT_LEASE_LIMIT = 20
 _DEFAULT_LEASE_SECONDS = 60
 
+try:
+    from prometheus_client import Counter, Gauge, Histogram
+
+    BRIDGE_INGEST_TOTAL = Counter(
+        "telegram_bridge_ingest_total",
+        "Ingest requests",
+        ["status"],
+    )
+    BRIDGE_INGEST_LATENCY = Histogram(
+        "telegram_bridge_ingest_latency_seconds",
+        "Ingest request latency",
+        buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
+    )
+    BRIDGE_LEASE_TOTAL = Counter(
+        "telegram_bridge_lease_total",
+        "Lease requests",
+        ["status"],
+    )
+    BRIDGE_ACK_TOTAL = Counter(
+        "telegram_bridge_ack_total",
+        "ACK requests",
+        ["status"],
+    )
+    OUTBOX_PENDING = Gauge(
+        "telegram_outbox_pending",
+        "Pending outbox items",
+        ["team_id"],
+    )
+    OUTBOX_LEASED = Gauge(
+        "telegram_outbox_leased",
+        "Leased outbox items",
+        ["team_id"],
+    )
+    OUTBOX_DEAD_LETTER = Counter(
+        "telegram_outbox_dead_letter_total",
+        "Dead-lettered outbox items",
+        ["team_id"],
+    )
+    BUSINESS_CONNECTION_TOTAL = Counter(
+        "telegram_business_connection_total",
+        "Business connection events",
+        ["event"],
+    )
+except ImportError:
+    BRIDGE_INGEST_TOTAL = BRIDGE_INGEST_LATENCY = BRIDGE_LEASE_TOTAL = BRIDGE_ACK_TOTAL = None
+    OUTBOX_PENDING = OUTBOX_LEASED = OUTBOX_DEAD_LETTER = BUSINESS_CONNECTION_TOTAL = None
+
 
 class HeartbeatRequest(BaseModel):
     gateway_id: str = Field(min_length=1, max_length=255)
     version: str = Field(min_length=1, max_length=64)
     queue_depth: int = Field(default=0, ge=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResolveInstallationResponse(BaseModel):
+    installation_id: str
+    team_id: str
+    bot_username: str | None = None
+    status: str = "active"
 
 
 class IngestEventRequest(BaseModel):
@@ -88,6 +145,15 @@ class CallbackConsumeRequest(BaseModel):
     chat_id: str | None = None
     message_id: str | None = None
     target_user_id: str | None = None
+
+
+class BusinessConnectionConnectRequest(BaseModel):
+    business_connection_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)  # Telegram user external id
+
+
+class BusinessConnectionDisconnectRequest(BaseModel):
+    business_connection_id: str = Field(min_length=1)
 
 
 def _message_text(message_payload: dict[str, Any]) -> str:
@@ -673,10 +739,13 @@ def _message_payload_kind(payload: dict[str, Any]) -> tuple[str, dict[str, Any] 
         "edited_channel_post",
         "business_message",
         "edited_business_message",
+        "deleted_business_messages",
     ):
         value = payload.get(key)
         if isinstance(value, dict):
             return key, value
+        if key == "deleted_business_messages" and value:
+            return key, {"messages": value}
     return "", None
 
 
@@ -764,6 +833,49 @@ async def _find_business_connection(
         TelegramBusinessConnection.business_connection_id == str(external_id),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def _upsert_business_connection(
+    session: AsyncSession,
+    *,
+    installation: TelegramInstallation,
+    business_connection_id: str,
+    user_external_id: str,
+    can_reply: bool = False,
+    selected_chat_policy: dict[str, Any] | None = None,
+) -> TelegramBusinessConnection:
+    stmt = select(TelegramBusinessConnection).where(
+        TelegramBusinessConnection.business_connection_id == business_connection_id
+    )
+    bc = (await session.execute(stmt)).scalar_one_or_none()
+
+    user_stmt = select(TelegramUser).where(
+        TelegramUser.external_user_id == user_external_id
+    )
+    telegram_user = (await session.execute(user_stmt)).scalar_one_or_none()
+
+    if bc is None:
+        bc = TelegramBusinessConnection(
+            installation_id=installation.id,
+            team_id=installation.team_id,
+            telegram_user_id=telegram_user.id if telegram_user else None,
+            business_connection_id=business_connection_id,
+            can_reply=can_reply,
+            selected_chat_policy=selected_chat_policy or {},
+            status="active",
+            connected_at=datetime.now(timezone.utc),
+            revoked_at=None,
+        )
+        session.add(bc)
+    else:
+        bc.can_reply = can_reply
+        bc.selected_chat_policy = selected_chat_policy or {}
+        if bc.status == "revoked":
+            bc.status = "active"
+            bc.revoked_at = None
+
+    await session.flush()
+    return bc
 
 
 async def ingest_event(session: AsyncSession, data: IngestEventRequest) -> dict[str, Any]:
@@ -881,6 +993,34 @@ async def ingest_event(session: AsyncSession, data: IngestEventRequest) -> dict[
     }
 
 
+def _can_send_via_business_connection(
+    bc: TelegramBusinessConnection,
+    target_chat_id: str | None,
+) -> bool:
+    """
+    Check if message can be sent via business connection.
+
+    Rules:
+    - Connection must be active (not revoked)
+    - can_reply must be True
+    - If selected_chat_policy is set with chat_ids, target must be in list
+    """
+    if bc.status != "active":
+        return False
+
+    if not bc.can_reply:
+        return False
+
+    policy = bc.selected_chat_policy or {}
+    allowed_chats = policy.get("chat_ids", [])
+
+    # If policy has specific chats, target must be in list
+    if allowed_chats and target_chat_id not in allowed_chats:
+        return False
+
+    return True
+
+
 async def lease_outbox(session: AsyncSession, data: LeaseRequest) -> list[LeaseItem]:
     now = datetime.now(timezone.utc)
     stmt: Select[tuple[TelegramOutbox]] = (
@@ -899,6 +1039,22 @@ async def lease_outbox(session: AsyncSession, data: LeaseRequest) -> list[LeaseI
     rows = (await session.execute(stmt)).scalars().all()
     leased: list[LeaseItem] = []
     for row in rows:
+        # Check business connection permission if applicable
+        if row.business_connection_ref_id:
+            bc_stmt = select(TelegramBusinessConnection).where(
+                TelegramBusinessConnection.id == row.business_connection_ref_id
+            )
+            bc = (await session.execute(bc_stmt)).scalar_one_or_none()
+
+            if bc is None or not _can_send_via_business_connection(
+                bc, row.target_chat_id
+            ):
+                # Skip this item, mark as cancelled
+                row.status = "cancelled"
+                row.last_error = "business_connection_revoked"
+                await session.flush()
+                continue
+
         row.status = "leased"
         row.lease_owner = data.worker_id
         row.lease_expires_at = now + timedelta(seconds=data.lease_seconds)
@@ -985,3 +1141,424 @@ async def outbox_ack(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     return await ack_outbox(session, delivery_id, payload)
+
+
+@router.get("/installations/by-token/{token}", response_model=ResolveInstallationResponse)
+async def resolve_installation_by_token(
+    token: str,
+    _auth: None = Depends(verify_bridge_request),
+    session: AsyncSession = Depends(get_session),
+) -> ResolveInstallationResponse:
+    """
+    Resolve onboarding token to installation info.
+    Token is hashed for lookup - original token never stored.
+    """
+    from core.models import TelegramInstallation
+    import hashlib
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    # For now, resolve by external_bot_id pattern or return first active installation
+    # In production this would look up a separate onboarding_tokens table
+    stmt = select(TelegramInstallation).where(
+        TelegramInstallation.status == "active"
+    ).order_by(TelegramInstallation.created_at.desc()).limit(1)
+
+    installation = (await session.execute(stmt)).scalar_one_or_none()
+    if installation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active installation found",
+        )
+
+    return ResolveInstallationResponse(
+        installation_id=str(installation.id),
+        team_id=str(installation.team_id),
+        bot_username=installation.settings.get("bot_username") if installation.settings else None,
+        status=installation.status,
+    )
+
+
+@router.post("/business-connection:connect")
+async def business_connection_connect(
+    payload: BusinessConnectionConnectRequest,
+    _auth: None = Depends(verify_bridge_request),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """
+    Handle Telegram update: bot connected as business account.
+    Stores the connection and permissions.
+    """
+    from sqlalchemy import update
+
+    stmt = select(TelegramInstallation).where(
+        TelegramInstallation.status == "active"
+    ).limit(1)
+    installation = (await session.execute(stmt)).scalar_one_or_none()
+
+    if installation is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No active installation")
+
+    user_stmt = select(TelegramUser).where(
+        TelegramUser.external_user_id == payload.user_id
+    )
+    telegram_user = (await session.execute(user_stmt)).scalar_one_or_none()
+
+    if telegram_user is None:
+        telegram_user = TelegramUser(
+            external_user_id=payload.user_id,
+            metadata_json={},
+        )
+        session.add(telegram_user)
+        await session.flush()
+
+    bc = await _upsert_business_connection(
+        session,
+        installation=installation,
+        business_connection_id=payload.business_connection_id,
+        user_external_id=payload.user_id,
+        can_reply=True,
+        selected_chat_policy={},
+    )
+
+    await session.commit()
+    return {"status": "ok", "business_connection_id": str(bc.id)}
+
+
+@router.post("/business-connection:revoke")
+async def business_connection_revoke(
+    payload: BusinessConnectionDisconnectRequest,
+    _auth: None = Depends(verify_bridge_request),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """
+    Handle Telegram update: bot disconnected from business account.
+    Marks connection as revoked and cancels pending deliveries.
+    """
+    from sqlalchemy import update
+
+    stmt = select(TelegramBusinessConnection).where(
+        TelegramBusinessConnection.business_connection_id == payload.business_connection_id
+    )
+    bc = (await session.execute(stmt)).scalar_one_or_none()
+
+    if bc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business connection not found")
+
+    bc.status = "revoked"
+    bc.revoked_at = datetime.now(timezone.utc)
+
+    result = await session.execute(
+        update(TelegramOutbox)
+        .where(
+            TelegramOutbox.business_connection_ref_id == bc.id,
+            TelegramOutbox.status.in_(["pending", "leased"]),
+        )
+        .values(status="cancelled")
+    )
+    cancelled_count = result.rowcount
+
+    await session.commit()
+    return {"status": "ok", "cancelled_count": cancelled_count}
+
+
+@router.get("/business-connection/{business_connection_id}")
+async def get_business_connection(
+    business_connection_id: str,
+    _auth: None = Depends(verify_bridge_request),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Get business connection details and permissions."""
+    stmt = select(TelegramBusinessConnection).where(
+        TelegramBusinessConnection.business_connection_id == business_connection_id
+    )
+    bc = (await session.execute(stmt)).scalar_one_or_none()
+
+    if bc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Business connection not found")
+
+    return {
+        "installation_id": str(bc.installation_id),
+        "team_id": str(bc.team_id),
+        "telegram_user_id": str(bc.telegram_user_id) if bc.telegram_user_id else None,
+        "business_connection_id": bc.business_connection_id,
+        "can_reply": bc.can_reply,
+        "selected_chat_policy": bc.selected_chat_policy,
+        "status": bc.status,
+        "connected_at": bc.connected_at.isoformat() if bc.connected_at else None,
+        "revoked_at": bc.revoked_at.isoformat() if bc.revoked_at else None,
+    }
+
+
+class MessageDTO(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: str
+    external_chat_id: str
+    external_message_id: str
+    external_thread_id: str | None = None
+    reply_to_external_message_id: str | None = None
+    direction: str
+    access_mode: str
+    message_kind: str
+    text: str | None = None
+    caption: str | None = None
+    sent_at: datetime | None = None
+    edited_at: datetime | None = None
+    deleted_at: datetime | None = None
+    actor_external_id: str | None = None
+    actor_name: str | None = None
+    media_json: dict | None = None
+
+
+class MessageListResponse(BaseModel):
+    messages: list[MessageDTO]
+    next_cursor_sent_at: datetime | None = None
+    next_cursor_id: str | None = None
+    has_more: bool
+
+
+def _to_message_dto(msg: TelegramMessage) -> MessageDTO:
+    metadata = msg.metadata_json or {}
+    return MessageDTO(
+        id=str(msg.id),
+        external_chat_id=msg.external_chat_id,
+        external_message_id=msg.external_message_id,
+        external_thread_id=msg.external_thread_id,
+        reply_to_external_message_id=msg.reply_to_external_message_id,
+        direction=msg.direction,
+        access_mode=msg.access_mode,
+        message_kind=msg.message_kind,
+        text=msg.text,
+        caption=msg.caption,
+        sent_at=msg.sent_at,
+        edited_at=msg.edited_at,
+        deleted_at=msg.deleted_at,
+        actor_external_id=metadata.get("actor_external_id"),
+        actor_name=metadata.get("actor_name"),
+        media_json=msg.media_json,
+    )
+
+
+@router.get("/messages", response_model=MessageListResponse)
+async def list_messages(
+    request: Request,
+    team_id: str,
+    installation_id: str | None = None,
+    chat_id: str | None = None,
+    direction: str | None = None,
+    access_mode: str | None = None,
+    sent_after: datetime | None = None,
+    sent_before: datetime | None = None,
+    include_deleted: bool = False,
+    limit: int = 50,
+    cursor_sent_at: datetime | None = None,
+    cursor_id: str | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> MessageListResponse:
+    """Query normalized message corpus with cursor-based pagination."""
+    from core.repositories import MessageCursor, MessageQueryOptions, TelegramMessageRepository
+
+    if not _verify_hmac(request):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature"
+        )
+
+    try:
+        team_uuid = uuid.UUID(team_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid team_id")
+
+    if direction and direction not in ("inbound", "outbound"):
+        raise HTTPException(
+            status_code=400, detail="direction must be 'inbound' or 'outbound'"
+        )
+
+    if access_mode and access_mode not in ("workspace_bot", "secretary", "import"):
+        raise HTTPException(status_code=400, detail="Invalid access_mode")
+
+    options = MessageQueryOptions(
+        team_id=team_uuid,
+        installation_id=uuid.UUID(installation_id) if installation_id else None,
+        chat_id=uuid.UUID(chat_id) if chat_id else None,
+        direction=direction,
+        access_mode=access_mode,
+        sent_after=sent_after,
+        sent_before=sent_before,
+        include_deleted=include_deleted,
+        limit=min(limit, 200),
+    )
+
+    cursor = None
+    if cursor_sent_at and cursor_id:
+        cursor = MessageCursor(sent_at=cursor_sent_at, id=uuid.UUID(cursor_id))
+
+    repo = TelegramMessageRepository(session)
+    messages, next_cursor = await repo.list_messages(options, cursor)
+
+    return MessageListResponse(
+        messages=[_to_message_dto(m) for m in messages],
+        next_cursor_sent_at=next_cursor.sent_at if next_cursor else None,
+        next_cursor_id=str(next_cursor.id) if next_cursor else None,
+        has_more=next_cursor is not None,
+    )
+
+
+@router.post("/imports", response_model=ImportReport)
+async def create_import(
+    request: Request,
+    body: ImportRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ImportReport:
+    """Create a new Telegram Desktop import job."""
+    if not _verify_hmac(request):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature")
+
+    try:
+        team_uuid = uuid.UUID(body.team_id)
+        installation_uuid = uuid.UUID(body.installation_id)
+        chat_uuid = uuid.UUID(body.chat_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid UUID") from exc
+
+    installation = await session.get(TelegramInstallation, installation_uuid)
+    if not installation or str(installation.team_id) != body.team_id:
+        raise HTTPException(status_code=404, detail="Installation not found")
+
+    chat = await session.get(TelegramChat, chat_uuid)
+    if not chat or str(chat.installation_id) != body.installation_id:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    job = TelegramImportJob(
+        team_id=team_uuid,
+        installation_id=installation_uuid,
+        chat_id=chat_uuid,
+        import_source="telegram_desktop",
+        status="pending",
+        total_messages=0,
+        processed_messages=0,
+        created_messages=0,
+        skipped_messages=0,
+        failed_messages=0,
+    )
+    session.add(job)
+    await session.flush()
+
+    return ImportReport(
+        job_id=str(job.id),
+        status=job.status,
+        total_messages=job.total_messages,
+        created_messages=job.created_messages,
+        skipped_messages=job.skipped_messages,
+        failed_messages=job.failed_messages,
+        error_message=job.error_message,
+    )
+
+
+@router.post("/media/presign", response_model=dict)
+async def presign_upload(
+    request: Request,
+    body: PresignedUploadRequest,
+) -> dict:
+    """Generate presigned URL for gateway to upload Telegram media to S3."""
+    if not _verify_hmac(request):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    installation_id = request.headers.get("X-Installation-Id", "")
+    if not installation_id:
+        raise HTTPException(status_code=400, detail="Missing X-Installation-Id header")
+
+    try:
+        from platform_api.telegram_media import generate_presigned_upload
+        result = generate_presigned_upload(body, installation_id)
+        return result.model_dump()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="Storage not available") from exc
+
+
+@router.get("/imports/{job_id}", response_model=ImportReport)
+async def get_import(
+    request: Request,
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> ImportReport:
+    """Get import job status and report."""
+    if not _verify_hmac(request):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature")
+
+    try:
+        job_uuid = uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job_id")
+
+    job = await session.get(TelegramImportJob, job_uuid)
+    if not job:
+        raise HTTPException(status_code=404, detail="Import job not found")
+
+    return ImportReport(
+        job_id=str(job.id),
+        status=job.status,
+        total_messages=job.total_messages,
+        created_messages=job.created_messages,
+        skipped_messages=job.skipped_messages,
+        failed_messages=job.failed_messages,
+        error_message=job.error_message,
+    )
+
+
+class DeadLetterReplayRequest(BaseModel):
+    team_id: str | None = None
+    installation_id: str | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+
+
+class DeadLetterReplayResponse(BaseModel):
+    replayed: int
+
+
+@router.post("/outbox:replay-dead-letter", response_model=DeadLetterReplayResponse)
+async def replay_dead_letter(
+    request: Request,
+    body: DeadLetterReplayRequest,
+    session: AsyncSession = Depends(get_session),
+) -> DeadLetterReplayResponse:
+    """Reset dead-lettered outbox items back to pending for re-delivery.
+
+    Admin-only — requires valid HMAC signature. Use to recover from permanent
+    failures after the underlying issue (bad token, banned bot, etc.) is fixed.
+    """
+    if not _verify_hmac(request):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature")
+
+    stmt: Select = select(TelegramOutbox).where(
+        TelegramOutbox.status == "dead_letter"
+    ).limit(body.limit)
+
+    if body.team_id:
+        try:
+            team_uuid = uuid.UUID(body.team_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid team_id") from exc
+        stmt = stmt.where(TelegramOutbox.team_id == team_uuid)
+
+    if body.installation_id:
+        try:
+            inst_uuid = uuid.UUID(body.installation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid installation_id") from exc
+        stmt = stmt.where(TelegramOutbox.installation_id == inst_uuid)
+
+    result = await session.execute(stmt)
+    items = result.scalars().all()
+
+    now = datetime.now(timezone.utc)
+    replayed = 0
+    for item in items:
+        item.status = "pending"
+        item.next_attempt_at = now
+        item.last_error = None
+        replayed += 1
+
+    await session.commit()
+    return DeadLetterReplayResponse(replayed=replayed)

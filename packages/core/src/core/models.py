@@ -348,6 +348,10 @@ class TelegramChat(Base):
         "TelegramOutbox",
         back_populates="chat",
     )
+    import_jobs: Mapped[list[TelegramImportJob]] = relationship(
+        "TelegramImportJob",
+        back_populates="chat",
+    )
 
 
 class TelegramUser(Base):
@@ -973,6 +977,59 @@ class TelegramCallbackToken(Base):
     confirm: Mapped[Confirm | None] = relationship("Confirm")
 
 
+class TelegramImportJob(Base):
+    """Import job for historical Telegram data."""
+
+    __tablename__ = "telegram_import_jobs"
+    __table_args__ = (
+        Index("idx_telegram_import_jobs_team_status", "team_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    installation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("telegram_installations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chat_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("telegram_chats.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    import_source: Mapped[str] = mapped_column(String(64), nullable=False, default="telegram_desktop")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    total_messages: Mapped[int] = mapped_column(default=0)
+    processed_messages: Mapped[int] = mapped_column(default=0)
+    created_messages: Mapped[int] = mapped_column(default=0)
+    skipped_messages: Mapped[int] = mapped_column(default=0)
+    failed_messages: Mapped[int] = mapped_column(default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    team: Mapped[Team] = relationship("Team")
+    installation: Mapped[TelegramInstallation] = relationship("TelegramInstallation")
+    chat: Mapped[TelegramChat] = relationship("TelegramChat", back_populates="import_jobs")
+
+
 class TelegramNotificationPreference(Base):
     """Notification preferences for Telegram delivery."""
 
@@ -1151,6 +1208,7 @@ __all__ = [
     "TelegramMessage",
     "TelegramOutbox",
     "TelegramCallbackToken",
+    "TelegramImportJob",
     "TelegramNotificationPreference",
     "RuntimeConfigModel",
     "ScheduledJob",

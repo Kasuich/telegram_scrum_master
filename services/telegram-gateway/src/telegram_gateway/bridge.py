@@ -6,6 +6,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -18,6 +19,24 @@ class BridgeRequestError(Exception):
     status_code: int | None
     detail: str
     retry_after_seconds: int | None = None
+
+
+@dataclass(slots=True)
+class LeaseItem:
+    delivery_id: str
+    team_id: str
+    installation_id: str | None
+    category: str
+    target_chat_id: str | None
+    target_user_id: str | None
+    payload: dict[str, Any]
+    business_connection_id: str | None
+    lease_expires_at: datetime | None
+
+
+@dataclass(slots=True)
+class LeaseResponse:
+    items: list[LeaseItem]
 
 
 class MainBridgeClient:
@@ -117,6 +136,68 @@ class MainBridgeClient:
                 "queue_depth": queue_depth,
                 "metadata": metadata or {},
             },
+        )
+
+    async def lease_outbox(
+        self,
+        worker_id: str,
+        limit: int,
+        lease_seconds: int,
+    ) -> LeaseResponse:
+        response = await self._request(
+            "POST",
+            "/internal/telegram/v1/outbox:lease",
+            {
+                "worker_id": worker_id,
+                "limit": limit,
+                "lease_seconds": lease_seconds,
+            },
+        )
+        items = [
+            LeaseItem(
+                delivery_id=item["delivery_id"],
+                team_id=item["team_id"],
+                installation_id=item.get("installation_id"),
+                category=item["category"],
+                target_chat_id=item.get("target_chat_id"),
+                target_user_id=item.get("target_user_id"),
+                payload=item["payload"],
+                business_connection_id=item.get("business_connection_id"),
+                lease_expires_at=datetime.fromisoformat(item["lease_expires_at"]) if item.get("lease_expires_at") else None,
+            )
+            for item in response.get("items", [])
+        ]
+        return LeaseResponse(items=items)
+
+    async def ack_outbox(
+        self,
+        delivery_id: str,
+        status: str,
+        provider_message_id: str | None = None,
+        last_error: str | None = None,
+        retry_after_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        payload = {"status": status}
+        if provider_message_id is not None:
+            payload["provider_message_id"] = provider_message_id
+        if last_error is not None:
+            payload["last_error"] = last_error
+        if retry_after_seconds is not None:
+            payload["retry_after_seconds"] = retry_after_seconds
+        return await self._request(
+            "POST",
+            f"/internal/telegram/v1/outbox/{delivery_id}:ack",
+            payload,
+        )
+
+    async def resolve_installation(
+        self,
+        token: str,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            f"/internal/telegram/v1/installations/by-token/{token}",
+            {},
         )
 
 

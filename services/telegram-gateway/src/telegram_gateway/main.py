@@ -5,7 +5,7 @@ import contextlib
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, FastAPI, Header, HTTPException, Request, status
+from fastapi import APIRouter, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
@@ -18,6 +18,13 @@ class WebhookResponse(BaseModel):
     accepted: bool
     duplicate: bool = False
     update_id: int
+
+
+class InstallationInfo(BaseModel):
+    installation_id: str
+    team_id: str
+    bot_username: str | None
+    status: str
 
 
 def _runtime(app: FastAPI) -> GatewayRuntime:
@@ -116,6 +123,36 @@ async def webhook(
     stored = runtime.spool.store_update(update_id, payload, datetime.now(tz=timezone.utc))
     runtime.record_webhook("accepted" if stored else "duplicate")
     return WebhookResponse(accepted=True, duplicate=not stored, update_id=update_id)
+
+
+@router.get("/internal/installations/resolve")
+async def resolve_installation(
+    request: Request,
+    token: str = Query(..., description="One-time onboarding token"),
+) -> InstallationInfo:
+    """
+    Resolve deep link token to installation info.
+    Used for /start <token> onboarding flow.
+    """
+    runtime = _runtime(request.app)
+    if runtime.bridge is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="bridge not available",
+        )
+    
+    try:
+        result = await runtime.bridge.resolve_installation(token)
+        return InstallationInfo(
+            installation_id=result["installation_id"],
+            team_id=result["team_id"],
+            bot_username=result.get("bot_username"),
+            status=result.get("status", "active"),
+        )
+    except Exception as exc:
+        if hasattr(exc, "status_code") and exc.status_code == 404:
+            raise HTTPException(status_code=404, detail="Token not found or expired")
+        raise HTTPException(status_code=502, detail="Failed to resolve token")
 
 
 app = create_app()

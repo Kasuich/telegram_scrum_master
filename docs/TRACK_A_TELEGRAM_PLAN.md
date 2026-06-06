@@ -557,7 +557,7 @@ Telegram не может быть единственным каналом для
 Каждый шаг оформляется отдельным PR или небольшим набором PR с миграционно
 совместимыми контрактами.
 
-### A0. Контракты и threat model
+### A0. Контракты и threat model ✅
 
 - зафиксировать OpenAPI для bridge, `MessageEnvelope` и `Notification`;
 - определить chat binding, routing и notification policies;
@@ -566,7 +566,7 @@ Telegram не может быть единственным каналом для
 
 Результат: gateway и main можно разрабатывать параллельно против contract tests.
 
-### A1. Runtime prerequisites
+### A1. Runtime prerequisites ✅
 
 - добавить `context` в invoke RPC и run context;
 - обеспечить tenant-aware session resolution;
@@ -576,14 +576,14 @@ Telegram не может быть единственным каналом для
 
 Результат: Telegram не зависит от памяти одного процесса.
 
-### A2. Модели и миграция
+### A2. Модели и миграция ✅
 
 - добавить таблицы из раздела 8;
 - реализовать repositories inbox/outbox/bindings/preferences;
 - добавить unique constraints, lease queries и retention jobs;
 - проверить upgrade/downgrade на реальном Postgres.
 
-### A3. Main Telegram bridge
+### A3. Main Telegram bridge ✅
 
 - реализовать HMAC/replay middleware;
 - реализовать ingest, outbox lease/ack и heartbeat;
@@ -592,7 +592,7 @@ Telegram не может быть единственным каналом для
 - добавить chat/team resolver и routing policy;
 - возвращать стабильные error codes для retry/permanent failure.
 
-### A4. Gateway skeleton и входящий поток
+### A4. Gateway skeleton и входящий поток ✅
 
 - создать `services/telegram-gateway`;
 - добавить aiogram webhook, secret validation и SQLite WAL spool;
@@ -601,7 +601,7 @@ Telegram не может быть единственным каналом для
 - поддержать graceful shutdown и повтор незавершённых записей;
 - добавить health/readiness/metrics.
 
-### A5. Диалог с агентом
+### A5. Диалог с агентом ✅
 
 - маршрутизировать DM, команды, mentions и replies;
 - собирать `MessageEnvelope`;
@@ -609,7 +609,7 @@ Telegram не может быть единственным каналом для
 - ставить reply в outbox с правильными chat/thread/reply IDs;
 - разбивать длинные ответы и безопасно обрабатывать разметку.
 
-### A6. Confirm callbacks
+### A6. Confirm callbacks ✅
 
 - генерировать opaque callback token;
 - проверять actor/chat/expiry;
@@ -617,7 +617,7 @@ Telegram не может быть единственным каналом для
 - отвечать на callback и редактировать исходное сообщение;
 - покрыть approve/reject/duplicate/expired/restart.
 
-### A7. Уточнения и уведомления
+### A7. Уточнения и уведомления ✅
 
 - реализовать provider-neutral notification service;
 - добавить безопасные agent tools;
@@ -625,7 +625,7 @@ Telegram не может быть единственным каналом для
 - перевести scheduler alerts и Alertmanager webhook на outbox;
 - добавить deep-link onboarding для DM.
 
-### A8. Secretary Mode
+### A8. Secretary Mode ✅
 
 - включить Secretary Mode для отдельного staging bot;
 - реализовать `business_connection` lifecycle;
@@ -635,7 +635,7 @@ Telegram не может быть единственным каналом для
 - отзывать доступ и отменять deliveries при disconnect;
 - добавить отдельный audit view в console-api.
 
-### A9. Корпус для Correspondence Agent
+### A9. Корпус для Correspondence Agent ✅
 
 - сохранять edit/delete/reply/forward/topic;
 - добавить paginated internal query API по team/chat/time/cursor;
@@ -646,7 +646,7 @@ Telegram не может быть единственным каналом для
 Correspondence Agent получает только query API/repository и не зависит от
 aiogram/raw Telegram update.
 
-### A10. Исторический импорт и media
+### A10. Исторический импорт и media ✅
 
 - реализовать Telegram Desktop JSON importer;
 - добавить import jobs и отчёты;
@@ -654,7 +654,7 @@ aiogram/raw Telegram update.
 - добавить лимиты, checksum, antivirus hook и cleanup;
 - протестировать большой экспорт и повторный импорт.
 
-### A11. Двухсерверный deployment
+### A11. Двухсерверный deployment ✅
 
 - добавить `docker-compose.telegram-gateway.yml`;
 - подготовить WireGuard-конфигурацию и firewall runbook;
@@ -668,7 +668,7 @@ aiogram/raw Telegram update.
 - убрать bot token с основного сервера;
 - добавить rollback и key rotation runbook.
 
-### A12. Наблюдаемость и эксплуатация
+### A12. Наблюдаемость и эксплуатация ✅
 
 - dashboards, metrics и независимые alerts;
 - dead-letter replay через защищённую admin-команду;
@@ -676,7 +676,7 @@ aiogram/raw Telegram update.
   blocked bot, full disk, stuck lease;
 - backup/restore для main DB и gateway spool.
 
-### A13. E2E и hardening
+### A13. E2E и hardening ✅
 
 - пройти тестовую матрицу и chaos-сценарии;
 - провести security review;

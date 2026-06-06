@@ -6,8 +6,10 @@ from datetime import datetime, timezone
 
 from prometheus_client import Counter, Gauge, Histogram
 
+from telegram_gateway.bot_api import BotAPIError, TelegramBotClient
 from telegram_gateway.bridge import (
     BridgeRequestError,
+    LeaseItem,
     MainBridgeClient,
     bridge_error_is_permanent,
 )
@@ -22,6 +24,11 @@ FORWARD_LATENCY = Histogram(
     "telegram_gateway_forward_latency_seconds",
     "Time spent forwarding one update",
 )
+DELIVER_TOTAL = Counter("telegram_gateway_deliver_total", "Outbound deliveries", ["status"])
+DELIVER_LATENCY = Histogram(
+    "telegram_gateway_deliver_latency_seconds",
+    "Time to deliver one item",
+)
 
 
 @dataclass(slots=True)
@@ -29,6 +36,7 @@ class GatewayRuntime:
     settings: GatewaySettings
     spool: GatewaySpool
     bridge: MainBridgeClient | None
+    bot_client: TelegramBotClient | None = None
     auto_start_workers: bool = True
 
     def _now(self) -> datetime:
@@ -110,10 +118,92 @@ class GatewayRuntime:
         self.record_depth()
         return processed
 
+    async def deliver_once(self, *, limit: int | None = None) -> int:
+        """Lease outbox items, send via Bot API, acknowledge."""
+        if self.bridge is None or self.bot_client is None:
+            return 0
+
+        # 1. Lease batch from main bridge
+        leased = await self.bridge.lease_outbox(
+            worker_id=self.settings.gateway_id,
+            limit=limit or 20,
+            lease_seconds=self.settings.lease_seconds,
+        )
+        if not leased.items:
+            return 0
+
+        # 2. Process each item
+        delivered = 0
+        for item in leased.items:
+            delivery_error = None
+            with DELIVER_LATENCY.time():
+                try:
+                    result = await self._deliver_item(item)
+                    status = "sent"
+                    provider_id = result.message_id if result else None
+                except BotAPIError as exc:
+                    if exc.permanent:
+                        status = "dead_letter"
+                    else:
+                        status = "retry"
+                        delivery_error = exc
+                    provider_id = None
+                except Exception as exc:
+                    status = "retry"
+                    delivery_error = exc
+                    provider_id = None
+
+            # 3. Acknowledge to main bridge
+            await self.bridge.ack_outbox(
+                delivery_id=item.delivery_id,
+                status=status,
+                provider_message_id=provider_id,
+                last_error=str(delivery_error) if delivery_error else None,
+                retry_after_seconds=(
+                    getattr(delivery_error, "retry_after", None)
+                    if delivery_error
+                    else None
+                ),
+            )
+            if status == "sent":
+                delivered += 1
+            DELIVER_TOTAL.labels(status=status).inc()
+
+        return delivered
+
+    async def _deliver_item(self, item: LeaseItem):
+        """Send single outbox item via Bot API."""
+        if self.bot_client is None:
+            return None
+
+        method = item.payload.get("method")
+        if method == "sendMessage":
+            return await self.bot_client.send_message(
+                chat_id=item.target_user_id or item.target_chat_id,
+                text=item.payload.get("text", ""),
+                reply_to_message_id=item.payload.get("reply_to_message_id"),
+                message_thread_id=item.payload.get("message_thread_id"),
+                reply_markup=item.payload.get("reply_markup"),
+            )
+        elif method == "answerCallbackQuery":
+            return await self.bot_client.answer_callback_query(
+                callback_query_id=item.payload.get("callback_query_id", ""),
+                text=item.payload.get("text"),
+                show_alert=item.payload.get("show_alert", False),
+            )
+        elif method == "editMessageReplyMarkup":
+            return await self.bot_client.edit_message_reply_markup(
+                chat_id=item.target_chat_id,
+                message_id=item.payload.get("message_id", ""),
+                reply_markup=item.payload.get("reply_markup", {"inline_keyboard": []}),
+            )
+        return None
+
     async def run(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
             try:
                 await self.drain_once()
+                await self.deliver_once()
                 await self.heartbeat_once()
             except Exception:
                 pass
@@ -128,6 +218,8 @@ class GatewayRuntime:
     async def close(self) -> None:
         if self.bridge is not None:
             await self.bridge.aclose()
+        if self.bot_client is not None:
+            await self.bot_client.close()
 
 
 def build_runtime(settings: GatewaySettings | None = None) -> GatewayRuntime:
@@ -139,4 +231,5 @@ def build_runtime(settings: GatewaySettings | None = None) -> GatewayRuntime:
         key_secret=settings.bridge_key_secret,
         timeout_seconds=settings.bridge_timeout_seconds,
     )
-    return GatewayRuntime(settings=settings, spool=spool, bridge=bridge)
+    bot_client = TelegramBotClient(bot_token=settings.bot_token)
+    return GatewayRuntime(settings=settings, spool=spool, bridge=bridge, bot_client=bot_client)

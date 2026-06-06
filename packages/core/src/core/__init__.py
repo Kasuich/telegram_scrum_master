@@ -28,6 +28,7 @@ from core import (
     prompts,
     react,
     registry,
+    repositories,
     scheduler,
     seed,
     tools,
@@ -129,6 +130,7 @@ from core.models import (
     TelegramBusinessConnection,
     TelegramCallbackToken,
     TelegramChat,
+    TelegramImportJob,
     TelegramInstallation,
     TelegramMessage,
     TelegramNotificationPreference,
@@ -150,6 +152,11 @@ from core.prompts import (
 )
 from core.react import AgentResult, PendingConfirm, ReActRunner
 from core.registry import BotRegistry, get_bot_registry
+from core.repositories import (
+    MessageCursor,
+    MessageQueryOptions,
+    TelegramMessageRepository,
+)
 from core.scheduler import SchedulerDaemon, compute_next_run
 from core.seed import ensure_default_team
 from core.tools import (
@@ -191,6 +198,7 @@ __all__ = [
     "models",
     "prompts",
     "registry",
+    "repositories",
     "effective_config",
     "scheduler",
     "seed",
@@ -317,8 +325,12 @@ __all__ = [
     "TelegramMessage",
     "TelegramOutbox",
     "TelegramCallbackToken",
+    "TelegramImportJob",
     "TelegramNotificationPreference",
     "RuntimeConfigModel",
     "ScheduledJob",
     "ActionFeedback",
+    "MessageCursor",
+    "MessageQueryOptions",
+    "TelegramMessageRepository",
 ]
