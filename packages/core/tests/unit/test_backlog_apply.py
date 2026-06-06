@@ -6,8 +6,8 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from core.backlog_tools import tracker_apply_backlog_plan
+
 SAMPLE_PLAN = {
     "create_epic": True,
     "rationale": "Несколько потоков работ",

@@ -118,7 +118,8 @@ def _tool_result_message(tool_name: str, result: Any, *, action_only: bool = Fal
     if action_only:
         return (
             f"Инструмент «{tool_name}» выполнен. Результат: {result}. "
-            "Если запрос пользователя уже выполнен — ответь БЕЗ tool calls (будет автоматический отчёт). "
+            "Если запрос пользователя уже выполнен, ответь БЕЗ tool calls "
+            "(будет автоматический отчёт). "
             "Иначе — один следующий tool call. Не повторяй то же действие с теми же аргументами."
         )
     return (
@@ -157,10 +158,7 @@ def _format_action_tool_line(tool_name: str, result: dict[str, Any]) -> str:
         if result.get("not_found") or result.get("count", 0) == 0:
             return "Задача не найдена"
         issues = result.get("issues") or []
-        parts = [
-            f"{i.get('key')} «{i.get('summary')}» ({i.get('status')})"
-            for i in issues[:5]
-        ]
+        parts = [f"{i.get('key')} «{i.get('summary')}» ({i.get('status')})" for i in issues[:5]]
         return "Найдено: " + "; ".join(parts)
     if tool_name in ("tracker_create_issue", "tracker_patch_issue", "tracker_update_issue"):
         key = result.get("key") or result.get("issue_key", "")
@@ -192,7 +190,9 @@ def _format_action_tool_line(tool_name: str, result: dict[str, Any]) -> str:
         n = result.get("created_count", 0)
         err_n = result.get("error_count", 0)
         if n == 0 and err_n == 0:
-            return "Доска: не создано ни одной задачи — план пуст или backlog_plan завершился с ошибкой"
+            return (
+                "Доска: не создано ни одной задачи, план пуст или backlog_plan завершился с ошибкой"
+            )
         line = f"Доска: создано {n} задач"
         if epic:
             line += f", эпик {epic}"
@@ -203,9 +203,7 @@ def _format_action_tool_line(tool_name: str, result: dict[str, Any]) -> str:
             line += "\n" + "\n".join(tree[:6])
         critical = result.get("critical") or []
         if critical:
-            crit_parts = [
-                f"{c.get('key')} до {c.get('deadline', '?')}" for c in critical[:3]
-            ]
+            crit_parts = [f"{c.get('key')} до {c.get('deadline', '?')}" for c in critical[:3]]
             line += "\nCritical: " + "; ".join(crit_parts)
         return line
     key = result.get("key") or result.get("issue_key", "")
@@ -331,9 +329,7 @@ def _is_chatty_delegation(text: str) -> bool:
     return "?" in text or any(m in lower for m in markers)
 
 
-def _action_only_final_reply(
-    steps: list[dict[str, Any]], llm_text: str, had_tool: bool
-) -> str:
+def _action_only_final_reply(steps: list[dict[str, Any]], llm_text: str, had_tool: bool) -> str:
     report = _build_action_report(steps)
     if report:
         return report
@@ -547,15 +543,16 @@ class ReActRunner:
                 self.agent.name,
             )
 
-            llm_messages = self._llm_messages(
-                ctx, messages, prompt_vars=state.get("prompt_vars")
-            )
+            llm_messages = self._llm_messages(ctx, messages, prompt_vars=state.get("prompt_vars"))
             llm_response, _ = await self.agent._call_with_fallback(llm_messages, tool_schemas)
 
             if not llm_response.tool_calls:
                 llm_text = (llm_response.content or "").strip()
                 turn_steps = steps[steps_before_turn:]
-                had_tool = any(s.get("kind") in ("tool_call", "tool_result", "confirm_wait") for s in turn_steps)
+                had_tool = any(
+                    s.get("kind") in ("tool_call", "tool_result", "confirm_wait")
+                    for s in turn_steps
+                )
 
                 if action_only and not had_tool and state.get("_action_only_nudges", 0) < 4:
                     state["_action_only_nudges"] = state.get("_action_only_nudges", 0) + 1
@@ -566,9 +563,11 @@ class ReActRunner:
                             "role": "user",
                             "content": (
                                 "Запрещено спрашивать у пользователя. "
-                                "Если просят СОЗДАТЬ задачу (создай/заведи/поставь) — tracker_create_issue "
+                                "Если просят СОЗДАТЬ задачу "
+                                "(создай/заведи/поставь) — tracker_create_issue "
                                 "(summary, assignee), без поиска. "
-                                "Если закрыть/изменить/найти — tracker_find_issues, затем действие. "
+                                "Если закрыть/изменить/найти — "
+                                "tracker_find_issues, затем действие. "
                                 "Пустой поиск — только для изменения: «задача не найдена»."
                             ),
                         }
@@ -618,9 +617,12 @@ class ReActRunner:
                 if guard_err:
                     steps.append(_step("tool_error", tool_name=tool_call.name, error=guard_err))
                     messages.append(
-                        {"role": "user", "content": _tool_error_message(
-                            tool_call.name, guard_err, action_only=True
-                        )}
+                        {
+                            "role": "user",
+                            "content": _tool_error_message(
+                                tool_call.name, guard_err, action_only=True
+                            ),
+                        }
                     )
                     if created_issue_keys_in_turn(steps, steps_before_turn):
                         last_create: dict[str, Any] | None = None
@@ -632,9 +634,7 @@ class ReActRunner:
                                 last_create = s.get("result")
                                 break
                         if last_create:
-                            reply = _format_action_tool_line(
-                                "tracker_create_issue", last_create
-                            )
+                            reply = _format_action_tool_line("tracker_create_issue", last_create)
                             steps.append(_step("final", content=reply))
                             messages.append({"role": "assistant", "content": reply})
                             state["messages"] = messages
@@ -652,10 +652,7 @@ class ReActRunner:
             rc = ctx.effective_runtime_config or self.runtime_config
             needs_confirm = not rc.skip_tool_confirm and (
                 tool.name in rc.always_confirm_tools
-                or (
-                    tool.risk in rc.confirm_risk
-                    and tool.risk not in rc.auto_risk
-                )
+                or (tool.risk in rc.confirm_risk and tool.risk not in rc.auto_risk)
             )
 
             if needs_confirm:
@@ -708,8 +705,7 @@ class ReActRunner:
                     {
                         "role": "user",
                         "content": (
-                            f"«{tool_call.name}» уже выполнен. "
-                            "Заверши ход БЕЗ tool calls."
+                            f"«{tool_call.name}» уже выполнен. Заверши ход БЕЗ tool calls."
                         ),
                     }
                 )
@@ -814,9 +810,7 @@ class ReActRunner:
                                 )
                             )
 
-                feedback = _tool_result_message(
-                    tool_call.name, result, action_only=action_only
-                )
+                feedback = _tool_result_message(tool_call.name, result, action_only=action_only)
             except Exception as exc:
                 err_msg = str(exc)
                 steps.append(_step("tool_error", tool_name=tool_call.name, error=err_msg))
@@ -829,16 +823,12 @@ class ReActRunner:
                     risk=tool.risk,
                     status="failed",
                 )
-                feedback = _tool_error_message(
-                    tool_call.name, err_msg, action_only=action_only
-                )
+                feedback = _tool_error_message(tool_call.name, err_msg, action_only=action_only)
 
             messages.append({"role": "user", "content": feedback})
 
             if action_only and _should_auto_finalize_turn(steps[steps_before_turn:]):
-                reply = _build_action_report(steps[steps_before_turn:]) or (
-                    "Действие выполнено."
-                )
+                reply = _build_action_report(steps[steps_before_turn:]) or ("Действие выполнено.")
                 steps.append(_step("final", content=reply))
                 messages.append({"role": "assistant", "content": reply})
                 state["messages"] = messages

@@ -293,9 +293,7 @@ class TestGetQueueMeta:
         }
         local_fields = [{"id": "sp", "name": "Story Points", "schema": {"type": "float"}}]
         resolutions = [{"id": "1", "key": "fixed", "name": "Решён"}]
-        with _patch_request(
-            side_effect=[_ok(queue_data), _ok(local_fields), _ok(resolutions)]
-        ):
+        with _patch_request(side_effect=[_ok(queue_data), _ok(local_fields), _ok(resolutions)]):
             meta = await c.get_queue_meta("TEST")
         assert meta["queue_key"] == "TEST"
         assert len(meta["local_fields"]) == 1
@@ -386,9 +384,7 @@ class TestTrackerTools:
             "core.tracker.TrackerClient._request",
             AsyncMock(return_value=ISSUE_RESPONSE),
         ):
-            result = await tracker_patch_issue(
-                "TEST-1", deadline="2026-06-01", story_points="5"
-            )
+            result = await tracker_patch_issue("TEST-1", deadline="2026-06-01", story_points="5")
         assert result["key"] == "TEST-1"
 
     @patch.dict("os.environ", ENV)

@@ -1,7 +1,8 @@
 """Tests for per-turn tool guards."""
 
-import pytest
+from __future__ import annotations
 
+import pytest
 from core.turn_guards import (
     check_turn_tool_guard,
     message_has_backlog_intent,

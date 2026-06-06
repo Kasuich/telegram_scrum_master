@@ -239,12 +239,8 @@ class TrackerClient:
             None,
         )
         if match is None:
-            available = [
-                {"id": t.get("id"), "display": t.get("display")} for t in transitions
-            ]
-            raise TrackerError(
-                f"Transition {transition_id!r} not found. Available: {available}"
-            )
+            available = [{"id": t.get("id"), "display": t.get("display")} for t in transitions]
+            raise TrackerError(f"Transition {transition_id!r} not found. Available: {available}")
         body: dict[str, Any] = dict(extra_fields or {})
         if resolution:
             body["resolution"] = resolution

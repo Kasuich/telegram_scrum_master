@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from core.assignee_resolver import extract_assignee_mention, resolve_assignee
-import os
-
 from core.tracker import TrackerClient
 
 _CREATE_MARKERS = (
@@ -165,15 +164,11 @@ async def check_turn_tool_guard(
         actual = await resolve_assignee(llm_assignee, client, queue_key)
 
     # Only override LLM when the extracted mention is a confident team match
-    if (
-        expected.score >= 0.65
-        and actual.score >= 0.42
-        and expected.login != actual.login
-    ):
+    if expected.score >= 0.65 and actual.score >= 0.42 and expected.login != actual.login:
         return (
             f"В запросе исполнитель «{mention}» → {expected.display} ({expected.login}), "
             f"а в tool call указан «{llm_assignee}» → {actual.display} ({actual.login}). "
-            f"Используй assignee=\"{expected.login}\"."
+            f'Используй assignee="{expected.login}".'
         )
 
     return None

@@ -70,7 +70,9 @@ class ChatRequest(BaseModel):
     message: str = Field(
         min_length=1,
         max_length=chat_max_message_length(),
-        description="User message; up to CHAT_MAX_MESSAGE_LENGTH chars (default 100k for summaries)",
+        description=(
+            "User message; up to CHAT_MAX_MESSAGE_LENGTH chars (default 100k for summaries)"
+        ),
     )
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
 

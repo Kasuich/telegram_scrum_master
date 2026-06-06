@@ -12,7 +12,12 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from core.assignee_resolver import load_team_users, resolve_assignee as match_assignee
+from core.assignee_resolver import (
+    load_team_users,
+)
+from core.assignee_resolver import (
+    resolve_assignee as match_assignee,
+)
 from core.config import get_config
 from core.tools import platform_tool
 from core.tracker import TrackerClient, TrackerError
@@ -29,7 +34,6 @@ from core.tracker_tool_helpers import (
     parse_custom_fields_json,
     parse_tags,
 )
-
 
 _QUEUE_PLACEHOLDERS = frozenset({"default"})
 
@@ -64,9 +68,7 @@ async def _resolve_login(
     return m.login, meta
 
 
-async def _resolve_yql_assignees(
-    yql: str, client: TrackerClient, queue: str
-) -> str:
+async def _resolve_yql_assignees(yql: str, client: TrackerClient, queue: str) -> str:
     """Replace Assignee: \"Name\" with resolved login in YQL."""
     pattern = re.compile(
         r'(Assignee:\s*)"([^"]+)"|Assignee:\s+([a-z0-9._-]+)',
@@ -262,7 +264,11 @@ async def tracker_list_transitions(issue_key: str) -> dict[str, Any]:
     return {
         "issue_key": issue_key,
         "transitions": [
-            {"id": t.get("id"), "display": t.get("display"), "to": (t.get("to") or {}).get("display")}
+            {
+                "id": t.get("id"),
+                "display": t.get("display"),
+                "to": (t.get("to") or {}).get("display"),
+            }
             for t in transitions
         ],
     }
@@ -406,7 +412,10 @@ async def tracker_update_issue(
     priority: str = "",
     assignee: str = "",
 ) -> dict[str, Any]:
-    """Update basic fields (summary, description, priority, assignee). Prefer tracker_patch_issue for more fields."""
+    """Update basic fields.
+
+    Prefer `tracker_patch_issue` when more fields are required.
+    """
     return await tracker_patch_issue(
         issue_key,
         summary=summary,

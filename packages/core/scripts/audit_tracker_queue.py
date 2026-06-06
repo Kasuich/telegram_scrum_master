@@ -40,6 +40,9 @@ async def main(queue: str | None = None) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     md_path = out_dir / f"tracker_queue_{queue_key}.md"
     json_path = out_dir / f"tracker_queue_{queue_key}.json"
+    issue_types_json = json.dumps(meta.get("issue_types"), ensure_ascii=False, indent=2)
+    priorities_json = json.dumps(meta.get("priorities"), ensure_ascii=False, indent=2)
+    local_fields_json = json.dumps(meta.get("local_fields"), ensure_ascii=False, indent=2)
 
     md_path.write_text(
         f"# Tracker queue: {queue_key}\n\n"
@@ -50,9 +53,9 @@ async def main(queue: str | None = None) -> None:
         f"- Priorities: {len(meta.get('priorities', []))}\n"
         f"- Local fields: {len(meta.get('local_fields', []))}\n\n"
         f"## Agent hint\n\n{meta.get('hint')}\n\n"
-        f"## Issue types\n\n```json\n{json.dumps(meta.get('issue_types'), ensure_ascii=False, indent=2)}\n```\n\n"
-        f"## Priorities\n\n```json\n{json.dumps(meta.get('priorities'), ensure_ascii=False, indent=2)}\n```\n\n"
-        f"## Local fields\n\n```json\n{json.dumps(meta.get('local_fields'), ensure_ascii=False, indent=2)}\n```\n",
+        f"## Issue types\n\n```json\n{issue_types_json}\n```\n\n"
+        f"## Priorities\n\n```json\n{priorities_json}\n```\n\n"
+        f"## Local fields\n\n```json\n{local_fields_json}\n```\n",
         encoding="utf-8",
     )
     json_path.write_text(

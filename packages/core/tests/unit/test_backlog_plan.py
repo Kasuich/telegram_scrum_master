@@ -4,11 +4,7 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from core.backlog_plan import (
-    BacklogPlan,
-    PlannedIssue,
     extract_json_from_text,
     parse_backlog_plan,
     resolve_issue_type_key,
@@ -19,7 +15,6 @@ from core.backlog_tools import (
     plan_json_looks_invalid,
     resolve_backlog_plan_data,
 )
-
 
 SAMPLE_PLAN = {
     "create_epic": True,
@@ -66,7 +61,7 @@ def test_parse_backlog_plan():
 
 
 def test_extract_json_from_fence():
-    raw = '```json\n' + json.dumps(SAMPLE_PLAN, ensure_ascii=False) + "\n```"
+    raw = "```json\n" + json.dumps(SAMPLE_PLAN, ensure_ascii=False) + "\n```"
     data = extract_json_from_text(raw)
     assert data["create_epic"] is True
 

@@ -160,7 +160,9 @@ async def _apply_plan_impl(
 ) -> dict[str, Any]:
     cfg = _backlog_cfg()
     start = start_date or cfg.start_date_parsed()
-    velocity = velocity_sp_per_week if velocity_sp_per_week is not None else cfg.velocity_sp_per_week
+    velocity = (
+        velocity_sp_per_week if velocity_sp_per_week is not None else cfg.velocity_sp_per_week
+    )
 
     async with TrackerClient() as client:
         meta = await client.get_queue_meta(queue)
@@ -180,7 +182,12 @@ async def _apply_plan_impl(
             velocity_sp_per_week=velocity,
         )
 
-        async def create_planned(issue: Any, *, parent_key: str | None, deadline: str | None) -> None:
+        async def create_planned(
+            issue: Any,
+            *,
+            parent_key: str | None,
+            deadline: str | None,
+        ) -> None:
             type_key, extra_tags = resolve_issue_type_key(issue.issue_type, type_keys)
             priority = resolve_priority_key(issue.priority, priority_keys)
             tags = list(dict.fromkeys([*issue.tags, *extra_tags]))

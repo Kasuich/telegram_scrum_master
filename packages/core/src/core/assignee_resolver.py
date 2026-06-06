@@ -115,15 +115,25 @@ def _match_score(query: str, user: TrackerUser) -> float:
     return best
 
 
-def best_user_match(query: str, users: list[TrackerUser], *, threshold: float = 0.42) -> AssigneeMatch | None:
+def best_user_match(
+    query: str,
+    users: list[TrackerUser],
+    *,
+    threshold: float = 0.42,
+) -> AssigneeMatch | None:
     if not query.strip() or not users:
         return None
-    scored = [( _match_score(query, u), u) for u in users]
+    scored = [(_match_score(query, u), u) for u in users]
     scored.sort(key=lambda x: x[0], reverse=True)
     score, user = scored[0]
     if score < threshold:
         return None
-    return AssigneeMatch(login=user.login, display=user.display, score=score, query=query.strip())
+    return AssigneeMatch(
+        login=user.login,
+        display=user.display,
+        score=score,
+        query=query.strip(),
+    )
 
 
 async def load_team_users(client: TrackerClient, queue_key: str) -> list[TrackerUser]:
