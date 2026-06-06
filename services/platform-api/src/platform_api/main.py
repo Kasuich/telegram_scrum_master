@@ -32,6 +32,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from platform_api import rpc_client
+from platform_api.telegram_bridge import router as telegram_bridge_router
 
 DEFAULT_AGENT = "pm_agent"
 
@@ -60,6 +61,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PM Agent Platform API", lifespan=lifespan)
+app.include_router(telegram_bridge_router)
 
 
 # ---------------------------------------------------------------------------
