@@ -59,7 +59,61 @@ def upgrade() -> None:
     )
 
     # ------------------------------------------------------------------
-    # 2. teams
+    # 2. users
+    # ------------------------------------------------------------------
+    op.create_table(
+        "users",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
+        sa.Column("email", sa.String(255), nullable=False, unique=True),
+        sa.Column("password_hash", sa.String(255), nullable=False),
+        sa.Column("display_name", sa.String(255), nullable=False),
+        sa.Column("role", sa.String(32), nullable=False, server_default="admin"),
+        sa.Column("active", sa.Boolean, nullable=False, server_default="true"),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.CheckConstraint("role IN ('dev', 'admin', 'user')", name="ck_users_role"),
+    )
+
+    op.create_index("idx_users_email", "users", ["email"])
+
+    # ------------------------------------------------------------------
+    # 3. console_sessions
+    # ------------------------------------------------------------------
+    op.create_table(
+        "console_sessions",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
+        sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("token_hash", sa.String(64), nullable=False, unique=True),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(
+            ["user_id"],
+            ["users.id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    op.create_index("idx_console_sessions_token_hash", "console_sessions", ["token_hash"])
+    op.create_index("idx_console_sessions_user_id", "console_sessions", ["user_id"])
+
+    # ------------------------------------------------------------------
+    # 4. teams
     # ------------------------------------------------------------------
     op.create_table(
         "teams",
@@ -92,7 +146,7 @@ def upgrade() -> None:
     )
 
     # ------------------------------------------------------------------
-    # 3. agent_specs
+    # 5. agent_specs
     # ------------------------------------------------------------------
     op.create_table(
         "agent_specs",
@@ -102,7 +156,7 @@ def upgrade() -> None:
             "model",
             sa.String(100),
             nullable=False,
-            server_default="yandexgpt-pro",
+            server_default="gpt-oss-120b",
         ),
         sa.Column("prompt", sa.Text, nullable=False),
         sa.Column(
@@ -132,7 +186,7 @@ def upgrade() -> None:
     )
 
     # ------------------------------------------------------------------
-    # 4. agent_instances
+    # 6. agent_instances
     # ------------------------------------------------------------------
     op.create_table(
         "agent_instances",
@@ -172,7 +226,7 @@ def upgrade() -> None:
     )
 
     # ------------------------------------------------------------------
-    # 5. traces
+    # 7. traces
     # ------------------------------------------------------------------
     op.create_table(
         "traces",
@@ -200,7 +254,7 @@ def upgrade() -> None:
     op.create_index("idx_traces_session_id", "traces", ["session_id"])
 
     # ------------------------------------------------------------------
-    # 6. actions
+    # 8. actions
     # ------------------------------------------------------------------
     op.create_table(
         "actions",
@@ -261,7 +315,7 @@ def upgrade() -> None:
     op.create_index("idx_actions_created_at", "actions", ["created_at"])
 
     # ------------------------------------------------------------------
-    # 7. confirms
+    # 9. confirms
     # ------------------------------------------------------------------
     op.create_table(
         "confirms",
@@ -298,7 +352,7 @@ def upgrade() -> None:
     op.create_index("idx_confirms_action_id", "confirms", ["action_id"])
 
     # ------------------------------------------------------------------
-    # 8. runtime_configs
+    # 10. runtime_configs
     # ------------------------------------------------------------------
     op.create_table(
         "runtime_configs",
@@ -333,7 +387,7 @@ def upgrade() -> None:
     op.create_index("idx_runtime_configs_team_id", "runtime_configs", ["team_id"])
 
     # ------------------------------------------------------------------
-    # 9. scheduled_jobs
+    # 11. scheduled_jobs
     # ------------------------------------------------------------------
     op.create_table(
         "scheduled_jobs",
@@ -367,7 +421,7 @@ def upgrade() -> None:
     op.create_index("idx_scheduled_jobs_next_run", "scheduled_jobs", ["next_run"])
 
     # ------------------------------------------------------------------
-    # 10. action_feedback
+    # 12. action_feedback
     # ------------------------------------------------------------------
     op.create_table(
         "action_feedback",
@@ -388,10 +442,15 @@ def upgrade() -> None:
             ["actions.id"],
             ondelete="CASCADE",
         ),
+        sa.ForeignKeyConstraint(
+            ["user_id"],
+            ["users.id"],
+            ondelete="SET NULL",
+        ),
     )
 
     # ------------------------------------------------------------------
-    # 11. langchain_checkpoints
+    # 13. langchain_checkpoints
     # ------------------------------------------------------------------
     op.create_table(
         "langchain_checkpoints",
@@ -463,6 +522,11 @@ def downgrade() -> None:
     op.drop_table("agent_instances")
     op.drop_table("agent_specs")
     op.drop_table("teams")
+    op.drop_index("idx_console_sessions_user_id", table_name="console_sessions")
+    op.drop_index("idx_console_sessions_token_hash", table_name="console_sessions")
+    op.drop_table("console_sessions")
+    op.drop_index("idx_users_email", table_name="users")
+    op.drop_table("users")
     op.drop_table("organizations")
 
     # Drop enum types

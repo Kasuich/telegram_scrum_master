@@ -67,6 +67,76 @@ class Organization(Base):
     teams: Mapped[list[Team]] = relationship("Team", back_populates="organization")
 
 
+class User(Base):
+    """Console user for the GUI control plane."""
+
+    __tablename__ = "users"
+    __table_args__ = (
+        Index("idx_users_email", "email"),
+        CheckConstraint("role IN ('dev', 'admin', 'user')", name="ck_users_role"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="admin")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    sessions: Mapped[list[ConsoleSession]] = relationship(
+        "ConsoleSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    feedback: Mapped[list[ActionFeedback]] = relationship(
+        "ActionFeedback",
+        back_populates="user",
+    )
+
+
+class ConsoleSession(Base):
+    """Cookie-backed session for the GUI control plane."""
+
+    __tablename__ = "console_sessions"
+    __table_args__ = (
+        Index("idx_console_sessions_token_hash", "token_hash"),
+        Index("idx_console_sessions_user_id", "user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    user: Mapped[User] = relationship("User", back_populates="sessions")
+
+
 class Team(Base):
     """Team model - belongs to organization."""
 
@@ -381,6 +451,7 @@ class ActionFeedback(Base):
     )
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
     rating: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -391,11 +462,14 @@ class ActionFeedback(Base):
     )
 
     action: Mapped[Action] = relationship("Action", back_populates="feedback")
+    user: Mapped[User | None] = relationship("User", back_populates="feedback")
 
 
 __all__ = [
     "Base",
     "Organization",
+    "User",
+    "ConsoleSession",
     "Team",
     "AgentSpec",
     "AgentInstance",

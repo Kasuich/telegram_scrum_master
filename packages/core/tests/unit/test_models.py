@@ -17,11 +17,13 @@ from core.models import (
     AgentSpec,
     Base,
     Confirm,
+    ConsoleSession,
     Organization,
     RuntimeConfigModel,
     ScheduledJob,
     Team,
     Trace,
+    User,
 )
 from sqlalchemy import (
     CheckConstraint,
@@ -77,6 +79,8 @@ class TestBase:
 
     ALL_MODELS = [
         Organization,
+        User,
+        ConsoleSession,
         Team,
         AgentSpec,
         AgentInstance,
@@ -143,7 +147,58 @@ class TestOrganization:
 
 
 # ===========================================================================
-# 3. TestTeam
+# 3. TestUser
+# ===========================================================================
+
+
+class TestUser:
+    """Tests for console User model."""
+
+    def test_tablename(self) -> None:
+        assert User.__tablename__ == "users"
+
+    def test_email_unique_and_indexed(self) -> None:
+        col = _get_column(User, "email")
+        assert col.unique
+        assert "idx_users_email" in _index_names(User)
+
+    def test_role_check_constraint_exists(self) -> None:
+        assert "ck_users_role" in _constraint_names(User)
+
+    def test_active_default_true(self) -> None:
+        col = _get_column(User, "active")
+        assert col.default.arg is True
+
+
+# ===========================================================================
+# 4. TestConsoleSession
+# ===========================================================================
+
+
+class TestConsoleSession:
+    """Tests for console session model."""
+
+    def test_tablename(self) -> None:
+        assert ConsoleSession.__tablename__ == "console_sessions"
+
+    def test_user_id_fk(self) -> None:
+        col = _get_column(ConsoleSession, "user_id")
+        assert col.foreign_keys
+        fk = next(iter(col.foreign_keys))
+        assert "users.id" in str(fk.target_fullname)
+
+    def test_token_hash_unique_and_indexed(self) -> None:
+        col = _get_column(ConsoleSession, "token_hash")
+        assert col.unique
+        assert "idx_console_sessions_token_hash" in _index_names(ConsoleSession)
+
+    def test_revoked_at_nullable(self) -> None:
+        col = _get_column(ConsoleSession, "revoked_at")
+        assert col.nullable
+
+
+# ===========================================================================
+# 5. TestTeam
 # ===========================================================================
 
 
@@ -172,7 +227,7 @@ class TestTeam:
 
 
 # ===========================================================================
-# 4. TestAgentSpec
+# 6. TestAgentSpec
 # ===========================================================================
 
 
@@ -216,7 +271,7 @@ class TestAgentSpec:
 
 
 # ===========================================================================
-# 5. TestAgentInstance
+# 7. TestAgentInstance
 # ===========================================================================
 
 
@@ -248,7 +303,7 @@ class TestAgentInstance:
 
 
 # ===========================================================================
-# 6. TestAction
+# 8. TestAction
 # ===========================================================================
 
 
@@ -285,7 +340,7 @@ class TestAction:
 
 
 # ===========================================================================
-# 7. TestTrace
+# 9. TestTrace
 # ===========================================================================
 
 
@@ -315,7 +370,7 @@ class TestTrace:
 
 
 # ===========================================================================
-# 8. TestConfirm
+# 10. TestConfirm
 # ===========================================================================
 
 
@@ -348,7 +403,7 @@ class TestConfirm:
 
 
 # ===========================================================================
-# 9. TestRuntimeConfigModel
+# 11. TestRuntimeConfigModel
 # ===========================================================================
 
 
@@ -375,7 +430,7 @@ class TestRuntimeConfigModel:
 
 
 # ===========================================================================
-# 10. TestScheduledJob
+# 12. TestScheduledJob
 # ===========================================================================
 
 
@@ -411,7 +466,7 @@ class TestScheduledJob:
 
 
 # ===========================================================================
-# 11. TestActionFeedback
+# 13. TestActionFeedback
 # ===========================================================================
 
 
@@ -434,6 +489,7 @@ class TestActionFeedback:
     def test_user_id_nullable(self) -> None:
         col = _get_column(ActionFeedback, "user_id")
         assert col.nullable
+        assert col.foreign_keys
 
     def test_comment_nullable(self) -> None:
         col = _get_column(ActionFeedback, "comment")

@@ -115,11 +115,13 @@ from core.models import (
     AgentSpec,
     Base,
     Confirm,
+    ConsoleSession,
     Organization,
     RuntimeConfigModel,
     ScheduledJob,
     Team,
     Trace,
+    User,
 )
 from core.prompts import (
     PM_AGENT_SYSTEM_PROMPT,
@@ -278,6 +280,8 @@ __all__ = [
     "ROLE_ASSISTANT",
     "Base",
     "Organization",
+    "User",
+    "ConsoleSession",
     "Team",
     "AgentSpec",
     "AgentInstance",
