@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from core.db import get_session
+from core.invocation import InvocationContext
 from core.models import (
     TelegramBusinessConnection,
     TelegramChat,
@@ -24,6 +25,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from platform_api import rpc_client
 
 router = APIRouter(prefix="/internal/telegram/v1", tags=["telegram-bridge"])
 
@@ -75,6 +78,237 @@ class AckRequest(BaseModel):
     provider_message_id: str | None = None
     last_error: str | None = None
     retry_after_seconds: int | None = Field(default=None, ge=0, le=86400)
+
+
+def _message_text(message_payload: dict[str, Any]) -> str:
+    value = message_payload.get("text") or message_payload.get("caption") or ""
+    return str(value).strip()
+
+
+def _actor_display_name(
+    telegram_user: TelegramUser | None,
+    message_payload: dict[str, Any],
+) -> str | None:
+    if telegram_user is not None:
+        parts = [telegram_user.first_name, telegram_user.last_name]
+        full_name = " ".join(part for part in parts if part).strip()
+        return full_name or telegram_user.username or telegram_user.external_user_id
+
+    from_payload = message_payload.get("from") or {}
+    parts = [from_payload.get("first_name"), from_payload.get("last_name")]
+    full_name = " ".join(str(part) for part in parts if part).strip()
+    return full_name or from_payload.get("username")
+
+
+def _bot_username(installation: TelegramInstallation) -> str | None:
+    raw = installation.settings.get("bot_username") if installation.settings else None
+    if raw:
+        return str(raw).lstrip("@")
+    if installation.alias:
+        return str(installation.alias).lstrip("@")
+    return None
+
+
+def _message_mentions_bot(
+    installation: TelegramInstallation,
+    message_payload: dict[str, Any],
+) -> bool:
+    text = _message_text(message_payload)
+    if not text:
+        return False
+    if text.startswith("/"):
+        return True
+
+    bot_username = _bot_username(installation)
+    entities: list[dict[str, Any]] = []
+    for key in ("entities", "caption_entities"):
+        raw = message_payload.get(key) or []
+        entities.extend(item for item in raw if isinstance(item, dict))
+
+    for entity in entities:
+        entity_type = entity.get("type")
+        if entity_type == "bot_command":
+            return True
+        if entity_type != "mention" or not bot_username:
+            continue
+        try:
+            offset = int(entity.get("offset", 0))
+            length = int(entity.get("length", 0))
+        except (TypeError, ValueError):
+            continue
+        fragment = text[offset : offset + length].lstrip("@").lower()
+        if fragment == bot_username.lower():
+            return True
+
+    if bot_username and f"@{bot_username.lower()}" in text.lower():
+        return True
+    return False
+
+
+def _message_replies_to_bot(
+    installation: TelegramInstallation,
+    message_payload: dict[str, Any],
+) -> bool:
+    reply_to = message_payload.get("reply_to_message") or {}
+    from_payload = reply_to.get("from") or {}
+    if not from_payload:
+        return False
+
+    if installation.external_bot_id and (
+        str(from_payload.get("id")) == str(installation.external_bot_id)
+    ):
+        return True
+    return bool(from_payload.get("is_bot"))
+
+
+def _should_route_message(
+    installation: TelegramInstallation,
+    chat: TelegramChat,
+    message_payload: dict[str, Any],
+) -> bool:
+    if not chat.active:
+        return False
+    if not _message_text(message_payload):
+        return False
+
+    mode = (chat.ingest_mode or "disabled").strip().lower()
+    if mode in {"disabled", "archive_only", "correspondence"}:
+        return False
+    if mode == "direct":
+        return chat.type == "private"
+    if mode == "mentions":
+        return _message_mentions_bot(installation, message_payload) or _message_replies_to_bot(
+            installation,
+            message_payload,
+        )
+    return False
+
+
+def _telegram_session_id(
+    installation: TelegramInstallation,
+    message: TelegramMessage,
+) -> str:
+    return (
+        f"telegram:{installation.id}:{message.external_chat_id}:{message.external_thread_id or '0'}"
+    )
+
+
+def _build_invocation_context(
+    installation: TelegramInstallation,
+    chat: TelegramChat,
+    message: TelegramMessage,
+    telegram_user: TelegramUser | None,
+    message_payload: dict[str, Any],
+) -> InvocationContext:
+    reply_to_message = message_payload.get("reply_to_message") or {}
+    return InvocationContext(
+        channel="telegram",
+        team_id=str(installation.team_id),
+        session_id=_telegram_session_id(installation, message),
+        installation_id=str(installation.id),
+        chat_id=message.external_chat_id,
+        message_id=message.external_message_id,
+        thread_id=message.external_thread_id,
+        actor_external_id=telegram_user.external_user_id if telegram_user is not None else None,
+        actor_display_name=_actor_display_name(telegram_user, message_payload),
+        reply_to_message_id=(
+            str(reply_to_message.get("message_id")) if reply_to_message.get("message_id") else None
+        ),
+        metadata={
+            "chat_type": chat.type,
+            "ingest_mode": chat.ingest_mode,
+            "access_mode": chat.access_mode,
+        },
+    )
+
+
+async def _enqueue_agent_result(
+    session: AsyncSession,
+    *,
+    installation: TelegramInstallation,
+    chat: TelegramChat,
+    message: TelegramMessage,
+    telegram_user: TelegramUser | None,
+    result: Any,
+) -> TelegramOutbox | None:
+    if result.pending_confirm is not None:
+        text = result.pending_confirm.prompt
+        category = "confirmation"
+        dedupe_key = f"telegram:confirm:{message.id}:{result.pending_confirm.confirm_id}"
+        metadata = {"confirm_id": result.pending_confirm.confirm_id}
+    elif result.reply:
+        text = result.reply
+        category = "agent_reply"
+        dedupe_key = f"telegram:reply:{message.id}"
+        metadata = {}
+    else:
+        return None
+
+    outbox = TelegramOutbox(
+        team_id=installation.team_id,
+        installation_id=installation.id,
+        chat_id=chat.id,
+        category=category,
+        target_chat_id=chat.external_chat_id,
+        target_user_id=telegram_user.external_user_id if telegram_user is not None else None,
+        dedupe_key=dedupe_key,
+        priority=100,
+        status="pending",
+        attempts=0,
+        payload={
+            "method": "sendMessage",
+            "text": text,
+            "message_thread_id": message.external_thread_id,
+            "reply_to_message_id": message.external_message_id,
+            "metadata": metadata,
+        },
+    )
+    session.add(outbox)
+    await session.flush()
+    return outbox
+
+
+async def _route_inbound_message(
+    session: AsyncSession,
+    *,
+    installation: TelegramInstallation,
+    chat: TelegramChat,
+    message: TelegramMessage,
+    telegram_user: TelegramUser | None,
+    message_payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not _should_route_message(installation, chat, message_payload):
+        return None
+
+    context = _build_invocation_context(
+        installation,
+        chat,
+        message,
+        telegram_user,
+        message_payload,
+    )
+    result = await rpc_client.invoke(
+        "pm_agent",
+        _message_text(message_payload),
+        _telegram_session_id(installation, message),
+        context=context,
+    )
+    outbox = await _enqueue_agent_result(
+        session,
+        installation=installation,
+        chat=chat,
+        message=message,
+        telegram_user=telegram_user,
+        result=result,
+    )
+    return {
+        "session_id": context.session_id,
+        "outbox_id": str(outbox.id) if outbox is not None else None,
+        "reply": result.reply,
+        "pending_confirm_id": (
+            result.pending_confirm.confirm_id if result.pending_confirm is not None else None
+        ),
+    }
 
 
 def _bridge_keys() -> dict[str, str]:
@@ -302,6 +536,7 @@ async def ingest_event(session: AsyncSession, data: IngestEventRequest) -> dict[
         await session.flush()
 
     normalized_message_id: str | None = None
+    routing_result: dict[str, Any] | None = None
     kind, message_payload = _message_payload_kind(data.payload)
     if message_payload is not None:
         chat = await _upsert_chat(session, installation.id, message_payload.get("chat") or {})
@@ -319,6 +554,7 @@ async def ingest_event(session: AsyncSession, data: IngestEventRequest) -> dict[
             TelegramMessage.external_message_id == external_message_id,
         )
         msg = (await session.execute(msg_stmt)).scalar_one_or_none()
+        message_created = msg is None
         if msg is None:
             msg = TelegramMessage(
                 team_id=installation.team_id,
@@ -356,6 +592,15 @@ async def ingest_event(session: AsyncSession, data: IngestEventRequest) -> dict[
             session.add(msg)
             await session.flush()
         normalized_message_id = str(msg.id)
+        if not duplicate and message_created:
+            routing_result = await _route_inbound_message(
+                session,
+                installation=installation,
+                chat=chat,
+                message=msg,
+                telegram_user=telegram_user,
+                message_payload=message_payload,
+            )
 
     update.status = "processed"
     update.processed_at = datetime.now(timezone.utc)
@@ -364,6 +609,7 @@ async def ingest_event(session: AsyncSession, data: IngestEventRequest) -> dict[
         "update_id": str(update.id),
         "duplicate": duplicate,
         "normalized_message_id": normalized_message_id,
+        "routing": routing_result,
     }
 
 
