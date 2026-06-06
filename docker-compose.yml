@@ -30,6 +30,7 @@ services:
       DEFAULT_TEAM_ID: ${DEFAULT_TEAM_ID:-00000000-0000-0000-0000-000000000001}
       ENVIRONMENT: ${ENVIRONMENT}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      RUNTIME_SKIP_TOOL_CONFIRM: ${RUNTIME_SKIP_TOOL_CONFIRM:-false}
     ports:
       - "8001:8001"
     healthcheck:
@@ -48,6 +49,7 @@ services:
       dockerfile: services/platform-api/Dockerfile
     restart: unless-stopped
     environment:
+      CHAT_MAX_MESSAGE_LENGTH: ${CHAT_MAX_MESSAGE_LENGTH:-100000}
       ORCHESTRATOR_URL: http://pm-orchestrator:8001
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       YC_API_KEY: ${YC_API_KEY}

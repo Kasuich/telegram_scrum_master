@@ -33,10 +33,11 @@ from core.config import RuntimeConfig
 from core.exceptions import AgentError
 from core.llm import Message
 from core.tools import get_registry
+from core.turn_guards import check_turn_tool_guard, created_issue_keys_in_turn
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MAX_ITERATIONS = 8
+_DEFAULT_MAX_ITERATIONS = 12
 
 # Stable namespace for deriving a UUID from an arbitrary session string
 # (e.g. a Telegram chat id) so it can be stored in Trace.session_id.
@@ -113,18 +114,233 @@ def _step(kind: str, **kwargs: Any) -> dict[str, Any]:
     return {"kind": kind, "ts": _now(), **kwargs}
 
 
-def _tool_result_message(tool_name: str, result: Any) -> str:
+def _tool_result_message(tool_name: str, result: Any, *, action_only: bool = False) -> str:
+    if action_only:
+        return (
+            f"Инструмент «{tool_name}» выполнен. Результат: {result}. "
+            "Если запрос пользователя уже выполнен, ответь БЕЗ tool calls "
+            "(будет автоматический отчёт). "
+            "Иначе — один следующий tool call. Не повторяй то же действие с теми же аргументами."
+        )
     return (
         f"Инструмент «{tool_name}» выполнен успешно. Результат: {result}. "
         "Сообщи пользователю о результате кратко и по-русски."
     )
 
 
-def _tool_rejected_message(tool_name: str) -> str:
+def _tool_rejected_message(tool_name: str, *, action_only: bool = False) -> str:
+    if action_only:
+        return (
+            f"Пользователь отклонил «{tool_name}». "
+            "Перейди к следующему действию из запроса или заверши отчёт. Без вопросов."
+        )
     return (
         f"Пользователь отклонил вызов инструмента «{tool_name}». "
         "Объясни, что хотел сделать, и спроси как поступить иначе."
     )
+
+
+def _tool_error_message(tool_name: str, error: str, *, action_only: bool = False) -> str:
+    if action_only:
+        return (
+            f"Инструмент «{tool_name}» ошибка: {error}. "
+            "Исправь аргументы и повтори tool call или выполни следующее действие. Без вопросов."
+        )
+    return f"Инструмент «{tool_name}» завершился с ошибкой: {error}. Сообщи об ошибке пользователю."
+
+
+def _format_action_tool_line(tool_name: str, result: dict[str, Any]) -> str:
+    if tool_name == "tracker_close_issue":
+        issue = result.get("issue") or {}
+        key = issue.get("key") or result.get("issue_key", "?")
+        return f"Закрыта {key} «{issue.get('summary', '')}» — {issue.get('status', '')}"
+    if tool_name in ("tracker_find_issues", "tracker_search_issues"):
+        if result.get("not_found") or result.get("count", 0) == 0:
+            return "Задача не найдена"
+        issues = result.get("issues") or []
+        parts = [f"{i.get('key')} «{i.get('summary')}» ({i.get('status')})" for i in issues[:5]]
+        return "Найдено: " + "; ".join(parts)
+    if tool_name in ("tracker_create_issue", "tracker_patch_issue", "tracker_update_issue"):
+        key = result.get("key") or result.get("issue_key", "")
+        who = result.get("assignee", "")
+        verb = "Создана" if tool_name == "tracker_create_issue" else "Обновлена"
+        line = f"{verb} {key} «{result.get('summary', '')}»"
+        if who:
+            line += f", исполнитель {who}"
+        return line
+    if tool_name == "tracker_update_followers":
+        key = result.get("key") or result.get("issue_key", "")
+        return f"Наблюдатели обновлены: {key}"
+    if tool_name == "tracker_comment_issue":
+        key = result.get("issue_key", "")
+        text = (result.get("text") or "")[:120]
+        return f"Комментарий к {key}: {text}"
+    if tool_name == "backlog_plan":
+        if result.get("error"):
+            return f"backlog_plan: {result['error']}"
+        return (
+            f"План: epic={'да' if result.get('create_epic') else 'нет'}, "
+            f"stories={result.get('stories_count', 0)}, "
+            f"tasks={result.get('tasks_count', 0)}"
+        )
+    if tool_name == "tracker_apply_backlog_plan":
+        if result.get("error"):
+            return f"tracker_apply_backlog_plan: {result['error']}"
+        epic = result.get("epic_key")
+        n = result.get("created_count", 0)
+        err_n = result.get("error_count", 0)
+        if n == 0 and err_n == 0:
+            return (
+                "Доска: не создано ни одной задачи, план пуст или backlog_plan завершился с ошибкой"
+            )
+        line = f"Доска: создано {n} задач"
+        if epic:
+            line += f", эпик {epic}"
+        if err_n:
+            line += f", ошибок {err_n}"
+        tree = result.get("tree") or []
+        if tree:
+            line += "\n" + "\n".join(tree[:6])
+        critical = result.get("critical") or []
+        if critical:
+            crit_parts = [f"{c.get('key')} до {c.get('deadline', '?')}" for c in critical[:3]]
+            line += "\nCritical: " + "; ".join(crit_parts)
+        return line
+    key = result.get("key") or result.get("issue_key", "")
+    if key:
+        return f"{tool_name}: {key}"
+    if result.get("error"):
+        return f"{tool_name}: {result['error']}"
+    return f"{tool_name}: выполнено"
+
+
+def _is_duplicate_tool_success(
+    turn_steps: list[dict[str, Any]], tool_name: str, tool_args: dict[str, Any]
+) -> bool:
+    for step in turn_steps:
+        if step.get("kind") != "tool_result":
+            continue
+        if step.get("tool_name") != tool_name:
+            continue
+        if step.get("tool_args") == tool_args:
+            return True
+    return False
+
+
+def _should_auto_finalize_turn(turn_steps: list[dict[str, Any]]) -> bool:
+    """Stop looping when enough writes succeeded on one issue."""
+    results = [s for s in turn_steps if s.get("kind") == "tool_result"]
+    if len(results) >= 4:
+        return True
+    if len(results) >= 2:
+        last = results[-2:]
+        keys = {s.get("tool_args", {}).get("issue_key") for s in last}
+        if len(keys) == 1 and None not in keys:
+            names = {s.get("tool_name") for s in last}
+            if names <= {
+                "tracker_patch_issue",
+                "tracker_update_issue",
+                "tracker_update_followers",
+                "tracker_comment_issue",
+            }:
+                return True
+    apply_done = any(
+        s.get("kind") == "tool_result" and s.get("tool_name") == "tracker_apply_backlog_plan"
+        for s in turn_steps
+    )
+    if apply_done:
+        return True
+    if len(results) >= 3:
+        write_results = [
+            s
+            for s in results
+            if s.get("tool_name")
+            in (
+                "tracker_patch_issue",
+                "tracker_update_issue",
+                "tracker_update_followers",
+                "tracker_comment_issue",
+            )
+        ]
+        if len(write_results) >= 2:
+            return True
+    return False
+
+
+def _build_action_report(steps: list[dict[str, Any]]) -> str:
+    """Compact report from tool steps (for action_only agents)."""
+    lines: list[str] = []
+    for step in steps:
+        kind = step.get("kind")
+        if kind == "tool_result":
+            result = step.get("result") or {}
+            if isinstance(result, dict):
+                lines.append(_format_action_tool_line(step.get("tool_name", "tool"), result))
+        elif kind == "tool_error":
+            lines.append(f"ОШИБКА {step.get('tool_name')}: {str(step.get('error', ''))[:200]}")
+        elif kind == "confirm_wait":
+            lines.append(
+                f"ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ: {step.get('tool_name')} "
+                f"(confirm_id={step.get('confirm_id')})"
+            )
+    if not lines:
+        return ""
+    errors = [ln for ln in lines if ln.startswith("ОШИБКА")]
+    board = [ln for ln in lines if ln.startswith("Доска:")]
+    if board:
+        return board[-1]
+    created = [ln for ln in lines if ln.startswith("Создана")]
+    if created:
+        return created[-1]
+    updated = [ln for ln in lines if ln.startswith(("Обновлена", "Наблюдатели"))]
+    comments = [ln for ln in lines if ln.startswith("Комментарий")]
+    if updated and comments:
+        return f"{updated[-1]}. {comments[-1]}"
+    if updated:
+        return updated[-1]
+    if comments:
+        return comments[-1]
+    for line in reversed(lines):
+        if line.startswith(("Найдено:", "Закрыта")):
+            return line
+    if errors:
+        return errors[-1]
+    for line in reversed(lines):
+        if line == "Задача не найдена":
+            return line
+    return lines[-1]
+
+
+def _is_chatty_delegation(text: str) -> bool:
+    """Detect LLM asking user for input instead of using tools."""
+    if not text:
+        return False
+    lower = text.lower()
+    markers = (
+        "нужен ключ",
+        "укажите ключ",
+        "какую задачу",
+        "которую вы хотите",
+        "для продолжения мне нужен",
+        "пожалуйста, укаж",
+        "уточните",
+        "подтвердите, хотите",
+    )
+    return "?" in text or any(m in lower for m in markers)
+
+
+def _action_only_final_reply(steps: list[dict[str, Any]], llm_text: str, had_tool: bool) -> str:
+    report = _build_action_report(steps)
+    if report:
+        return report
+    if _is_chatty_delegation(llm_text):
+        return (
+            "Действия не выполнены: сначала tracker_find_issues "
+            "(summary_hint, assignee) по контексту запроса."
+        )
+    if not had_tool:
+        return "Действия не выполнены."
+    return llm_text
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +435,11 @@ class ReActRunner:
         ctx = self._make_ctx(db_session, team_id, effective_prompt, effective_runtime_config)
         state = await self._load_session(ctx, session_id)
         state["messages"].append({"role": "user", "content": message})
+        state["_turn_user_message"] = message
+        state["_action_only_nudges"] = 0
+        from core.backlog_context import set_pending_backlog_plan
+
+        set_pending_backlog_plan(None)
         return await self._run_loop(ctx, session_id, state)
 
     async def resume(
@@ -248,11 +469,14 @@ class ReActRunner:
         if confirm is None:
             raise AgentError(f"Confirm not found: {confirm_id!r}")
 
+        action_only = getattr(self.agent, "action_only", False)
         session_id = confirm["session_id"]
         tool_name = confirm["tool_name"]
         tool_args = confirm["tool_args"]
 
         state = await self._load_session(ctx, session_id)
+        # Include resume-time steps (tool_result / confirm_rejected) in this turn's output.
+        state["_steps_before_turn"] = len(state["steps"])
 
         if approved:
             try:
@@ -261,18 +485,15 @@ class ReActRunner:
                     _step("tool_result", tool_name=tool_name, tool_args=tool_args, result=result)
                 )
                 await self._update_action_status(ctx, confirm_id, "completed", result)
-                feedback = _tool_result_message(tool_name, result)
+                feedback = _tool_result_message(tool_name, result, action_only=action_only)
             except Exception as exc:
                 state["steps"].append(_step("tool_error", tool_name=tool_name, error=str(exc)))
                 await self._update_action_status(ctx, confirm_id, "failed")
-                feedback = (
-                    f"Инструмент «{tool_name}» завершился с ошибкой: {exc}. "
-                    "Сообщи об ошибке пользователю."
-                )
+                feedback = _tool_error_message(tool_name, str(exc), action_only=action_only)
         else:
             state["steps"].append(_step("confirm_rejected", tool_name=tool_name))
             await self._update_action_status(ctx, confirm_id, "failed")
-            feedback = _tool_rejected_message(tool_name)
+            feedback = _tool_rejected_message(tool_name, action_only=action_only)
 
         # Feed tool result back as user message so LLM can summarise for the user
         state["messages"].append({"role": "user", "content": feedback})
@@ -284,11 +505,36 @@ class ReActRunner:
     # Core loop
     # ------------------------------------------------------------------
 
+    def _llm_messages(
+        self,
+        ctx: _RunCtx,
+        messages: list[dict[str, Any]],
+        *,
+        prompt_vars: dict[str, Any] | None = None,
+    ) -> list[Message]:
+        """Build LLM input: effective DB prompt overrides class prompt when set."""
+        if ctx.effective_prompt:
+            system_msg: Message | None = Message(role="system", content=ctx.effective_prompt)
+        elif self.agent.prompt:
+            system_msg = self.agent._build_system_message(prompt_vars)
+        else:
+            system_msg = None
+        if system_msg is None:
+            return [Message(role=m["role"], content=m["content"]) for m in messages]
+        out: list[Message] = [system_msg]
+        for m in messages:
+            if m.get("role") == "system":
+                continue
+            out.append(Message(role=m["role"], content=m["content"]))
+        return out
+
     async def _run_loop(self, ctx: _RunCtx, session_id: str, state: dict[str, Any]) -> AgentResult:
         messages: list[dict[str, Any]] = state["messages"]
         steps: list[dict[str, Any]] = state["steps"]
         tool_schemas = self.agent._resolve_tool_schemas()
         registry = get_registry()
+        action_only = getattr(self.agent, "action_only", False)
+        steps_before_turn = state.pop("_steps_before_turn", len(steps))
 
         for iteration in range(self.max_iterations):
             logger.debug(
@@ -299,24 +545,50 @@ class ReActRunner:
                 self.agent.name,
             )
 
-            # --- LLM call — prepend system prompt on every turn ---
-            # The system message is NOT stored in state["messages"] so it can
-            # be swapped live via ctx.effective_prompt without a restart.
-            system_prompt = ctx.effective_prompt or self.agent.prompt
-            system_msg = Message(role="system", content=system_prompt) if system_prompt else None
-            history = [Message(role=m["role"], content=m["content"]) for m in messages]
-            llm_messages = [system_msg, *history] if system_msg else history
+            llm_messages = self._llm_messages(ctx, messages, prompt_vars=state.get("prompt_vars"))
             llm_response, _ = await self.agent._call_with_fallback(llm_messages, tool_schemas)
 
             if not llm_response.tool_calls:
-                # Final text reply
-                reply = llm_response.content or ""
+                llm_text = (llm_response.content or "").strip()
+                turn_steps = steps[steps_before_turn:]
+                had_tool = any(
+                    s.get("kind") in ("tool_call", "tool_result", "confirm_wait")
+                    for s in turn_steps
+                )
+
+                if action_only and not had_tool and state.get("_action_only_nudges", 0) < 4:
+                    state["_action_only_nudges"] = state.get("_action_only_nudges", 0) + 1
+                    if llm_text:
+                        messages.append({"role": "assistant", "content": llm_text})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Запрещено спрашивать у пользователя. "
+                                "Если просят СОЗДАТЬ задачу "
+                                "(создай/заведи/поставь) — tracker_create_issue "
+                                "(summary, assignee), без поиска. "
+                                "Если закрыть/изменить/найти — "
+                                "tracker_find_issues, затем действие. "
+                                "Пустой поиск — только для изменения: «задача не найдена»."
+                            ),
+                        }
+                    )
+                    continue
+
+                if action_only:
+                    reply = _action_only_final_reply(turn_steps, llm_text, had_tool)
+                else:
+                    reply = llm_text
                 steps.append(_step("final", content=reply))
                 messages.append({"role": "assistant", "content": reply})
                 state["messages"] = messages
                 state["steps"] = steps
                 await self._save_session(ctx, session_id, state)
-                return AgentResult(reply=reply, session_id=session_id, steps=list(steps))
+                turn_steps = steps[steps_before_turn:]
+                return AgentResult(
+                    reply=reply or None, session_id=session_id, steps=list(turn_steps)
+                )
 
             # --- Tool call ---
             tool_call = llm_response.tool_calls[0]
@@ -333,10 +605,56 @@ class ReActRunner:
                 )
                 continue
 
+            if action_only:
+                from core.config import get_config
+
+                guard_err = await check_turn_tool_guard(
+                    tool_name=tool_call.name,
+                    tool_args=tool_call.arguments,
+                    turn_user_message=state.get("_turn_user_message", ""),
+                    steps=steps,
+                    steps_before_turn=steps_before_turn,
+                    queue_key=get_config().tracker.tracker_queue,
+                )
+                if guard_err:
+                    steps.append(_step("tool_error", tool_name=tool_call.name, error=guard_err))
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": _tool_error_message(
+                                tool_call.name, guard_err, action_only=True
+                            ),
+                        }
+                    )
+                    if created_issue_keys_in_turn(steps, steps_before_turn):
+                        last_create: dict[str, Any] | None = None
+                        for s in reversed(steps):
+                            if (
+                                s.get("kind") == "tool_result"
+                                and s.get("tool_name") == "tracker_create_issue"
+                            ):
+                                last_create = s.get("result")
+                                break
+                        if last_create:
+                            reply = _format_action_tool_line("tracker_create_issue", last_create)
+                            steps.append(_step("final", content=reply))
+                            messages.append({"role": "assistant", "content": reply})
+                            state["messages"] = messages
+                            state["steps"] = steps
+                            await self._save_session(ctx, session_id, state)
+                            turn_steps = steps[steps_before_turn:]
+                            return AgentResult(
+                                reply=reply,
+                                session_id=session_id,
+                                steps=list(turn_steps),
+                            )
+                    continue
+
             tool = registry.get(tool_call.name)
             rc = ctx.effective_runtime_config or self.runtime_config
-            needs_confirm = tool.name in rc.always_confirm_tools or (
-                tool.risk in rc.confirm_risk and tool.risk not in rc.auto_risk
+            needs_confirm = not rc.skip_tool_confirm and (
+                tool.name in rc.always_confirm_tools
+                or (tool.risk in rc.confirm_risk and tool.risk not in rc.auto_risk)
             )
 
             if needs_confirm:
@@ -369,18 +687,59 @@ class ReActRunner:
                     risk=tool.risk,
                     status="pending",
                 )
+                turn_steps = steps[steps_before_turn:]
                 return AgentResult(
-                    pending_confirm=pending, session_id=session_id, steps=list(steps)
+                    pending_confirm=pending, session_id=session_id, steps=list(turn_steps)
                 )
 
+            turn_slice = steps[steps_before_turn:]
+            if action_only and _is_duplicate_tool_success(
+                turn_slice, tool_call.name, tool_call.arguments
+            ):
+                steps.append(
+                    _step(
+                        "tool_error",
+                        tool_name=tool_call.name,
+                        error="Уже выполнено с теми же аргументами в этом запросе",
+                    )
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"«{tool_call.name}» уже выполнен. Заверши ход БЕЗ tool calls."
+                        ),
+                    }
+                )
+                if _should_auto_finalize_turn(steps[steps_before_turn:]):
+                    reply = _build_action_report(steps[steps_before_turn:]) or (
+                        "Действие выполнено."
+                    )
+                    steps.append(_step("final", content=reply))
+                    messages.append({"role": "assistant", "content": reply})
+                    state["messages"] = messages
+                    state["steps"] = steps
+                    await self._save_session(ctx, session_id, state)
+                    return AgentResult(
+                        reply=reply, session_id=session_id, steps=list(steps[steps_before_turn:])
+                    )
+                continue
+
             # --- Auto-execute ---
+            exec_args = dict(tool_call.arguments)
+            if tool_call.name == "tracker_apply_backlog_plan":
+                from core.backlog_tools import plan_json_looks_invalid
+
+                if plan_json_looks_invalid(str(exec_args.get("plan_json", ""))):
+                    exec_args["plan_json"] = ""
+
             try:
-                result = await self._execute_tool(tool_call.name, tool_call.arguments)
+                result = await self._execute_tool(tool_call.name, exec_args)
                 steps.append(
                     _step(
                         "tool_result",
                         tool_name=tool_call.name,
-                        tool_args=tool_call.arguments,
+                        tool_args=exec_args,
                         result=result,
                     )
                 )
@@ -389,12 +748,71 @@ class ReActRunner:
                     confirm_id=None,
                     session_id=session_id,
                     tool_name=tool_call.name,
-                    tool_args=tool_call.arguments,
+                    tool_args=exec_args,
                     risk=tool.risk,
                     status="completed",
                     output=result,
                 )
-                feedback = _tool_result_message(tool_call.name, result)
+
+                if (
+                    tool_call.name == "backlog_plan"
+                    and isinstance(result, dict)
+                    and result.get("plan")
+                    and not result.get("error")
+                    and (result.get("tasks_count", 0) > 0 or result.get("stories_count", 0) > 0)
+                ):
+                    from core.backlog_context import set_pending_backlog_plan
+                    from core.turn_guards import message_has_backlog_intent
+
+                    set_pending_backlog_plan(result["plan"])
+                    turn_msg = state.get("_turn_user_message", "")
+                    apply_done = any(
+                        s.get("kind") == "tool_result"
+                        and s.get("tool_name") == "tracker_apply_backlog_plan"
+                        for s in steps[steps_before_turn:]
+                    )
+                    if message_has_backlog_intent(turn_msg) and not apply_done:
+                        apply_args = {"plan_json": ""}
+                        apply_tool = registry.get("tracker_apply_backlog_plan")
+                        steps.append(
+                            _step(
+                                "tool_call",
+                                tool_name="tracker_apply_backlog_plan",
+                                tool_args=apply_args,
+                            )
+                        )
+                        try:
+                            apply_result = await self._execute_tool(
+                                "tracker_apply_backlog_plan", apply_args
+                            )
+                            steps.append(
+                                _step(
+                                    "tool_result",
+                                    tool_name="tracker_apply_backlog_plan",
+                                    tool_args=apply_args,
+                                    result=apply_result,
+                                )
+                            )
+                            await self._persist_action(
+                                ctx,
+                                confirm_id=None,
+                                session_id=session_id,
+                                tool_name="tracker_apply_backlog_plan",
+                                tool_args=apply_args,
+                                risk=apply_tool.risk,
+                                status="completed",
+                                output=apply_result,
+                            )
+                        except Exception as apply_exc:
+                            steps.append(
+                                _step(
+                                    "tool_error",
+                                    tool_name="tracker_apply_backlog_plan",
+                                    error=str(apply_exc),
+                                )
+                            )
+
+                feedback = _tool_result_message(tool_call.name, result, action_only=action_only)
             except Exception as exc:
                 err_msg = str(exc)
                 steps.append(_step("tool_error", tool_name=tool_call.name, error=err_msg))
@@ -403,21 +821,35 @@ class ReActRunner:
                     confirm_id=None,
                     session_id=session_id,
                     tool_name=tool_call.name,
-                    tool_args=tool_call.arguments,
+                    tool_args=exec_args,
                     risk=tool.risk,
                     status="failed",
                 )
-                feedback = f"Tool '{tool_call.name}' failed: {err_msg}"
+                feedback = _tool_error_message(tool_call.name, err_msg, action_only=action_only)
 
             messages.append({"role": "user", "content": feedback})
 
+            if action_only and _should_auto_finalize_turn(steps[steps_before_turn:]):
+                reply = _build_action_report(steps[steps_before_turn:]) or ("Действие выполнено.")
+                steps.append(_step("final", content=reply))
+                messages.append({"role": "assistant", "content": reply})
+                state["messages"] = messages
+                state["steps"] = steps
+                await self._save_session(ctx, session_id, state)
+                return AgentResult(
+                    reply=reply, session_id=session_id, steps=list(steps[steps_before_turn:])
+                )
+
         # Max iterations reached
-        reply = "Достигнут лимит итераций. Пожалуйста, переформулируйте запрос."
+        turn_steps = steps[steps_before_turn:]
+        report = _build_action_report(turn_steps)
+        reply = report or "Достигнут лимит итераций. Пожалуйста, переформулируйте запрос."
         steps.append(_step("final", content=reply, reason="max_iterations"))
         state["messages"] = messages
         state["steps"] = steps
         await self._save_session(ctx, session_id, state)
-        return AgentResult(reply=reply, session_id=session_id, steps=list(steps))
+        turn_steps = steps[steps_before_turn:]
+        return AgentResult(reply=reply, session_id=session_id, steps=list(turn_steps))
 
     # ------------------------------------------------------------------
     # Tool execution

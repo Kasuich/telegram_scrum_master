@@ -10,6 +10,7 @@ Provides centralized configuration management with:
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
@@ -212,6 +213,37 @@ class AppConfig(BaseSettings):
     )
 
 
+class BacklogConfig(BaseSettings):
+    """Backlog planning from meeting summaries."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="backlog_",
+        extra="ignore",
+    )
+
+    velocity_sp_per_week: float = Field(
+        default=20.0,
+        ge=1.0,
+        description="Team velocity (story points per week) for deadline estimation",
+    )
+
+    start_date: str = Field(
+        default="",
+        description="Optional plan start date YYYY-MM-DD (default: today)",
+    )
+
+    min_summary_chars: int = Field(
+        default=800,
+        ge=200,
+        description="Auto-detect backlog intent when message length exceeds this",
+    )
+
+    def start_date_parsed(self) -> date:
+        if self.start_date.strip():
+            return date.fromisoformat(self.start_date.strip())
+        return date.today()
+
+
 class RuntimeConfig(BaseSettings):
     """Runtime configuration that can be overridden per team."""
 
@@ -240,6 +272,11 @@ class RuntimeConfig(BaseSettings):
     always_confirm_tools: list[str] = Field(
         default_factory=list,
         description="Tools that always require confirmation regardless of risk",
+    )
+
+    skip_tool_confirm: bool = Field(
+        default=False,
+        description="Run all tools immediately (no pending_confirm / resume step)",
     )
 
     # Feature flags
@@ -284,6 +321,7 @@ class Config(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     app: AppConfig = Field(default_factory=AppConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    backlog: BacklogConfig = Field(default_factory=BacklogConfig)
 
     # Database URL shortcut (delegates to database.database_url)
     @property

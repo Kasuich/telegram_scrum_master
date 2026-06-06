@@ -98,6 +98,9 @@ class BaseAgent:
     llm_configs : list[LLMSettings]
         Ordered list of LLM configs. The agent tries them in sequence,
         falling back to the next on :class:`~core.exceptions.LLMError`.
+    action_only : bool
+        When True, the agent must prefer tool calls over chat; final ``reply``
+        is built from executed tool results, not conversational LLM prose.
     """
 
     name: ClassVar[str] = ""
@@ -105,6 +108,7 @@ class BaseAgent:
     prompt: ClassVar[str] = ""
     tools: ClassVar[list[str]] = []
     llm_configs: ClassVar[list[LLMSettings]] = []
+    action_only: ClassVar[bool] = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -174,8 +178,9 @@ class BaseAgent:
             finally:
                 await client.close()
 
+        detail = f": {last_error}" if last_error else ""
         raise AgentError(
-            f"Agent '{self.name}': all {len(configs)} LLM config(s) failed"
+            f"Agent '{self.name}': all {len(configs)} LLM config(s) failed{detail}"
         ) from last_error
 
     async def run(

@@ -21,6 +21,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -32,6 +33,17 @@ from pydantic import BaseModel, Field
 from platform_api import rpc_client
 
 DEFAULT_AGENT = "pm_agent"
+
+# Long meeting summaries / transcripts for backlog_plan (default 100k chars)
+_DEFAULT_CHAT_MAX_MESSAGE_LENGTH = 100_000
+
+
+def chat_max_message_length() -> int:
+    raw = os.getenv("CHAT_MAX_MESSAGE_LENGTH", str(_DEFAULT_CHAT_MAX_MESSAGE_LENGTH))
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _DEFAULT_CHAT_MAX_MESSAGE_LENGTH
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +67,13 @@ app = FastAPI(title="PM Agent Platform API", lifespan=lifespan)
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=4096)
+    message: str = Field(
+        min_length=1,
+        max_length=chat_max_message_length(),
+        description=(
+            "User message; up to CHAT_MAX_MESSAGE_LENGTH chars (default 100k for summaries)"
+        ),
+    )
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
 

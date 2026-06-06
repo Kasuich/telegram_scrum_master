@@ -118,6 +118,13 @@ class TestChat:
         r = client.post("/chat", json={"message": "", "session_id": "s1"})
         assert r.status_code == 422
 
+    def test_long_summary_message_accepted(self, client):
+        long_text = "Резюме лекции: " + ("текст саммари. " * 400)
+        with _mock_rpc(invoke=_text("Доска создана")):
+            r = client.post("/chat", json={"message": long_text, "session_id": "s1"})
+        assert r.status_code == 200
+        assert len(long_text) > 4096
+
     def test_rpc_error_returns_500(self, client):
         exc = AsyncMock(side_effect=RuntimeError("boom"))
         with patch("platform_api.rpc_client.invoke", exc):

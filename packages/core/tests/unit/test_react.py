@@ -485,3 +485,59 @@ class TestEdgeCases:
         assert result_b.session_id == "session_b"
         assert result_a.reply == "Reply for A"
         assert result_b.reply == "Reply for B"
+
+
+class TestReActSystemPrompt:
+    @patch.dict("os.environ", ENV)
+    async def test_llm_call_includes_agent_system_prompt(self):
+        from core.llm import LLMResponse
+
+        captured: list = []
+
+        class PromptAgent(BaseAgent):
+            name = "prompt_agent"
+            description = "test"
+            prompt = "SYSTEM_PROMPT_MARKER_XYZ"
+            action_only = True
+
+        agent = PromptAgent()
+
+        async def fake_call(messages, tool_schemas):
+            captured.append(messages)
+            return LLMResponse(content="", model="yandexgpt", tool_calls=None), 1
+
+        runner = ReActRunner(agent)
+        with patch.object(agent, "_call_with_fallback", fake_call):
+            await runner.invoke("создай задачу", "sess_prompt")
+
+        assert captured
+        assert captured[0][0].role == "system"
+        assert "SYSTEM_PROMPT_MARKER_XYZ" in captured[0][0].content
+
+
+class TestActionOnlyReport:
+    def test_human_readable_close(self):
+        from core.react import _build_action_report
+
+        steps = [
+            {
+                "kind": "tool_result",
+                "tool_name": "tracker_close_issue",
+                "result": {
+                    "issue": {"key": "DARKHORSE-8", "summary": "CI", "status": "Закрыт"},
+                },
+            }
+        ]
+        assert _build_action_report(steps) == "Закрыта DARKHORSE-8 «CI» — Закрыт"
+
+    def test_not_found(self):
+        from core.react import _build_action_report
+
+        steps = [
+            {
+                "kind": "tool_result",
+                "tool_name": "tracker_search_issues",
+                "result": {"count": 0, "issues": []},
+            }
+        ]
+        assert _build_action_report(steps) == "Задача не найдена"
