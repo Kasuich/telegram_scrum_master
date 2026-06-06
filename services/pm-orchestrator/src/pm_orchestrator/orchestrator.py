@@ -14,12 +14,14 @@ import importlib
 import inspect
 import logging
 import pkgutil
+import uuid
 from typing import Any
 
 from core.agent import BaseAgent
 from core.config import get_config
 from core.effective_config import EffectiveAgentConfig, build_effective_config
 from core.exceptions import AgentError
+from core.invocation import InvocationContext, normalize_invocation_context
 from core.react import AgentResult, ReActRunner
 
 logger = logging.getLogger(__name__)
@@ -206,12 +208,19 @@ class OrchestratorService:
     # Core operations
     # ------------------------------------------------------------------
 
-    async def invoke(self, agent_name: str, message: str, session_id: str) -> AgentResult:
+    async def invoke(
+        self,
+        agent_name: str,
+        message: str,
+        session_id: str,
+        context: InvocationContext | dict[str, Any] | None = None,
+    ) -> AgentResult:
         runner = self._runner(agent_name)
         await self._ensure_agent_enabled(agent_name)
         eff = await self._load_effective_config(agent_name)
         eff_prompt = eff.prompt if eff else None
         eff_rc = eff.runtime_config if eff else None
+        invocation_context = normalize_invocation_context(context)
 
         if self._db_enabled:
             from core.db import get_session
@@ -224,6 +233,7 @@ class OrchestratorService:
                     team_id=self._team_id,
                     effective_prompt=eff_prompt,
                     effective_runtime_config=eff_rc,
+                    invocation_context=invocation_context,
                 )
         else:
             result = await runner.invoke(
@@ -231,6 +241,7 @@ class OrchestratorService:
                 session_id,
                 effective_prompt=eff_prompt,
                 effective_runtime_config=eff_rc,
+                invocation_context=invocation_context,
             )
         self._index_confirms(agent_name, result)
         self._log_actions(result)
@@ -238,6 +249,8 @@ class OrchestratorService:
 
     async def resume(self, confirm_id: str, approved: bool) -> AgentResult:
         agent_name = self._confirm_index.get(confirm_id)
+        if agent_name is None:
+            agent_name = await self._lookup_agent_name_for_confirm_db(confirm_id)
         if agent_name is None:
             raise KeyError(f"Confirm not found: {confirm_id!r}")
         runner = self._runner(agent_name)
@@ -268,6 +281,42 @@ class OrchestratorService:
         self._confirm_index.pop(confirm_id, None)
         self._log_actions(result)
         return result
+
+    async def _lookup_agent_name_for_confirm_db(self, confirm_id: str) -> str | None:
+        if not self._db_enabled:
+            return None
+
+        try:
+            from core.db import get_session
+            from core.models import Action, AgentInstance, Confirm, Trace
+            from sqlalchemy import select
+
+            async with get_session() as session:
+                stmt = (
+                    select(Action, AgentInstance, Trace)
+                    .join(Confirm, Confirm.action_id == Action.id)
+                    .outerjoin(AgentInstance, Action.agent_instance_id == AgentInstance.id)
+                    .outerjoin(Trace, Action.trace_id == Trace.id)
+                    .where(Confirm.id == uuid.UUID(confirm_id))
+                )
+                row = (await session.execute(stmt)).one_or_none()
+        except Exception as exc:
+            logger.warning("Failed to resolve confirm %s from DB: %s", confirm_id, exc)
+            return None
+
+        if row is None:
+            return None
+
+        action, agent_instance, trace = row
+        del action
+        if agent_instance is not None and agent_instance.name:
+            return agent_instance.name
+
+        meta = (trace.metadata_json or {}) if trace is not None else {}
+        agent_name = meta.get("agent_name")
+        if isinstance(agent_name, str) and agent_name:
+            return agent_name
+        return None
 
     # ------------------------------------------------------------------
     # Helpers

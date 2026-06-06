@@ -9,6 +9,7 @@ import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from core.invocation import InvocationContext
 from core.react import AgentResult, PendingConfirm
 from fastapi.testclient import TestClient
 
@@ -135,6 +136,26 @@ class TestChat:
         with patch("platform_api.rpc_client.invoke", AsyncMock(return_value=_text())) as m:
             client.post("/chat", json={"message": "Hi", "session_id": "s1"})
         assert m.call_args[0][0] == "pm_agent"
+
+    def test_forwards_context(self, client):
+        with patch("platform_api.rpc_client.invoke", AsyncMock(return_value=_text())) as m:
+            client.post(
+                "/chat",
+                json={
+                    "message": "Hi",
+                    "session_id": "telegram:s1",
+                    "context": {
+                        "channel": "telegram",
+                        "chat_id": "-1001",
+                        "message_id": "42",
+                    },
+                },
+            )
+        assert m.call_args.kwargs["context"] == InvocationContext(
+            channel="telegram",
+            chat_id="-1001",
+            message_id="42",
+        )
 
 
 # ---------------------------------------------------------------------------

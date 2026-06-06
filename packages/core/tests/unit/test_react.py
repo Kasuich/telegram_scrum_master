@@ -27,6 +27,7 @@ import pytest
 from core.agent import BaseAgent, LLMSettings
 from core.config import RuntimeConfig
 from core.exceptions import AgentError
+from core.invocation import InvocationContext, get_current_invocation_context
 from core.react import AgentResult, PendingConfirm, ReActRunner
 from core.tools import ToolRegistry, platform_tool
 
@@ -154,6 +155,18 @@ def agent_no_tools():
     return _Chat()
 
 
+@pytest.fixture
+def agent_with_context_tool(context_tool):
+    class _CtxAgent(BaseAgent):
+        name = "ctx_agent"
+        description = "Context reader"
+        prompt = "You are a helpful assistant."
+        tools = ["read_context"]
+        llm_configs = [LLMSettings(model="yandexgpt", max_retries=0)]
+
+    return _CtxAgent()
+
+
 def _runner(agent, *, auto_risk=None, confirm_risk=None, always_confirm=None, max_iterations=8):
     rc = RuntimeConfig(
         auto_risk=auto_risk or ["low"],
@@ -161,6 +174,17 @@ def _runner(agent, *, auto_risk=None, confirm_risk=None, always_confirm=None, ma
         always_confirm_tools=always_confirm or [],
     )
     return ReActRunner(agent, runtime_config=rc, max_iterations=max_iterations)
+
+
+@pytest.fixture
+def context_tool():
+    @platform_tool(name="read_context", risk="low", scopes=["debug:read"])
+    async def read_context() -> dict[str, Any]:
+        "Read current invocation context."
+        ctx = get_current_invocation_context()
+        return ctx.model_dump(exclude_none=True) if ctx is not None else {}
+
+    return read_context
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +274,38 @@ class TestAutoExecute:
         second_input = calls_made[1]
         texts = [m.get("content", "") for m in second_input]
         assert any("search_issues" in t for t in texts)
+
+    @patch.dict("os.environ", ENV)
+    async def test_tool_receives_invocation_context(self, agent_with_context_tool):
+        runner = _runner(agent_with_context_tool)
+        context = InvocationContext(
+            channel="telegram",
+            chat_id="-1001",
+            message_id="42",
+            actor_display_name="Ivan",
+        )
+        with patch(
+            "httpx.AsyncClient.post",
+            AsyncMock(
+                side_effect=[
+                    _http_ok(_tool_call_response("read_context", {})),
+                    _http_ok(_text_response("Context received.")),
+                ]
+            ),
+        ):
+            result = await runner.invoke(
+                "Read context",
+                "telegram:s1",
+                invocation_context=context,
+            )
+
+        tool_result = next(step for step in result.steps if step["kind"] == "tool_result")
+        assert tool_result["result"]["channel"] == "telegram"
+        assert tool_result["result"]["chat_id"] == "-1001"
+        assert tool_result["result"]["message_id"] == "42"
+        assert tool_result["result"]["actor_display_name"] == "Ivan"
+        assert tool_result["result"]["agent_name"] == "ctx_agent"
+        assert tool_result["result"]["session_id"] == "telegram:s1"
 
 
 # ---------------------------------------------------------------------------

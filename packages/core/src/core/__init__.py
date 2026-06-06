@@ -20,6 +20,7 @@ from core import (
     effective_config,
     entry_point,
     exceptions,
+    invocation,
     llm,
     logging,
     metrics,
@@ -78,6 +79,11 @@ from core.exceptions import (
     ToolExecutionError,
     ToolNotFoundError,
     ToolValidationError,
+)
+from core.invocation import (
+    InvocationContext,
+    get_current_invocation_context,
+    normalize_invocation_context,
 )
 from core.llm import (
     LLMClient,
@@ -168,6 +174,7 @@ __all__ = [
     "db",
     "entry_point",
     "exceptions",
+    "invocation",
     "llm",
     "logging",
     "metrics",
@@ -257,6 +264,9 @@ __all__ = [
     "ToolError",
     "ToolNotFoundError",
     "ToolValidationError",
+    "InvocationContext",
+    "get_current_invocation_context",
+    "normalize_invocation_context",
     "ToolExecutionError",
     "ConfirmError",
     "ConfirmTimeoutError",

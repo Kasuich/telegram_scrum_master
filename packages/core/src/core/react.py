@@ -31,6 +31,12 @@ from pydantic import BaseModel, Field
 from core.agent import BaseAgent
 from core.config import RuntimeConfig
 from core.exceptions import AgentError
+from core.invocation import (
+    InvocationContext,
+    normalize_invocation_context,
+    reset_current_invocation_context,
+    set_current_invocation_context,
+)
 from core.llm import Message
 from core.tools import get_registry
 from core.turn_guards import check_turn_tool_guard, created_issue_keys_in_turn
@@ -75,6 +81,7 @@ class _RunCtx:
     team_id: str | None = None
     effective_prompt: str | None = None
     effective_runtime_config: Any | None = None  # RuntimeConfig | None
+    invocation_context: InvocationContext | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +393,7 @@ class ReActRunner:
         # In-memory fallback stores
         self._mem_sessions: dict[str, dict[str, Any]] = {}
         self._mem_confirms: dict[str, dict[str, Any]] = {}
+        self._active_invocation_context: InvocationContext | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -397,6 +405,7 @@ class ReActRunner:
         team_id: str | None,
         effective_prompt: str | None = None,
         effective_runtime_config: Any | None = None,
+        invocation_context: InvocationContext | dict[str, Any] | None = None,
     ) -> _RunCtx:
         """Build the per-call context, defaulting to instance-level values."""
         return _RunCtx(
@@ -404,6 +413,7 @@ class ReActRunner:
             team_id=team_id if team_id is not None else self.team_id,
             effective_prompt=effective_prompt,
             effective_runtime_config=effective_runtime_config,
+            invocation_context=normalize_invocation_context(invocation_context),
         )
 
     async def invoke(
@@ -415,6 +425,7 @@ class ReActRunner:
         team_id: str | None = None,
         effective_prompt: str | None = None,
         effective_runtime_config: Any | None = None,
+        invocation_context: InvocationContext | dict[str, Any] | None = None,
     ) -> AgentResult:
         """Start a new turn or continue an existing session.
 
@@ -432,8 +443,16 @@ class ReActRunner:
         team_id:
             Owning team UUID, required for DB persistence.
         """
-        ctx = self._make_ctx(db_session, team_id, effective_prompt, effective_runtime_config)
+        ctx = self._make_ctx(
+            db_session,
+            team_id,
+            effective_prompt,
+            effective_runtime_config,
+            invocation_context,
+        )
         state = await self._load_session(ctx, session_id)
+        if ctx.invocation_context is not None:
+            state["context"] = ctx.invocation_context.model_dump(exclude_none=True)
         state["messages"].append({"role": "user", "content": message})
         state["_turn_user_message"] = message
         state["_action_only_nudges"] = 0
@@ -451,6 +470,7 @@ class ReActRunner:
         team_id: str | None = None,
         effective_prompt: str | None = None,
         effective_runtime_config: Any | None = None,
+        invocation_context: InvocationContext | dict[str, Any] | None = None,
     ) -> AgentResult:
         """Continue a paused session after the user responds to a confirm.
 
@@ -464,7 +484,13 @@ class ReActRunner:
         db_session / team_id / effective_prompt / effective_runtime_config:
             See :meth:`invoke`.
         """
-        ctx = self._make_ctx(db_session, team_id, effective_prompt, effective_runtime_config)
+        ctx = self._make_ctx(
+            db_session,
+            team_id,
+            effective_prompt,
+            effective_runtime_config,
+            invocation_context,
+        )
         confirm = await self._load_confirm(ctx, confirm_id)
         if confirm is None:
             raise AgentError(f"Confirm not found: {confirm_id!r}")
@@ -475,6 +501,18 @@ class ReActRunner:
         tool_args = confirm["tool_args"]
 
         state = await self._load_session(ctx, session_id)
+        if ctx.invocation_context is None:
+            ctx.invocation_context = normalize_invocation_context(state.get("context"))
+        if ctx.invocation_context is not None:
+            ctx.invocation_context = ctx.invocation_context.model_copy(
+                update={
+                    "team_id": ctx.team_id or ctx.invocation_context.team_id,
+                    "session_id": session_id,
+                    "agent_name": self.agent.name,
+                }
+            )
+            state["context"] = ctx.invocation_context.model_dump(exclude_none=True)
+        self._active_invocation_context = ctx.invocation_context
         # Include resume-time steps (tool_result / confirm_rejected) in this turn's output.
         state["_steps_before_turn"] = len(state["steps"])
 
@@ -531,6 +569,18 @@ class ReActRunner:
     async def _run_loop(self, ctx: _RunCtx, session_id: str, state: dict[str, Any]) -> AgentResult:
         messages: list[dict[str, Any]] = state["messages"]
         steps: list[dict[str, Any]] = state["steps"]
+        if ctx.invocation_context is None:
+            ctx.invocation_context = normalize_invocation_context(state.get("context"))
+        if ctx.invocation_context is not None:
+            ctx.invocation_context = ctx.invocation_context.model_copy(
+                update={
+                    "team_id": ctx.team_id or ctx.invocation_context.team_id,
+                    "session_id": session_id,
+                    "agent_name": self.agent.name,
+                }
+            )
+            state["context"] = ctx.invocation_context.model_dump(exclude_none=True)
+        self._active_invocation_context = ctx.invocation_context
         tool_schemas = self.agent._resolve_tool_schemas()
         registry = get_registry()
         action_only = getattr(self.agent, "action_only", False)
@@ -858,10 +908,14 @@ class ReActRunner:
     async def _execute_tool(self, tool_name: str, tool_args: dict[str, Any]) -> Any:
         tool = get_registry().get(tool_name)
         validated = tool.validate_arguments(tool_args)
-        result = tool.execute(**validated)
-        if asyncio.iscoroutine(result):
-            result = await result
-        return result
+        token = set_current_invocation_context(getattr(self, "_active_invocation_context", None))
+        try:
+            result = tool.execute(**validated)
+            if asyncio.iscoroutine(result):
+                result = await result
+            return result
+        finally:
+            reset_current_invocation_context(token)
 
     # ------------------------------------------------------------------
     # Session state (DB or in-memory)
@@ -870,7 +924,10 @@ class ReActRunner:
     async def _load_session(self, ctx: _RunCtx, session_id: str) -> dict[str, Any]:
         if ctx.db_session is not None:
             return await self._db_load_session(ctx, session_id)
-        return dict(self._mem_sessions.get(session_id, {"messages": [], "steps": []}))
+        state = dict(self._mem_sessions.get(session_id, {"messages": [], "steps": []}))
+        if "context" in state:
+            state["context"] = dict(state["context"])
+        return state
 
     async def _save_session(self, ctx: _RunCtx, session_id: str, state: dict[str, Any]) -> None:
         if ctx.db_session is not None:
@@ -880,6 +937,8 @@ class ReActRunner:
                 "messages": list(state["messages"]),
                 "steps": list(state["steps"]),
             }
+            if state.get("context") is not None:
+                self._mem_sessions[session_id]["context"] = dict(state["context"])
 
     async def _load_confirm(self, ctx: _RunCtx, confirm_id: str) -> dict[str, Any] | None:
         if ctx.db_session is not None:
@@ -955,17 +1014,24 @@ class ReActRunner:
                 id=uuid.uuid4(),
                 session_id=sid,
                 steps=[],
-                metadata_json={"messages": []},
+                metadata_json={
+                    "messages": [],
+                    "agent_name": self.agent.name,
+                    "external_session_id": session_id,
+                },
             )
             ctx.db_session.add(trace)
             await ctx.db_session.flush()
             return {"messages": [], "steps": [], "_trace_id": str(trace.id)}
         meta = row.metadata_json or {}
-        return {
+        state = {
             "messages": list(meta.get("messages", [])),
             "steps": list(row.steps or []),
             "_trace_id": str(row.id),
         }
+        if meta.get("context") is not None:
+            state["context"] = dict(meta["context"])
+        return state
 
     async def _db_save_session(self, ctx: _RunCtx, session_id: str, state: dict[str, Any]) -> None:
         from sqlalchemy import select
@@ -976,7 +1042,15 @@ class ReActRunner:
         row = (await ctx.db_session.execute(stmt)).scalar_one_or_none()
         if row is not None:
             row.steps = list(state["steps"])
-            row.metadata_json = {**(row.metadata_json or {}), "messages": list(state["messages"])}
+            metadata = {
+                **(row.metadata_json or {}),
+                "messages": list(state["messages"]),
+                "agent_name": self.agent.name,
+                "external_session_id": session_id,
+            }
+            if state.get("context") is not None:
+                metadata["context"] = dict(state["context"])
+            row.metadata_json = metadata
             await ctx.db_session.flush()
 
     async def _db_load_confirm(self, ctx: _RunCtx, confirm_id: str) -> dict[str, Any] | None:
@@ -994,8 +1068,9 @@ class ReActRunner:
         if row is None:
             return None
         confirm, action, trace = row
+        meta = trace.metadata_json or {}
         return {
-            "session_id": str(trace.session_id),
+            "session_id": meta.get("external_session_id") or str(trace.session_id),
             "tool_name": action.tool_name,
             "tool_args": dict(action.input),
         }

@@ -26,6 +26,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
+from core.invocation import InvocationContext
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
@@ -75,6 +76,7 @@ class ChatRequest(BaseModel):
         ),
     )
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    context: InvocationContext | None = None
 
 
 class PendingConfirmDTO(BaseModel):
@@ -122,7 +124,12 @@ def _to_response(result: Any) -> ChatResponse:
 
 async def _invoke(agent: str, request: ChatRequest) -> ChatResponse:
     try:
-        result = await rpc_client.invoke(agent, request.message, request.session_id)
+        result = await rpc_client.invoke(
+            agent,
+            request.message,
+            request.session_id,
+            context=request.context,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return _to_response(result)
