@@ -22,6 +22,16 @@ from core.models import (
     RuntimeConfigModel,
     ScheduledJob,
     Team,
+    TelegramBusinessConnection,
+    TelegramCallbackToken,
+    TelegramChat,
+    TelegramInstallation,
+    TelegramMessage,
+    TelegramNotificationPreference,
+    TelegramOutbox,
+    TelegramUpdate,
+    TelegramUser,
+    TelegramUserLink,
     Trace,
     User,
 )
@@ -83,10 +93,20 @@ class TestBase:
         ConsoleSession,
         Team,
         AgentSpec,
+        TelegramInstallation,
+        TelegramChat,
+        TelegramUser,
+        TelegramUserLink,
+        TelegramBusinessConnection,
         AgentInstance,
         Action,
         Trace,
         Confirm,
+        TelegramUpdate,
+        TelegramMessage,
+        TelegramOutbox,
+        TelegramCallbackToken,
+        TelegramNotificationPreference,
         RuntimeConfigModel,
         ScheduledJob,
         ActionFeedback,
@@ -271,7 +291,94 @@ class TestAgentSpec:
 
 
 # ===========================================================================
-# 7. TestAgentInstance
+# 7. TestTelegramInstallation
+# ===========================================================================
+
+
+class TestTelegramInstallation:
+    def test_tablename(self) -> None:
+        assert TelegramInstallation.__tablename__ == "telegram_installations"
+
+    def test_team_alias_unique_constraint(self) -> None:
+        assert "uq_telegram_installations_team_alias" in _constraint_names(TelegramInstallation)
+
+    def test_team_id_fk(self) -> None:
+        assert _get_column(TelegramInstallation, "team_id").foreign_keys
+
+    def test_settings_default_dict(self) -> None:
+        default_fn = _get_column(TelegramInstallation, "settings").default.arg
+        assert callable(default_fn)
+        assert default_fn.__name__ == "dict"
+
+
+# ===========================================================================
+# 8. TestTelegramChat
+# ===========================================================================
+
+
+class TestTelegramChat:
+    def test_tablename(self) -> None:
+        assert TelegramChat.__tablename__ == "telegram_chats"
+
+    def test_installation_chat_unique_constraint(self) -> None:
+        assert "uq_telegram_chats_installation_chat" in _constraint_names(TelegramChat)
+
+    def test_active_default_true(self) -> None:
+        assert _get_column(TelegramChat, "active").default.arg is True
+
+
+# ===========================================================================
+# 9. TestTelegramUser
+# ===========================================================================
+
+
+class TestTelegramUser:
+    def test_tablename(self) -> None:
+        assert TelegramUser.__tablename__ == "telegram_users"
+
+    def test_external_user_unique_constraint(self) -> None:
+        assert "uq_telegram_users_external_user_id" in _constraint_names(TelegramUser)
+
+    def test_is_blocked_default_false(self) -> None:
+        assert _get_column(TelegramUser, "is_blocked").default.arg is False
+
+
+# ===========================================================================
+# 10. TestTelegramUserLink
+# ===========================================================================
+
+
+class TestTelegramUserLink:
+    def test_tablename(self) -> None:
+        assert TelegramUserLink.__tablename__ == "telegram_user_links"
+
+    def test_team_telegram_user_unique_constraint(self) -> None:
+        assert "uq_telegram_user_links_team_telegram_user" in _constraint_names(TelegramUserLink)
+
+    def test_user_id_nullable(self) -> None:
+        assert _get_column(TelegramUserLink, "user_id").nullable
+
+
+# ===========================================================================
+# 11. TestTelegramBusinessConnection
+# ===========================================================================
+
+
+class TestTelegramBusinessConnection:
+    def test_tablename(self) -> None:
+        assert TelegramBusinessConnection.__tablename__ == "telegram_business_connections"
+
+    def test_external_id_unique_constraint(self) -> None:
+        assert "uq_telegram_business_connections_external_id" in _constraint_names(
+            TelegramBusinessConnection
+        )
+
+    def test_can_reply_default_false(self) -> None:
+        assert _get_column(TelegramBusinessConnection, "can_reply").default.arg is False
+
+
+# ===========================================================================
+# 12. TestAgentInstance
 # ===========================================================================
 
 
@@ -303,7 +410,7 @@ class TestAgentInstance:
 
 
 # ===========================================================================
-# 8. TestAction
+# 13. TestAction
 # ===========================================================================
 
 
@@ -340,7 +447,7 @@ class TestAction:
 
 
 # ===========================================================================
-# 9. TestTrace
+# 14. TestTrace
 # ===========================================================================
 
 
@@ -370,7 +477,7 @@ class TestTrace:
 
 
 # ===========================================================================
-# 10. TestConfirm
+# 15. TestConfirm
 # ===========================================================================
 
 
@@ -403,7 +510,91 @@ class TestConfirm:
 
 
 # ===========================================================================
-# 11. TestRuntimeConfigModel
+# 16. TestTelegramUpdate
+# ===========================================================================
+
+
+class TestTelegramUpdate:
+    def test_tablename(self) -> None:
+        assert TelegramUpdate.__tablename__ == "telegram_updates"
+
+    def test_installation_update_unique_constraint(self) -> None:
+        assert "uq_telegram_updates_installation_update_id" in _constraint_names(TelegramUpdate)
+
+    def test_update_id_not_nullable(self) -> None:
+        assert not _get_column(TelegramUpdate, "update_id").nullable
+
+
+# ===========================================================================
+# 17. TestTelegramMessage
+# ===========================================================================
+
+
+class TestTelegramMessage:
+    def test_tablename(self) -> None:
+        assert TelegramMessage.__tablename__ == "telegram_messages"
+
+    def test_installation_chat_message_unique_constraint(self) -> None:
+        assert "uq_telegram_messages_installation_chat_message" in _constraint_names(
+            TelegramMessage
+        )
+
+    def test_team_index_exists(self) -> None:
+        assert "idx_telegram_messages_team_id" in _index_names(TelegramMessage)
+
+
+# ===========================================================================
+# 18. TestTelegramOutbox
+# ===========================================================================
+
+
+class TestTelegramOutbox:
+    def test_tablename(self) -> None:
+        assert TelegramOutbox.__tablename__ == "telegram_outbox"
+
+    def test_status_next_attempt_index_exists(self) -> None:
+        assert "idx_telegram_outbox_status_next_attempt" in _index_names(TelegramOutbox)
+
+    def test_attempts_default_zero(self) -> None:
+        assert _get_column(TelegramOutbox, "attempts").default.arg == 0
+
+
+# ===========================================================================
+# 19. TestTelegramCallbackToken
+# ===========================================================================
+
+
+class TestTelegramCallbackToken:
+    def test_tablename(self) -> None:
+        assert TelegramCallbackToken.__tablename__ == "telegram_callback_tokens"
+
+    def test_token_hash_unique_constraint(self) -> None:
+        assert "uq_telegram_callback_tokens_token_hash" in _constraint_names(TelegramCallbackToken)
+
+    def test_confirm_id_index_exists(self) -> None:
+        assert "idx_telegram_callback_tokens_confirm_id" in _index_names(TelegramCallbackToken)
+
+
+# ===========================================================================
+# 20. TestTelegramNotificationPreference
+# ===========================================================================
+
+
+class TestTelegramNotificationPreference:
+    def test_tablename(self) -> None:
+        assert TelegramNotificationPreference.__tablename__ == "telegram_notification_preferences"
+
+    def test_team_user_category_unique_constraint(self) -> None:
+        assert "uq_telegram_notification_preferences_team_user_category" in _constraint_names(
+            TelegramNotificationPreference
+        )
+
+    def test_enabled_default_true(self) -> None:
+        assert _get_column(TelegramNotificationPreference, "enabled").default.arg is True
+
+
+# ===========================================================================
+# 21. TestRuntimeConfigModel
 # ===========================================================================
 
 
@@ -430,7 +621,7 @@ class TestRuntimeConfigModel:
 
 
 # ===========================================================================
-# 12. TestScheduledJob
+# 22. TestScheduledJob
 # ===========================================================================
 
 
@@ -466,7 +657,7 @@ class TestScheduledJob:
 
 
 # ===========================================================================
-# 13. TestActionFeedback
+# 23. TestActionFeedback
 # ===========================================================================
 
 
