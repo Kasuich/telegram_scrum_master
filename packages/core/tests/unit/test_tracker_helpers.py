@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from core.backlog_plan import ensure_queue_meta, parse_backlog_plan, plan_has_issues
 from core.config import reload_config
 from core.tracker_tool_helpers import normalize_deadline
