@@ -196,7 +196,7 @@ async def test_route_inbound_message_creates_confirmation_outbox() -> None:
     }
     result = AgentResult(
         pending_confirm=PendingConfirm(
-            confirm_id="confirm-1",
+            confirm_id=str(uuid.uuid4()),
             tool_name="tracker_create_issue",
             tool_args={"summary": "bug"},
             risk="medium",
@@ -217,9 +217,12 @@ async def test_route_inbound_message_creates_confirmation_outbox() -> None:
 
     assert routing is not None
     assert routing["reply"] is None
-    assert routing["pending_confirm_id"] == "confirm-1"
-    assert len(session.added) == 1
-    outbox = session.added[0]
+    assert len(routing["pending_confirm_id"]) == 36
+    assert len(session.added) == 3
+    outbox = next(
+        obj for obj in session.added if hasattr(obj, "payload") and hasattr(obj, "category")
+    )
     assert outbox.category == "confirmation"
     assert outbox.payload["text"] == "Create task?"
-    assert outbox.payload["metadata"]["confirm_id"] == "confirm-1"
+    assert len(outbox.payload["metadata"]["confirm_id"]) == 36
+    assert "reply_markup" in outbox.payload

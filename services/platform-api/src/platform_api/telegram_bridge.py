@@ -14,6 +14,7 @@ from core.db import get_session
 from core.invocation import InvocationContext
 from core.models import (
     TelegramBusinessConnection,
+    TelegramCallbackToken,
     TelegramChat,
     TelegramInstallation,
     TelegramMessage,
@@ -80,6 +81,15 @@ class AckRequest(BaseModel):
     retry_after_seconds: int | None = Field(default=None, ge=0, le=86400)
 
 
+class CallbackConsumeRequest(BaseModel):
+    token: str = Field(min_length=1)
+    callback_query_id: str | None = None
+    actor_external_id: str | None = None
+    chat_id: str | None = None
+    message_id: str | None = None
+    target_user_id: str | None = None
+
+
 def _message_text(message_payload: dict[str, Any]) -> str:
     value = message_payload.get("text") or message_payload.get("caption") or ""
     return str(value).strip()
@@ -106,6 +116,21 @@ def _bot_username(installation: TelegramInstallation) -> str | None:
         return str(raw).lstrip("@")
     if installation.alias:
         return str(installation.alias).lstrip("@")
+    return None
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _new_callback_token() -> str:
+    return uuid.uuid4().hex + uuid.uuid4().hex
+
+
+def _callback_query_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    value = payload.get("callback_query")
+    if isinstance(value, dict):
+        return value
     return None
 
 
@@ -193,6 +218,21 @@ def _telegram_session_id(
     )
 
 
+def _callback_session_id(
+    installation: TelegramInstallation,
+    callback_payload: dict[str, Any],
+) -> str:
+    message_payload = callback_payload.get("message") or {}
+    chat_payload = message_payload.get("chat") or {}
+    chat_id = str(chat_payload.get("id") or callback_payload.get("chat_instance") or "0")
+    thread_id = (
+        str(message_payload.get("message_thread_id"))
+        if message_payload.get("message_thread_id") is not None
+        else "0"
+    )
+    return f"telegram:{installation.id}:{chat_id}:{thread_id}"
+
+
 def _build_invocation_context(
     installation: TelegramInstallation,
     chat: TelegramChat,
@@ -231,11 +271,39 @@ async def _enqueue_agent_result(
     telegram_user: TelegramUser | None,
     result: Any,
 ) -> TelegramOutbox | None:
+    callback_buttons: list[list[dict[str, str]]] | None = None
     if result.pending_confirm is not None:
         text = result.pending_confirm.prompt
         category = "confirmation"
         dedupe_key = f"telegram:confirm:{message.id}:{result.pending_confirm.confirm_id}"
-        metadata = {"confirm_id": result.pending_confirm.confirm_id}
+        approve_token = _new_callback_token()
+        reject_token = _new_callback_token()
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+        for token_value, approved in ((approve_token, True), (reject_token, False)):
+            session.add(
+                TelegramCallbackToken(
+                    team_id=installation.team_id,
+                    installation_id=installation.id,
+                    telegram_user_id=telegram_user.id if telegram_user is not None else None,
+                    confirm_id=uuid.UUID(result.pending_confirm.confirm_id),
+                    token_hash=_token_hash(token_value),
+                    target_chat_id=chat.external_chat_id,
+                    target_user_id=telegram_user.external_user_id if telegram_user else None,
+                    status="pending",
+                    payload={
+                        "confirm_id": result.pending_confirm.confirm_id,
+                        "approved": approved,
+                    },
+                    expires_at=expires_at,
+                )
+            )
+        callback_buttons = [
+            [
+                {"text": "Approve", "callback_data": approve_token},
+                {"text": "Reject", "callback_data": reject_token},
+            ]
+        ]
+        metadata = {"confirm_id": result.pending_confirm.confirm_id, "callback_tokens": True}
     elif result.reply:
         text = result.reply
         category = "agent_reply"
@@ -261,6 +329,11 @@ async def _enqueue_agent_result(
             "message_thread_id": message.external_thread_id,
             "reply_to_message_id": message.external_message_id,
             "metadata": metadata,
+            **(
+                {"reply_markup": {"inline_keyboard": callback_buttons}}
+                if callback_buttons is not None
+                else {}
+            ),
         },
     )
     session.add(outbox)
@@ -308,6 +381,193 @@ async def _route_inbound_message(
         "pending_confirm_id": (
             result.pending_confirm.confirm_id if result.pending_confirm is not None else None
         ),
+    }
+
+
+def _callback_token_row_to_response(row: TelegramCallbackToken) -> dict[str, Any]:
+    return {
+        "token_id": str(row.id),
+        "status": row.status,
+        "confirm_id": str(row.confirm_id) if row.confirm_id is not None else None,
+        "payload": dict(row.payload or {}),
+        "consumed_at": row.consumed_at.isoformat() if row.consumed_at else None,
+    }
+
+
+async def _create_confirmation_outbox(
+    session: AsyncSession,
+    *,
+    installation: TelegramInstallation,
+    chat_id: str,
+    message_id: str | None,
+    reply_to_message_id: str | None,
+    text: str,
+    approve_token: str | None,
+    reject_token: str | None,
+) -> TelegramOutbox:
+    reply_markup: dict[str, Any] | None = None
+    if approve_token and reject_token:
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "Approve", "callback_data": approve_token},
+                    {"text": "Reject", "callback_data": reject_token},
+                ]
+            ]
+        }
+    outbox = TelegramOutbox(
+        team_id=installation.team_id,
+        installation_id=installation.id,
+        category="confirmation",
+        target_chat_id=chat_id,
+        dedupe_key=f"telegram:confirm:{message_id}:{reply_to_message_id or '0'}",
+        priority=90,
+        status="pending",
+        attempts=0,
+        payload={
+            "method": "sendMessage",
+            "text": text,
+            "reply_to_message_id": reply_to_message_id,
+            **({"reply_markup": reply_markup} if reply_markup is not None else {}),
+        },
+    )
+    session.add(outbox)
+    await session.flush()
+    return outbox
+
+
+async def _consume_callback_query(
+    session: AsyncSession,
+    installation: TelegramInstallation,
+    callback_payload: dict[str, Any],
+) -> dict[str, Any]:
+    token_value = callback_payload.get("data")
+    if not isinstance(token_value, str) or not token_value.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing callback token",
+        )
+
+    token_hash = _token_hash(token_value)
+    stmt = select(TelegramCallbackToken).where(TelegramCallbackToken.token_hash == token_hash)
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Callback token not found",
+        )
+    if row.installation_id != installation.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Callback installation mismatch",
+        )
+
+    now = datetime.now(timezone.utc)
+    if row.expires_at <= now:
+        row.status = "expired"
+        row.consumed_at = now
+        await session.flush()
+        return {"callback": _callback_token_row_to_response(row), "duplicate": False}
+
+    actor_external_id = callback_payload.get("from", {}).get("id")
+    if row.target_user_id and str(actor_external_id) != str(row.target_user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Unauthorized callback actor",
+        )
+
+    if row.consumed_at is not None:
+        return {"callback": _callback_token_row_to_response(row), "duplicate": True}
+
+    approved = bool((row.payload or {}).get("approved"))
+    confirm_id = str(row.confirm_id) if row.confirm_id is not None else None
+    if confirm_id is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Callback has no confirm")
+
+    result = await rpc_client.resume(confirm_id, approved)
+    reply_text = result.reply or None
+    outbox_ids: list[str] = []
+    callback_query_id = callback_payload.get("id")
+    message_payload = callback_payload.get("message") or {}
+    chat_payload = message_payload.get("chat") or {}
+    chat_id = str(chat_payload.get("id")) if chat_payload.get("id") is not None else None
+    original_message_id = (
+        str(message_payload.get("message_id"))
+        if message_payload.get("message_id") is not None
+        else None
+    )
+    if callback_query_id:
+        ack = TelegramOutbox(
+            team_id=installation.team_id,
+            installation_id=installation.id,
+            category="confirmation",
+            target_chat_id=chat_id,
+            dedupe_key=f"telegram:callback-ack:{row.id}",
+            priority=80,
+            status="pending",
+            attempts=0,
+            payload={
+                "method": "answerCallbackQuery",
+                "callback_query_id": str(callback_query_id),
+                "text": "Подтверждено" if approved else "Отклонено",
+            },
+        )
+        session.add(ack)
+        await session.flush()
+        outbox_ids.append(str(ack.id))
+    if chat_id and original_message_id:
+        edit = TelegramOutbox(
+            team_id=installation.team_id,
+            installation_id=installation.id,
+            category="confirmation",
+            target_chat_id=chat_id,
+            dedupe_key=f"telegram:callback-edit:{row.id}",
+            priority=70,
+            status="pending",
+            attempts=0,
+            payload={
+                "method": "editMessageReplyMarkup",
+                "chat_id": chat_id,
+                "message_id": original_message_id,
+                "reply_markup": {"inline_keyboard": []},
+            },
+        )
+        session.add(edit)
+        await session.flush()
+        outbox_ids.append(str(edit.id))
+    if reply_text:
+        reply_outbox = TelegramOutbox(
+            team_id=installation.team_id,
+            installation_id=installation.id,
+            category="agent_reply",
+            target_chat_id=chat_id,
+            dedupe_key=f"telegram:callback-reply:{row.id}",
+            priority=100,
+            status="pending",
+            attempts=0,
+            payload={
+                "method": "sendMessage",
+                "text": reply_text,
+                "reply_to_message_id": original_message_id,
+            },
+        )
+        session.add(reply_outbox)
+        await session.flush()
+        outbox_ids.append(str(reply_outbox.id))
+
+    row.status = "used"
+    row.consumed_at = now
+    row.payload = {
+        **(row.payload or {}),
+        "result": {"approved": approved, "reply": reply_text, "outbox_ids": outbox_ids},
+    }
+    await session.flush()
+    return {
+        "callback": _callback_token_row_to_response(row),
+        "duplicate": False,
+        "approved": approved,
+        "reply": reply_text,
+        "outbox_ids": outbox_ids,
     }
 
 
@@ -600,6 +860,14 @@ async def ingest_event(session: AsyncSession, data: IngestEventRequest) -> dict[
                 message=msg,
                 telegram_user=telegram_user,
                 message_payload=message_payload,
+            )
+    else:
+        callback_payload = _callback_query_payload(data.payload)
+        if callback_payload is not None:
+            routing_result = await _consume_callback_query(
+                session,
+                installation,
+                callback_payload,
             )
 
     update.status = "processed"
