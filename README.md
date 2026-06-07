@@ -27,7 +27,7 @@
 | CI/CD → тест-VPS | ✅ |
 | LLM: gpt-oss-120b (Yandex Responses API) | ✅ |
 | Telegram-бот | 🔴 Трек A |
-| Meeting Summarizer | 🔴 Трек C |
+| Meeting Summarizer (текст → markdown-отчёт) | ✅ |
 | GUI-консоль | 🔴 Трек D |
 
 ---
@@ -157,11 +157,21 @@ curl -X POST http://localhost:8000/chat \
   -d '{"message": "напоминай мне каждый понедельник в 9:00 про стендап", "session_id": "s2"}'
 ```
 
+### Суммаризация встречи (meeting_summarizer)
+
+```bash
+curl -X POST http://localhost:8000/agents/meeting_summarizer/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "<полный транскрипт или заметки>", "session_id": "sum-1"}'
+```
+
+Ответ — структурированный markdown: резюме, решения, action items, риски.
+
 ### Список агентов
 
 ```bash
 curl http://localhost:8000/agents
-# [{"name": "pm_agent", "description": "..."}]
+# [{"name": "pm_agent", "description": "..."}, {"name": "meeting_summarizer", ...}]
 ```
 
 ### Лог действий
