@@ -91,6 +91,15 @@ jobs:
           source: telegram-gateway-image.tar.gz
           target: /opt/telegram-gateway
 
+      - name: Upload Docker Compose file
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.TG_VPS_HOST || vars.TG_VPS_HOST }}
+          username: ${{ secrets.TG_VPS_USER || vars.TG_VPS_USER }}
+          key: ${{ secrets.TG_VPS_SSH_KEY }}
+          source: docker-compose.telegram-gateway.yml
+          target: /opt/telegram-gateway
+
       - name: Write .env and deploy
         uses: appleboy/ssh-action@v1
         with:
@@ -125,11 +134,12 @@ jobs:
 
             IMAGE="${{ steps.image.outputs.image }}"
             gzip -dc /opt/telegram-gateway/telegram-gateway-image.tar.gz | docker load
+            cp /opt/telegram-gateway/docker-compose.telegram-gateway.yml /opt/telegram-gateway/docker-compose.yml
             sed -i "s|image:.*|image: $IMAGE|" /opt/telegram-gateway/docker-compose.yml
             cd /opt/telegram-gateway && docker compose up -d
 
             sleep 15
-            curl -sf http://localhost:8080/health || (docker compose logs --tail=50 && exit 1)
+            curl -sf http://localhost:8080/health/live || (docker compose logs --tail=50 && exit 1)
             echo "=== Deploy complete: $IMAGE ==="
 
   rollback:
@@ -161,5 +171,5 @@ jobs:
             docker compose up -d
 
             sleep 15
-            curl -sf http://localhost:8080/health || (docker compose logs --tail=50 && exit 1)
+            curl -sf http://localhost:8080/health/live || (docker compose logs --tail=50 && exit 1)
             echo "=== Rollback complete: $IMAGE ==="
