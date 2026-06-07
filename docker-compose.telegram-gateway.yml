@@ -9,7 +9,7 @@ services:
     ports:
       - "127.0.0.1:8080:8080"  # internal metrics only
     volumes:
-      - telegram_spool:/var/lib/telegram-gateway
+      - /var/lib/telegram-gateway:/var/lib/telegram-gateway
       - ./config/telegram-gateway:/etc/telegram-gateway:ro
     environment:
       # Telegram Bot API
@@ -44,7 +44,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - ENVIRONMENT=${ENVIRONMENT:-production}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health/live')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -68,10 +68,6 @@ services:
         condition: service_healthy
     networks:
       - gateway_net
-
-volumes:
-  telegram_spool:
-    driver: local
 
 networks:
   gateway_net:
