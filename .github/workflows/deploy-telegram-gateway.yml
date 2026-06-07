@@ -147,8 +147,16 @@ jobs:
             sed -i "s|image:.*|image: $IMAGE|" /opt/telegram-gateway/docker-compose.yml
             cd /opt/telegram-gateway && docker compose up -d
 
-            sleep 15
-            curl -sf http://localhost:8080/health/live || (docker compose logs --tail=50 && exit 1)
+            for attempt in $(seq 1 12); do
+              if curl -sf http://localhost:8080/health/live; then
+                break
+              fi
+              if [ "$attempt" -eq 12 ]; then
+                docker compose logs --tail=50
+                exit 1
+              fi
+              sleep 5
+            done
             echo "=== Deploy complete: $IMAGE ==="
 
   rollback:
