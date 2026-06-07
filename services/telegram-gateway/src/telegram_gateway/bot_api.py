@@ -50,6 +50,7 @@ class TelegramBotClient:
         payload: dict[str, object],
     ) -> dict[str, object]:
         start = time.monotonic()
+        elapsed = 0.0
         status = "error"
 
         try:
@@ -84,7 +85,7 @@ class TelegramBotClient:
             ) from exc
         finally:
             _bot_api_total.labels(method=method, status=status).inc()
-            _bot_api_latency_seconds.observe(elapsed)
+            _bot_api_latency_seconds.labels(method=method).observe(elapsed)
 
     def _handle_error(self, result: dict[str, object], status_code: int) -> None:
         description = str(result.get("description", ""))

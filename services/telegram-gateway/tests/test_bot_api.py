@@ -161,3 +161,15 @@ async def test_bot_api_500_transient_error(client: TelegramBotClient) -> None:
 
         assert exc_info.value.status_code == 500
         assert exc_info.value.permanent is False
+
+
+@pytest.mark.asyncio
+async def test_delete_webhook_success(client: TelegramBotClient) -> None:
+    with patch.object(client._client, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = FakeResponse(200, {"ok": True, "result": True})
+
+        await client.delete_webhook(drop_pending_updates=False)
+
+        mock_post.assert_called_once()
+        call_json = mock_post.call_args.kwargs["json"]
+        assert call_json["drop_pending_updates"] is False
