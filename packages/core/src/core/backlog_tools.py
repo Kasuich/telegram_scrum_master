@@ -23,8 +23,27 @@ from core.tools import platform_tool
 from core.tracker import TrackerClient, TrackerError
 from core.tracker_tools import _effective_queue, _resolve_login
 
-_TRUNC_MARKERS = ("сокращено", "…")
-_TRUNC_PHRASES = ("остальной текст", "остальное", "(сокращено)")
+# Phrases that signal the LLM dropped content instead of passing the full text.
+_TRUNC_PHRASES = (
+    "остальной текст",
+    "остальное опущен",
+    "текст опущен",
+    "(сокращено)",
+    "сокращено)",
+)
+
+
+def _text_looks_truncated(text: str) -> bool:
+    """True when the LLM truncated the summary instead of passing it in full.
+
+    An ellipsis counts as truncation ONLY at the very end of the text — a `…`
+    in the middle is legitimate content (e.g. a quoted label), not an omission.
+    """
+    t = text.strip()
+    lower = t.lower()
+    if any(p in lower for p in _TRUNC_PHRASES):
+        return True
+    return t.endswith("…") or t.endswith("...")
 
 
 def plan_json_looks_invalid(plan_json: str) -> bool:
@@ -32,9 +51,8 @@ def plan_json_looks_invalid(plan_json: str) -> bool:
     if not str(plan_json).strip():
         return True
     s = str(plan_json).strip()
-    lower = s.lower()
-    if any(m in lower for m in _TRUNC_MARKERS):
-        return True
+    # An ellipsis inside a JSON payload is never valid JSON — but only treat it
+    # as truncation when the string isn't parseable; valid JSON wins below.
     try:
         json.loads(s)
         return False
@@ -98,8 +116,7 @@ async def backlog_plan(
 
     Does NOT create Tracker issues — use tracker_apply_backlog_plan next.
     """
-    lower_text = text.lower()
-    if any(p in lower_text for p in _TRUNC_PHRASES) or any(m in lower_text for m in _TRUNC_MARKERS):
+    if _text_looks_truncated(text):
         return {
             "error": (
                 "Summary text looks truncated. Pass the full user message to backlog_plan "
