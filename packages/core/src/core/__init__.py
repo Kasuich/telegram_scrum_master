@@ -20,6 +20,7 @@ from core import (
     effective_config,
     entry_point,
     exceptions,
+    invocation,
     llm,
     logging,
     metrics,
@@ -27,6 +28,7 @@ from core import (
     prompts,
     react,
     registry,
+    repositories,
     scheduler,
     seed,
     tools,
@@ -79,6 +81,11 @@ from core.exceptions import (
     ToolNotFoundError,
     ToolValidationError,
 )
+from core.invocation import (
+    InvocationContext,
+    get_current_invocation_context,
+    normalize_invocation_context,
+)
 from core.llm import (
     LLMClient,
     LLMResponse,
@@ -120,6 +127,17 @@ from core.models import (
     RuntimeConfigModel,
     ScheduledJob,
     Team,
+    TelegramBusinessConnection,
+    TelegramCallbackToken,
+    TelegramChat,
+    TelegramImportJob,
+    TelegramInstallation,
+    TelegramMessage,
+    TelegramNotificationPreference,
+    TelegramOutbox,
+    TelegramUpdate,
+    TelegramUser,
+    TelegramUserLink,
     Trace,
     User,
 )
@@ -134,6 +152,11 @@ from core.prompts import (
 )
 from core.react import AgentResult, PendingConfirm, ReActRunner
 from core.registry import BotRegistry, get_bot_registry
+from core.repositories import (
+    MessageCursor,
+    MessageQueryOptions,
+    TelegramMessageRepository,
+)
 from core.scheduler import SchedulerDaemon, compute_next_run
 from core.seed import ensure_default_team
 from core.tools import (
@@ -168,12 +191,14 @@ __all__ = [
     "db",
     "entry_point",
     "exceptions",
+    "invocation",
     "llm",
     "logging",
     "metrics",
     "models",
     "prompts",
     "registry",
+    "repositories",
     "effective_config",
     "scheduler",
     "seed",
@@ -257,6 +282,9 @@ __all__ = [
     "ToolError",
     "ToolNotFoundError",
     "ToolValidationError",
+    "InvocationContext",
+    "get_current_invocation_context",
+    "normalize_invocation_context",
     "ToolExecutionError",
     "ConfirmError",
     "ConfirmTimeoutError",
@@ -284,11 +312,25 @@ __all__ = [
     "ConsoleSession",
     "Team",
     "AgentSpec",
+    "TelegramInstallation",
+    "TelegramChat",
+    "TelegramUser",
+    "TelegramUserLink",
+    "TelegramBusinessConnection",
     "AgentInstance",
     "Action",
     "Trace",
     "Confirm",
+    "TelegramUpdate",
+    "TelegramMessage",
+    "TelegramOutbox",
+    "TelegramCallbackToken",
+    "TelegramImportJob",
+    "TelegramNotificationPreference",
     "RuntimeConfigModel",
     "ScheduledJob",
     "ActionFeedback",
+    "MessageCursor",
+    "MessageQueryOptions",
+    "TelegramMessageRepository",
 ]

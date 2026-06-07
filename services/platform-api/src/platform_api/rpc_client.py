@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from core.invocation import InvocationContext
 from core.react import AgentResult
 
 
@@ -70,13 +71,26 @@ async def list_agents() -> list[dict[str, str]]:
     return _get_in_process().list_agents()
 
 
-async def invoke(agent: str, message: str, session_id: str) -> AgentResult:
+async def invoke(
+    agent: str,
+    message: str,
+    session_id: str,
+    context: InvocationContext | dict[str, Any] | None = None,
+) -> AgentResult:
     if _use_http():
         data = await _rpc_http(
-            "invoke", {"agent": agent, "message": message, "session_id": session_id}
+            "invoke",
+            {
+                "agent": agent,
+                "message": message,
+                "session_id": session_id,
+                "context": context.model_dump(exclude_none=True)
+                if isinstance(context, InvocationContext)
+                else context,
+            },
         )
         return AgentResult(**data)
-    result = await _get_in_process().invoke(agent, message, session_id)
+    result = await _get_in_process().invoke(agent, message, session_id, context=context)
     return result
 
 

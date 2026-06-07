@@ -14,6 +14,7 @@ members = [
     "platform-api",
     "pm-agent-platform",
     "pm-orchestrator",
+    "telegram-gateway",
 ]
 
 [[package]]
@@ -555,10 +556,13 @@ name = "platform-api"
 version = "0.1.0"
 source = { editable = "services/platform-api" }
 dependencies = [
+    { name = "boto3" },
+    { name = "botocore" },
     { name = "core" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pm-orchestrator" },
+    { name = "prometheus-client" },
     { name = "pydantic-settings" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -573,11 +577,14 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boto3", specifier = ">=1.43.24" },
+    { name = "botocore", specifier = ">=1.43.24" },
     { name = "core", editable = "packages/core" },
     { name = "fastapi", specifier = ">=0.111" },
     { name = "httpx", specifier = ">=0.25" },
     { name = "httpx", marker = "extra == 'test'", specifier = ">=0.25" },
     { name = "pm-orchestrator", editable = "services/pm-orchestrator" },
+    { name = "prometheus-client", specifier = ">=0.19" },
     { name = "pydantic-settings", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23" },
@@ -1008,6 +1015,40 @@ sdist = { url = "https://files.pythonhosted.org/packages/25/44/ec35f1b6e83094b99
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1c/54/196d0c1db10af76baa4f64894448505d60d3cdf70ef92cbb35f46a4e4c71/starlette-1.2.1-py3-none-any.whl", hash = "sha256:4de0082d08c8f6764a85a54cf1120d6939507a19905c7768acad2a9f875d2b89", size = 73350, upload-time = "2026-05-31T01:07:50.09Z" },
 ]
+
+[[package]]
+name = "telegram-gateway"
+version = "0.1.0"
+source = { editable = "services/telegram-gateway" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "prometheus-client" },
+    { name = "pydantic" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+test = [
+    { name = "httpx" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-mock" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.111" },
+    { name = "httpx", specifier = ">=0.25" },
+    { name = "httpx", marker = "extra == 'test'", specifier = ">=0.25" },
+    { name = "prometheus-client", specifier = ">=0.20" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23" },
+    { name = "pytest-mock", marker = "extra == 'test'", specifier = ">=3.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
+]
+provides-extras = ["test"]
 
 [[package]]
 name = "typing-extensions"

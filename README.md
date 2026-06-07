@@ -6,6 +6,7 @@
 **Документация:**
 - [Архитектура системы](docs/ARCHITECTURE.md)
 - [Целевая архитектура и roadmap](docs/TARGET_ARCHITECTURE.md)
+- [Трек A — полный план Telegram-контура](docs/TRACK_A_TELEGRAM_PLAN.md)
 - [Как добавить нового агента](docs/ADDING_AGENTS.md)
 - [Трек B — задачи рантайма](docs/TRACK_B_TASKS.md)
 

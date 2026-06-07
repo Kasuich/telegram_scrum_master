@@ -1,0 +1,29 @@
+[project]
+name = "telegram-gateway"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.111",
+    "httpx>=0.25",
+    "prometheus-client>=0.20",
+    "pydantic>=2.0",
+    "uvicorn[standard]>=0.29",
+]
+
+[project.optional-dependencies]
+test = [
+    "httpx>=0.25",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-mock>=3.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/telegram_gateway"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

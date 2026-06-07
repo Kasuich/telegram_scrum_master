@@ -5,10 +5,15 @@ All orchestrator calls are mocked via rpc_client patch.
 
 from __future__ import annotations
 
+import hmac
 import os
+import time
+import uuid
+from hashlib import sha256
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from core.invocation import InvocationContext
 from core.react import AgentResult, PendingConfirm
 from fastapi.testclient import TestClient
 
@@ -18,6 +23,7 @@ os.environ.setdefault("YC_FOLDER_ID", "b1g0000000000000000")
 os.environ.setdefault("TRACKER_TOKEN", "stub_token_000000000000000000000")
 os.environ.setdefault("TRACKER_ORG_ID", "000000000000")
 os.environ.setdefault("TRACKER_ORG_TYPE", "cloud")
+os.environ.setdefault("TELEGRAM_BRIDGE_HMAC_KEYS", "test-key:supersecret")
 
 
 # ---------------------------------------------------------------------------
@@ -28,11 +34,18 @@ os.environ.setdefault("TRACKER_ORG_TYPE", "cloud")
 @pytest.fixture
 def client():
     from platform_api.main import app
+    from platform_api.telegram_bridge import get_session as bridge_get_session
+
+    async def _fake_session():
+        yield object()
 
     with (
         patch("platform_api.rpc_client.list_agents", AsyncMock(return_value=[])),
     ):
-        return TestClient(app)
+        app.dependency_overrides[bridge_get_session] = _fake_session
+        with TestClient(app) as test_client:
+            yield test_client
+        app.dependency_overrides.clear()
 
 
 def _mock_rpc(invoke=None, resume=None, list_agents=None, get_actions=None):
@@ -43,6 +56,27 @@ def _mock_rpc(invoke=None, resume=None, list_agents=None, get_actions=None):
         list_agents=AsyncMock(return_value=list_agents or []),
         get_actions=AsyncMock(return_value=get_actions or []),
     )
+
+
+def _bridge_headers(path: str, body: bytes) -> dict[str, str]:
+    timestamp = str(int(time.time()))
+    nonce = str(uuid.uuid4())
+    payload = "\n".join(
+        [
+            "POST",
+            path,
+            timestamp,
+            nonce,
+            sha256(body).hexdigest(),
+        ]
+    ).encode("utf-8")
+    signature = hmac.new(b"supersecret", payload, sha256).hexdigest()
+    return {
+        "X-Telegram-Bridge-Key-Id": "test-key",
+        "X-Telegram-Bridge-Timestamp": timestamp,
+        "X-Telegram-Bridge-Nonce": nonce,
+        "X-Telegram-Bridge-Signature": signature,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +170,26 @@ class TestChat:
             client.post("/chat", json={"message": "Hi", "session_id": "s1"})
         assert m.call_args[0][0] == "pm_agent"
 
+    def test_forwards_context(self, client):
+        with patch("platform_api.rpc_client.invoke", AsyncMock(return_value=_text())) as m:
+            client.post(
+                "/chat",
+                json={
+                    "message": "Hi",
+                    "session_id": "telegram:s1",
+                    "context": {
+                        "channel": "telegram",
+                        "chat_id": "-1001",
+                        "message_id": "42",
+                    },
+                },
+            )
+        assert m.call_args.kwargs["context"] == InvocationContext(
+            channel="telegram",
+            chat_id="-1001",
+            message_id="42",
+        )
+
 
 # ---------------------------------------------------------------------------
 # POST /agents/{name}/chat  (per-agent route)
@@ -203,3 +257,86 @@ class TestMetrics:
         r = client.get("/metrics")
         assert r.status_code == 200
         assert "text/plain" in r.headers["content-type"]
+
+
+class TestTelegramBridge:
+    def test_heartbeat_requires_auth(self, client):
+        r = client.post(
+            "/internal/telegram/v1/heartbeat",
+            json={"gateway_id": "gw-1", "version": "1.0.0"},
+        )
+        assert r.status_code == 401
+
+    def test_heartbeat_ok(self, client):
+        body = b'{"gateway_id":"gw-1","version":"1.0.0","queue_depth":3}'
+        r = client.post(
+            "/internal/telegram/v1/heartbeat",
+            content=body,
+            headers={
+                **_bridge_headers("/internal/telegram/v1/heartbeat", body),
+                "content-type": "application/json",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["gateway_id"] == "gw-1"
+
+    def test_ingest_delegates_to_helper(self, client):
+        body = (
+            b'{"team_id":"00000000-0000-0000-0000-000000000001",'
+            b'"installation_id":"00000000-0000-0000-0000-000000000002",'
+            b'"update_id":1,"payload":{"message":{"message_id":42}}}'
+        )
+        with patch(
+            "platform_api.telegram_bridge.ingest_event",
+            AsyncMock(return_value={"update_id": "u1", "duplicate": False}),
+        ) as mocked:
+            r = client.post(
+                "/internal/telegram/v1/events:ingest",
+                content=body,
+                headers={
+                    **_bridge_headers("/internal/telegram/v1/events:ingest", body),
+                    "content-type": "application/json",
+                },
+            )
+        assert r.status_code == 200
+        assert r.json()["update_id"] == "u1"
+        mocked.assert_awaited()
+
+    def test_lease_delegates_to_helper(self, client):
+        body = b'{"worker_id":"gw-1","limit":2,"lease_seconds":60}'
+        with patch(
+            "platform_api.telegram_bridge.lease_outbox",
+            AsyncMock(return_value=[]),
+        ) as mocked:
+            r = client.post(
+                "/internal/telegram/v1/outbox:lease",
+                content=body,
+                headers={
+                    **_bridge_headers("/internal/telegram/v1/outbox:lease", body),
+                    "content-type": "application/json",
+                },
+            )
+        assert r.status_code == 200
+        assert r.json() == {"items": []}
+        mocked.assert_awaited()
+
+    def test_ack_delegates_to_helper(self, client):
+        body = b'{"status":"sent","provider_message_id":"99"}'
+        with patch(
+            "platform_api.telegram_bridge.ack_outbox",
+            AsyncMock(return_value={"delivery_id": "d1", "status": "sent"}),
+        ) as mocked:
+            r = client.post(
+                "/internal/telegram/v1/outbox/00000000-0000-0000-0000-000000000010:ack",
+                content=body,
+                headers={
+                    **_bridge_headers(
+                        "/internal/telegram/v1/outbox/00000000-0000-0000-0000-000000000010:ack",
+                        body,
+                    ),
+                    "content-type": "application/json",
+                },
+            )
+        assert r.status_code == 200
+        assert r.json()["status"] == "sent"
+        mocked.assert_awaited()

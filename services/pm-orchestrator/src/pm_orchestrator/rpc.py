@@ -101,7 +101,8 @@ async def _invoke(params: dict) -> dict:
     agent = params.get("agent", "pm_agent")
     message = params["message"]
     session_id = params["session_id"]
-    result = await _svc.invoke(agent, message, session_id)
+    context = params.get("context")
+    result = await _svc.invoke(agent, message, session_id, context=context)
     return result.model_dump()
 
 
