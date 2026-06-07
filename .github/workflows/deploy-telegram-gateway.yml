@@ -69,8 +69,8 @@ jobs:
       - name: Write .env and deploy
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ vars.TG_VPS_HOST }}
-          username: ${{ vars.TG_VPS_USER }}
+          host: ${{ secrets.TG_VPS_HOST || vars.TG_VPS_HOST }}
+          username: ${{ secrets.TG_VPS_USER || vars.TG_VPS_USER }}
           key: ${{ secrets.TG_VPS_SSH_KEY }}
           script: |
             set -e
@@ -79,10 +79,10 @@ jobs:
             cat > /opt/telegram-gateway/.env << EOF
             TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
             TELEGRAM_WEBHOOK_SECRET=${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
-            TELEGRAM_WEBHOOK_BASE_URL=${{ vars.TELEGRAM_WEBHOOK_BASE_URL }}
+            TELEGRAM_WEBHOOK_BASE_URL=${{ secrets.TELEGRAM_WEBHOOK_BASE_URL || vars.TELEGRAM_WEBHOOK_BASE_URL }}
             TELEGRAM_WEBHOOK_PATH=/telegram/webhook
-            MAIN_BRIDGE_URL=${{ vars.MAIN_BRIDGE_URL }}
-            TELEGRAM_BRIDGE_HMAC_KEY_ID=${{ vars.TELEGRAM_BRIDGE_HMAC_KEY_ID }}
+            MAIN_BRIDGE_URL=${{ secrets.MAIN_BRIDGE_URL || vars.MAIN_BRIDGE_URL }}
+            TELEGRAM_BRIDGE_HMAC_KEY_ID=${{ secrets.TELEGRAM_BRIDGE_HMAC_KEY_ID || vars.TELEGRAM_BRIDGE_HMAC_KEY_ID }}
             TELEGRAM_BRIDGE_HMAC_KEY=${{ secrets.TELEGRAM_BRIDGE_HMAC_KEY }}
             GATEWAY_SPOOL_PATH=/var/lib/telegram-gateway/spool.db
             GATEWAY_ID=telegram-gateway-${{ inputs.environment }}
@@ -116,8 +116,8 @@ jobs:
       - name: Rollback to previous image
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ vars.TG_VPS_HOST }}
-          username: ${{ vars.TG_VPS_USER }}
+          host: ${{ secrets.TG_VPS_HOST || vars.TG_VPS_HOST }}
+          username: ${{ secrets.TG_VPS_USER || vars.TG_VPS_USER }}
           key: ${{ secrets.TG_VPS_SSH_KEY }}
           script: |
             set -e
