@@ -775,16 +775,20 @@ async def _upsert_chat(
     chat = (await session.execute(stmt)).scalar_one_or_none()
     if chat is None:
         chat_type = str(chat_payload.get("type") or "unknown")
-        private_ingest_mode = str(
-            (installation.settings or {}).get("private_ingest_mode", "direct")
-        )
+        settings = installation.settings or {}
+        if chat_type == "private":
+            ingest_mode = str(settings.get("private_ingest_mode", "direct"))
+        elif chat_type in {"group", "supergroup"}:
+            ingest_mode = str(settings.get("group_ingest_mode", "disabled"))
+        else:
+            ingest_mode = "disabled"
         chat = TelegramChat(
             installation_id=installation.id,
             external_chat_id=external_chat_id,
             type=chat_type,
             title=chat_payload.get("title"),
             username=chat_payload.get("username"),
-            ingest_mode=private_ingest_mode if chat_type == "private" else "disabled",
+            ingest_mode=ingest_mode,
             access_mode="workspace_bot",
             send_policy={},
             active=True,

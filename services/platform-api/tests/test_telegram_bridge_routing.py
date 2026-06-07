@@ -24,16 +24,17 @@ class _FakeSession:
 
 
 def _installation(**overrides: object) -> TelegramInstallation:
-    return TelegramInstallation(
-        id=uuid.uuid4(),
-        team_id=uuid.uuid4(),
-        alias="pm_bot",
-        external_bot_id="777000",
-        mode="workspace_bot",
-        status="active",
-        settings={"bot_username": "pm_bot"},
-        **overrides,
-    )
+    data = {
+        "id": uuid.uuid4(),
+        "team_id": uuid.uuid4(),
+        "alias": "pm_bot",
+        "external_bot_id": "777000",
+        "mode": "workspace_bot",
+        "status": "active",
+        "settings": {"bot_username": "pm_bot"},
+    }
+    data.update(overrides)
+    return TelegramInstallation(**data)
 
 
 def _chat(**overrides: object) -> TelegramChat:
@@ -133,6 +134,31 @@ async def test_upsert_new_private_chat_defaults_to_direct() -> None:
 
     assert chat.ingest_mode == "direct"
     session.add.assert_called_once_with(chat)
+
+
+@pytest.mark.asyncio
+async def test_upsert_new_group_uses_installation_ingest_mode() -> None:
+    installation = _installation(
+        settings={
+            "bot_username": "pm_bot",
+            "group_ingest_mode": "mentions",
+        }
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+    session.flush = AsyncMock()
+
+    from platform_api.telegram_bridge import _upsert_chat
+
+    chat = await _upsert_chat(
+        session,
+        installation,
+        {"id": -100123, "type": "supergroup", "title": "Team"},
+    )
+
+    assert chat.ingest_mode == "mentions"
 
 
 def test_should_route_mentions_and_replies_to_bot() -> None:
