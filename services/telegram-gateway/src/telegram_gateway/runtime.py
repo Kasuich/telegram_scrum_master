@@ -226,7 +226,7 @@ class GatewayRuntime:
         method = item.payload.get("method")
         if method == "sendMessage":
             return await self.bot_client.send_message(
-                chat_id=item.target_user_id or item.target_chat_id,
+                chat_id=item.target_chat_id or item.target_user_id,
                 text=item.payload.get("text", ""),
                 reply_to_message_id=item.payload.get("reply_to_message_id"),
                 message_thread_id=item.payload.get("message_thread_id"),

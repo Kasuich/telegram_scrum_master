@@ -226,6 +226,7 @@ async def test_route_inbound_message_creates_agent_reply_outbox() -> None:
     outbox = session.added[0]
     assert outbox.category == "agent_reply"
     assert outbox.target_chat_id == "-100123"
+    assert outbox.target_user_id is None
     assert outbox.payload["text"] == "All good"
     assert outbox.payload["reply_to_message_id"] == "42"
 

@@ -51,7 +51,7 @@ async def test_deliver_once_leases_and_delivers_messages(tmp_path: Path) -> None
             installation_id="inst-1",
             category="agent_reply",
             target_chat_id="-100123",
-            target_user_id=None,
+            target_user_id="991",
             payload={"method": "sendMessage", "text": "Hello!", "reply_to_message_id": "42"},
             business_connection_id=None,
             lease_expires_at=datetime.now(tz=timezone.utc),
@@ -67,6 +67,7 @@ async def test_deliver_once_leases_and_delivers_messages(tmp_path: Path) -> None
     assert delivered == 1
     runtime.bridge.lease_outbox.assert_awaited_once()
     runtime.bot_client.send_message.assert_awaited_once()
+    assert runtime.bot_client.send_message.await_args.kwargs["chat_id"] == "-100123"
     runtime.bridge.ack_outbox.assert_awaited_once_with(
         delivery_id="delivery-1",
         status="sent",

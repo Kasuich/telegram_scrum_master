@@ -390,7 +390,11 @@ async def _enqueue_agent_result(
         chat_id=chat.id,
         category=category,
         target_chat_id=chat.external_chat_id,
-        target_user_id=telegram_user.external_user_id if telegram_user is not None else None,
+        target_user_id=(
+            telegram_user.external_user_id
+            if telegram_user is not None and chat.type == "private"
+            else None
+        ),
         dedupe_key=dedupe_key,
         priority=100,
         status="pending",
