@@ -22,6 +22,10 @@ env:
   SERVICE_NAME: telegram-gateway
   IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   deploy:
     if: ${{ inputs.action == 'deploy' }}
