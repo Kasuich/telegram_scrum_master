@@ -5,6 +5,24 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _bridge_key_secret_from_env() -> str:
+    direct_secret = os.getenv("TELEGRAM_BRIDGE_HMAC_KEY")
+    if direct_secret:
+        return direct_secret
+
+    key_id = os.environ["TELEGRAM_BRIDGE_HMAC_KEY_ID"]
+    raw_keys = os.environ["TELEGRAM_BRIDGE_HMAC_KEYS"]
+    for pair in raw_keys.split(","):
+        candidate = pair.strip()
+        if not candidate:
+            continue
+        current_key_id, sep, secret = candidate.partition(":")
+        if sep and current_key_id == key_id and secret:
+            return secret
+
+    raise KeyError("TELEGRAM_BRIDGE_HMAC_KEY")
+
+
 @dataclass(frozen=True, slots=True)
 class GatewaySettings:
     bot_token: str
@@ -30,7 +48,7 @@ class GatewaySettings:
             webhook_secret=os.environ["TELEGRAM_WEBHOOK_SECRET"],
             main_bridge_url=os.environ["MAIN_BRIDGE_URL"],
             bridge_key_id=os.environ["TELEGRAM_BRIDGE_HMAC_KEY_ID"],
-            bridge_key_secret=os.environ["TELEGRAM_BRIDGE_HMAC_KEY"],
+            bridge_key_secret=_bridge_key_secret_from_env(),
             spool_path=Path(
                 os.getenv("GATEWAY_SPOOL_PATH", "/var/lib/telegram-gateway/spool.db")
             ),
