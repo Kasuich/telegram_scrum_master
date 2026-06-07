@@ -224,6 +224,51 @@ async def test_deliver_once_no_bot_client_returns_zero(tmp_path: Path) -> None:
     delivered = await runtime.deliver_once()
 
     assert delivered == 0
+
+
+@pytest.mark.asyncio
+async def test_poll_updates_once_stores_updates_in_polling_mode(tmp_path: Path) -> None:
+    runtime = make_runtime(tmp_path)
+    runtime.settings = GatewaySettings(
+        bot_token=runtime.settings.bot_token,
+        webhook_secret=runtime.settings.webhook_secret,
+        main_bridge_url=runtime.settings.main_bridge_url,
+        bridge_key_id=runtime.settings.bridge_key_id,
+        bridge_key_secret=runtime.settings.bridge_key_secret,
+        transport_mode="polling",
+        spool_path=runtime.settings.spool_path,
+    )
+    runtime.bot_client.get_updates = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            {"update_id": 101, "message": {"message_id": 1, "text": "hello"}},
+            {"update_id": 102, "message": {"message_id": 2, "text": "world"}},
+        ]
+    )
+
+    accepted = await runtime.poll_updates_once(timeout=1)
+
+    assert accepted == 2
+    assert runtime.spool.depth() == 2
+    assert runtime.next_update_offset == 103
+
+
+@pytest.mark.asyncio
+async def test_sync_transport_mode_deletes_webhook_for_polling(tmp_path: Path) -> None:
+    runtime = make_runtime(tmp_path)
+    runtime.settings = GatewaySettings(
+        bot_token=runtime.settings.bot_token,
+        webhook_secret=runtime.settings.webhook_secret,
+        main_bridge_url=runtime.settings.main_bridge_url,
+        bridge_key_id=runtime.settings.bridge_key_id,
+        bridge_key_secret=runtime.settings.bridge_key_secret,
+        transport_mode="polling",
+        spool_path=runtime.settings.spool_path,
+    )
+    runtime.bot_client.delete_webhook = AsyncMock()  # type: ignore[method-assign]
+
+    await runtime.sync_transport_mode()
+
+    runtime.bot_client.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
     runtime.bridge.lease_outbox.assert_not_called()
 
 

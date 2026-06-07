@@ -38,6 +38,7 @@ class GatewayRuntime:
     bridge: MainBridgeClient | None
     bot_client: TelegramBotClient | None = None
     auto_start_workers: bool = True
+    next_update_offset: int | None = None
 
     def _now(self) -> datetime:
         return datetime.now(tz=timezone.utc)
@@ -48,6 +49,33 @@ class GatewayRuntime:
 
     def record_depth(self) -> None:
         SPOOL_DEPTH.set(self.spool.depth())
+
+    async def sync_transport_mode(self) -> None:
+        if self.bot_client is None:
+            return
+        if self.settings.transport_mode == "polling":
+            await self.bot_client.delete_webhook(drop_pending_updates=False)
+
+    async def poll_updates_once(self, *, timeout: int = 30) -> int:
+        if self.bot_client is None or self.settings.transport_mode != "polling":
+            return 0
+
+        updates = await self.bot_client.get_updates(
+            offset=self.next_update_offset,
+            timeout=timeout,
+        )
+        accepted = 0
+        for update in updates:
+            update_id = update.get("update_id")
+            if not isinstance(update_id, int):
+                continue
+            stored = self.spool.store_update(update_id, update, self._now())
+            self.record_webhook("accepted" if stored else "duplicate")
+            if stored:
+                accepted += 1
+            self.next_update_offset = update_id + 1
+        self.record_depth()
+        return accepted
 
     async def heartbeat_once(self) -> None:
         if self.bridge is None:
@@ -200,8 +228,10 @@ class GatewayRuntime:
         return None
 
     async def run(self, stop_event: asyncio.Event) -> None:
+        await self.sync_transport_mode()
         while not stop_event.is_set():
             try:
+                await self.poll_updates_once(timeout=max(1, int(self.settings.heartbeat_interval_seconds)))
                 await self.drain_once()
                 await self.deliver_once()
                 await self.heartbeat_once()

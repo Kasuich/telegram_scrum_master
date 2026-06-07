@@ -30,6 +30,7 @@ class GatewaySettings:
     main_bridge_url: str
     bridge_key_id: str
     bridge_key_secret: str
+    transport_mode: str = "webhook"
     spool_path: Path = Path("/var/lib/telegram-gateway/spool.db")
     gateway_id: str = "telegram-gateway"
     version: str = "0.1.0"
@@ -43,12 +44,16 @@ class GatewaySettings:
 
     @classmethod
     def from_env(cls) -> "GatewaySettings":
+        transport_mode = os.getenv("TELEGRAM_TRANSPORT_MODE", "webhook").strip().lower()
+        if transport_mode not in {"webhook", "polling"}:
+            raise ValueError(f"Unsupported TELEGRAM_TRANSPORT_MODE: {transport_mode}")
         return cls(
             bot_token=os.environ["TELEGRAM_BOT_TOKEN"],
             webhook_secret=os.environ["TELEGRAM_WEBHOOK_SECRET"],
             main_bridge_url=os.environ["MAIN_BRIDGE_URL"],
             bridge_key_id=os.environ["TELEGRAM_BRIDGE_HMAC_KEY_ID"],
             bridge_key_secret=_bridge_key_secret_from_env(),
+            transport_mode=transport_mode,
             spool_path=Path(
                 os.getenv("GATEWAY_SPOOL_PATH", "/var/lib/telegram-gateway/spool.db")
             ),

@@ -17,6 +17,14 @@ on:
         options:
           - deploy
           - rollback
+      transport_mode:
+        description: 'Telegram transport mode'
+        required: false
+        default: webhook
+        type: choice
+        options:
+          - webhook
+          - polling
 
 env:
   SERVICE_NAME: telegram-gateway
@@ -115,6 +123,7 @@ jobs:
             TELEGRAM_WEBHOOK_SECRET=${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
             TELEGRAM_WEBHOOK_BASE_URL=${{ secrets.TELEGRAM_WEBHOOK_BASE_URL || vars.TELEGRAM_WEBHOOK_BASE_URL }}
             TELEGRAM_WEBHOOK_PATH=/telegram/webhook
+            TELEGRAM_TRANSPORT_MODE=${{ inputs.transport_mode || 'webhook' }}
             MAIN_BRIDGE_URL=${{ secrets.MAIN_BRIDGE_URL || vars.MAIN_BRIDGE_URL }}
             TELEGRAM_BRIDGE_HMAC_KEY_ID=${{ secrets.TELEGRAM_BRIDGE_HMAC_KEY_ID || vars.TELEGRAM_BRIDGE_HMAC_KEY_ID }}
             TELEGRAM_BRIDGE_HMAC_KEYS=${{ format('{0}:{1}', secrets.TELEGRAM_BRIDGE_HMAC_KEY_ID || vars.TELEGRAM_BRIDGE_HMAC_KEY_ID, secrets.TELEGRAM_BRIDGE_HMAC_KEY) }}

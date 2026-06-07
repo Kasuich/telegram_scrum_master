@@ -206,6 +206,52 @@ class TelegramBotClient:
 
         await self._request("editMessageReplyMarkup", payload)
 
+    async def get_updates(
+        self,
+        *,
+        offset: int | None = None,
+        timeout: int = 30,
+        allowed_updates: list[str] | None = None,
+    ) -> list[dict[str, object]]:
+        payload: dict[str, object] = {"timeout": timeout}
+        if offset is not None:
+            payload["offset"] = offset
+        if allowed_updates is not None:
+            payload["allowed_updates"] = allowed_updates
+
+        response = await self._client.post(
+            self._get_url("getUpdates"),
+            json=payload,
+            timeout=timeout + 5,
+        )
+        result = response.json()
+        if not result.get("ok", False):
+            self._handle_error(result, response.status_code)
+        updates = result.get("result", [])
+        if not isinstance(updates, list):
+            return []
+        return [dict(item) for item in updates if isinstance(item, dict)]
+
+    async def set_webhook(
+        self,
+        *,
+        url: str,
+        secret_token: str,
+    ) -> None:
+        await self._request(
+            "setWebhook",
+            {
+                "url": url,
+                "secret_token": secret_token,
+            },
+        )
+
+    async def delete_webhook(self, *, drop_pending_updates: bool = False) -> None:
+        await self._request(
+            "deleteWebhook",
+            {"drop_pending_updates": drop_pending_updates},
+        )
+
 
 # ── Metrics ─────────────────────────────────────────────────────────────────────
 
