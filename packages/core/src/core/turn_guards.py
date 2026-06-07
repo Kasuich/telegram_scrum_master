@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from core.assignee_resolver import extract_assignee_mention, resolve_assignee
@@ -19,10 +20,11 @@ _CREATE_MARKERS = (
 )
 _CREATE_MARKERS_NARROW = _CREATE_MARKERS + ("оформи",)  # excludes backlog phrases
 
+# Specific board/backlog phrases — bare «резюме»/«саммари» omitted (too many false positives).
 _BACKLOG_MARKERS = (
-    "резюме",
-    "саммари",
-    "самари",
+    "резюме лекции",
+    "саммари лекции",
+    "самари лекции",
     "оформи доску",
     "разбей на задачи",
     "заведи эпик",
@@ -32,6 +34,7 @@ _BACKLOG_MARKERS = (
     "из лекции",
     "из созвона",
     "из встречи",
+    "заведи в трекер",
 )
 _CLOSE_MARKERS = ("закрой", "закрыть", "заверши задачу", "close issue", "закрытие")
 
@@ -56,12 +59,27 @@ def _backlog_min_summary_chars() -> int:
         return 800
 
 
+_STATUS_UPDATE_RE = re.compile(
+    r"^([А-Яа-яA-Za-z][А-Яа-яA-Za-z.\-]*):\s",
+    re.UNICODE,
+)
+
+
+def message_has_status_update_intent(text: str) -> bool:
+    """Chat status line «Имя: новость по задаче» — update Tracker, not summarizer."""
+    return bool(_STATUS_UPDATE_RE.match(text.strip()))
+
+
 def message_has_backlog_intent(text: str) -> bool:
+    if message_has_status_update_intent(text):
+        return False
     t = normalize_text(text)
     min_chars = _backlog_min_summary_chars()
+    if any(m in t for m in _BACKLOG_MARKERS):
+        return True
     if len(text.strip()) >= min_chars:
         return True
-    return any(m in t for m in _BACKLOG_MARKERS)
+    return False
 
 
 def message_has_create_intent(text: str) -> bool:
@@ -74,6 +92,43 @@ def message_has_create_intent(text: str) -> bool:
 def message_has_close_intent(text: str) -> bool:
     t = normalize_text(text)
     return any(m in t for m in _CLOSE_MARKERS)
+
+
+def _turn_tool_results(steps: list[dict[str, Any]], since_index: int) -> list[dict[str, Any]]:
+    return [
+        step
+        for step in steps[since_index:]
+        if step.get("kind") == "tool_result" and step.get("tool_name")
+    ]
+
+
+def find_succeeded_in_turn(steps: list[dict[str, Any]], since_index: int) -> bool:
+    for step in _turn_tool_results(steps, since_index):
+        if step.get("tool_name") != "tracker_find_issues":
+            continue
+        result = step.get("result") or {}
+        if result.get("error"):
+            continue
+        if result.get("not_found"):
+            continue
+        if result.get("count", 0) > 0:
+            return True
+        if result.get("issues"):
+            return True
+    return False
+
+
+def summarizer_call_done_in_turn(steps: list[dict[str, Any]], since_index: int) -> bool:
+    for step in _turn_tool_results(steps, since_index):
+        if step.get("tool_name") != "call_agent":
+            continue
+        args = step.get("tool_args") or {}
+        if args.get("target_agent") != "meeting_summarizer":
+            continue
+        result = step.get("result")
+        if isinstance(result, str) and result.strip():
+            return True
+    return False
 
 
 def created_issue_keys_in_turn(steps: list[dict[str, Any]], since_index: int) -> list[str]:
@@ -95,62 +150,18 @@ def created_issue_keys_in_turn(steps: list[dict[str, Any]], since_index: int) ->
     return keys
 
 
-async def check_turn_tool_guard(
+async def check_create_assignee(
     *,
-    tool_name: str,
     tool_args: dict[str, Any],
     turn_user_message: str,
-    steps: list[dict[str, Any]],
-    steps_before_turn: int,
     queue_key: str,
 ) -> str | None:
+    """Correct an assignee mismatch on create (async — resolves against the team).
+
+    Returns an error string asking the LLM to use the resolved login, or None.
+    Called by the runner only inside the INTAKE stage for tracker_create_issue,
+    so the synchronous stage graph stays free of IO.
     """
-    Return error message to block tool execution, or None if allowed.
-    """
-    backlog_intent = message_has_backlog_intent(turn_user_message)
-    created = created_issue_keys_in_turn(steps, steps_before_turn)
-    create_intent = message_has_create_intent(turn_user_message)
-    close_intent = message_has_close_intent(turn_user_message)
-
-    if backlog_intent:
-        if tool_name == "tracker_create_issue":
-            return (
-                "Длинное саммари / оформление доски: используй "
-                "backlog_plan → tracker_apply_backlog_plan, не tracker_create_issue."
-            )
-        if tool_name in ("tracker_close_issue", "tracker_find_issues", "call_agent"):
-            return (
-                f"В режиме оформления доски «{tool_name}» не нужен. "
-                "Цепочка: backlog_plan → tracker_apply_backlog_plan."
-            )
-        if tool_name == "tracker_apply_backlog_plan":
-            for step in steps[steps_before_turn:]:
-                if step.get("kind") != "tool_result":
-                    continue
-                if step.get("tool_name") != "tracker_apply_backlog_plan":
-                    continue
-                res = step.get("result") or {}
-                if not res.get("error") and res.get("created_count", 0) > 0:
-                    return "Доска уже создана в этом запросе. Заверши отчёт."
-            return None
-        if tool_name not in _BACKLOG_ALLOWED:
-            pass  # allow backlog_plan and meta; block others below if duplicate apply
-
-    if tool_name == "tracker_close_issue" and created and create_intent and not close_intent:
-        return (
-            f"Запрещено закрывать задачу в том же запросе, где её создали ({', '.join(created)}). "
-            "Пользователь просил СОЗДАТЬ, не закрыть. Заверши ход отчётом о создании."
-        )
-
-    if tool_name == "tracker_create_issue" and created and not backlog_intent:
-        return (
-            f"Уже создана задача {created[0]} в этом запросе. "
-            "Одна задача на запрос; объедини темы в одном summary."
-        )
-
-    if tool_name != "tracker_create_issue" or not create_intent:
-        return None
-
     llm_assignee = str(tool_args.get("assignee", "")).strip()
     if not llm_assignee:
         return None
@@ -171,4 +182,44 @@ async def check_turn_tool_guard(
             f'Используй assignee="{expected.login}".'
         )
 
+    return None
+
+
+async def check_turn_tool_guard(
+    *,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    turn_user_message: str,
+    steps: list[dict[str, Any]],
+    steps_before_turn: int,
+    queue_key: str,
+) -> str | None:
+    """Thin shim over the stage graph (single source of truth for guards).
+
+    Kept for backward compatibility: classifies the message with the rules-only
+    path, runs the stage's ``check_tool`` over the turn slice, and adds the
+    async assignee correction for INTAKE creates. The runner uses the stage
+    graph directly; this shim keeps existing call sites and tests working.
+    """
+    from core.stage_graph import StageId, get_stage
+    from core.stage_router import detect_stage_rules
+
+    sid = detect_stage_rules(turn_user_message)
+    if sid is None:
+        return None
+    stage = get_stage(sid)
+    if stage is None:
+        return None
+
+    turn_slice = steps[steps_before_turn:]
+    decision = stage.check_tool(tool_name, tool_args, turn_slice)
+    if not decision.allow:
+        return decision.reason
+
+    if sid == StageId.INTAKE and tool_name == "tracker_create_issue":
+        return await check_create_assignee(
+            tool_args=tool_args,
+            turn_user_message=turn_user_message,
+            queue_key=queue_key,
+        )
     return None

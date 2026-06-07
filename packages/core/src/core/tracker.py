@@ -173,6 +173,13 @@ class TrackerClient:
         """Add a comment to an issue."""
         return await self._request("POST", f"/issues/{issue_key}/comments", json={"text": text})
 
+    async def list_comments(self, issue_key: str, *, per_page: int = 50) -> list[dict[str, Any]]:
+        """Return comments of an issue (oldest first)."""
+        result = await self._request(
+            "GET", f"/issues/{issue_key}/comments?perPage={per_page}"
+        )
+        return result if isinstance(result, list) else []
+
     async def search_issues(
         self,
         query: str,

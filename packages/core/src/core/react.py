@@ -32,8 +32,10 @@ from core.agent import BaseAgent
 from core.config import RuntimeConfig
 from core.exceptions import AgentError
 from core.llm import Message
+from core.stage_graph import StageId, get_stage
+from core.stage_router import detect_stage
 from core.tools import get_registry
-from core.turn_guards import check_turn_tool_guard, created_issue_keys_in_turn
+from core.turn_guards import check_create_assignee, created_issue_keys_in_turn
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +279,34 @@ def _should_auto_finalize_turn(turn_steps: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _assumptions_line(steps: list[dict[str, Any]]) -> str:
+    """Surface fields the agent filled on create (self-check transparency).
+
+    INTAKE/BOARD self-check infers missing fields and fills them; this reports
+    what was assumed so a human can verify and correct.
+    """
+    for step in steps:
+        if step.get("kind") != "tool_result":
+            continue
+        if step.get("tool_name") != "tracker_create_issue":
+            continue
+        result = step.get("result") or {}
+        if not isinstance(result, dict) or result.get("error"):
+            continue
+        parts: list[str] = []
+        if result.get("assignee"):
+            parts.append(f"исполнитель {result['assignee']}")
+        if result.get("priority"):
+            parts.append(f"приоритет {result['priority']}")
+        if result.get("deadline"):
+            parts.append(f"дедлайн {result['deadline']}")
+        if result.get("story_points") is not None:
+            parts.append(f"оценка {result['story_points']}")
+        if parts:
+            return "Предположения: " + ", ".join(parts)
+    return ""
+
+
 def _build_action_report(steps: list[dict[str, Any]]) -> str:
     """Compact report from tool steps (for action_only agents)."""
     lines: list[str] = []
@@ -301,7 +331,8 @@ def _build_action_report(steps: list[dict[str, Any]]) -> str:
         return board[-1]
     created = [ln for ln in lines if ln.startswith("Создана")]
     if created:
-        return created[-1]
+        assumptions = _assumptions_line(steps)
+        return f"{created[-1]}. {assumptions}" if assumptions else created[-1]
     updated = [ln for ln in lines if ln.startswith(("Обновлена", "Наблюдатели"))]
     comments = [ln for ln in lines if ln.startswith("Комментарий")]
     if updated and comments:
@@ -310,6 +341,12 @@ def _build_action_report(steps: list[dict[str, Any]]) -> str:
         return updated[-1]
     if comments:
         return comments[-1]
+    for step in steps:
+        if step.get("kind") != "tool_result" or step.get("tool_name") != "call_agent":
+            continue
+        delegated = step.get("result")
+        if isinstance(delegated, str) and delegated.strip():
+            return delegated.strip()
     for line in reversed(lines):
         if line.startswith(("Найдено:", "Закрыта")):
             return line
@@ -447,10 +484,26 @@ class ReActRunner:
         state["messages"].append({"role": "user", "content": message})
         state["_turn_user_message"] = message
         state["_action_only_nudges"] = 0
+        if getattr(self.agent, "action_only", False):
+            await self._set_turn_stage(state, message)
         from core.backlog_context import set_pending_backlog_plan
 
         set_pending_backlog_plan(None)
         return await self._run_loop(ctx, session_id, state)
+
+    async def _set_turn_stage(
+        self, state: dict[str, Any], message: str, *, use_llm: bool = True
+    ) -> None:
+        """Classify the message into ONE stage, frozen for the whole turn.
+
+        Rules first, LLM classifier fallback (``use_llm`` False on resume — the
+        confirmed tool already passed the gate, so a safe QUERY fallback cannot
+        block it, and we avoid a second classifier call).
+        """
+        stage_id = await detect_stage(message, use_llm=use_llm)
+        state["_stage"] = stage_id.value
+        stage = get_stage(stage_id)
+        state["stage_addendum"] = stage.prompt_addendum if stage else ""
 
     async def resume(
         self,
@@ -487,6 +540,12 @@ class ReActRunner:
         state = await self._load_session(ctx, session_id)
         # Include resume-time steps (tool_result / confirm_rejected) in this turn's output.
         state["_steps_before_turn"] = len(state["steps"])
+        # Re-hydrate the frozen stage (Trace persists only messages+steps).
+        # Rules-only (no LLM): the confirmed tool already passed the gate.
+        if getattr(self.agent, "action_only", False) and not state.get("_stage"):
+            await self._set_turn_stage(
+                state, state.get("_turn_user_message", ""), use_llm=False
+            )
 
         if approved:
             try:
@@ -521,8 +580,14 @@ class ReActRunner:
         messages: list[dict[str, Any]],
         *,
         prompt_vars: dict[str, Any] | None = None,
+        stage_addendum: str = "",
     ) -> list[Message]:
-        """Build LLM input: effective DB prompt overrides class prompt when set."""
+        """Build LLM input: effective DB prompt overrides class prompt when set.
+
+        A focused per-stage ``stage_addendum`` is appended to the system message
+        by plain concatenation (NOT ``.format`` — the prompt may contain literal
+        braces that would break ``str.format``).
+        """
         if ctx.effective_prompt:
             system_msg: Message | None = Message(role="system", content=ctx.effective_prompt)
         elif self.agent.prompt:
@@ -531,6 +596,10 @@ class ReActRunner:
             system_msg = None
         if system_msg is None:
             return [Message(role=m["role"], content=m["content"]) for m in messages]
+        if stage_addendum:
+            system_msg = Message(
+                role="system", content=f"{system_msg.content}\n\n{stage_addendum}"
+            )
         out: list[Message] = [system_msg]
         for m in messages:
             if m.get("role") == "system":
@@ -545,6 +614,16 @@ class ReActRunner:
         registry = get_registry()
         action_only = getattr(self.agent, "action_only", False)
         steps_before_turn = state.pop("_steps_before_turn", len(steps))
+        # Active stage (frozen for the turn). None for non-action_only agents or
+        # when no stage was set — then all legacy behaviour is preserved.
+        stage = get_stage(state.get("_stage")) if action_only else None
+        if stage is not None:
+            # Constrain the LLM to this stage's allowed tools only.
+            tool_schemas = [
+                s
+                for s in tool_schemas
+                if s.get("name") in stage.allowed_tools
+            ] or tool_schemas
 
         for iteration in range(self.max_iterations):
             logger.debug(
@@ -555,7 +634,12 @@ class ReActRunner:
                 self.agent.name,
             )
 
-            llm_messages = self._llm_messages(ctx, messages, prompt_vars=state.get("prompt_vars"))
+            llm_messages = self._llm_messages(
+                ctx,
+                messages,
+                prompt_vars=state.get("prompt_vars"),
+                stage_addendum=state.get("stage_addendum", ""),
+            )
             llm_response, _ = await self.agent._call_with_fallback(llm_messages, tool_schemas)
 
             if not llm_response.tool_calls:
@@ -615,17 +699,26 @@ class ReActRunner:
                 )
                 continue
 
-            if action_only:
+            if action_only and stage is not None:
                 from core.config import get_config
 
-                guard_err = await check_turn_tool_guard(
-                    tool_name=tool_call.name,
-                    tool_args=tool_call.arguments,
-                    turn_user_message=state.get("_turn_user_message", ""),
-                    steps=steps,
-                    steps_before_turn=steps_before_turn,
-                    queue_key=get_config().tracker.tracker_queue,
+                guard_err: str | None = None
+                decision = stage.check_tool(
+                    tool_call.name, tool_call.arguments, steps[steps_before_turn:]
                 )
+                if not decision.allow:
+                    guard_err = decision.reason
+                elif (
+                    stage.id == StageId.INTAKE
+                    and tool_call.name == "tracker_create_issue"
+                ):
+                    # Async assignee-mismatch correction lives outside the pure
+                    # sync graph; only INTAKE creates need it.
+                    guard_err = await check_create_assignee(
+                        tool_args=tool_call.arguments,
+                        turn_user_message=state.get("_turn_user_message", ""),
+                        queue_key=get_config().tracker.tracker_queue,
+                    )
                 if guard_err:
                     steps.append(_step("tool_error", tool_name=tool_call.name, error=guard_err))
                     messages.append(
@@ -721,11 +814,11 @@ class ReActRunner:
                         ),
                     }
                 )
-                if _should_auto_finalize_turn(steps[steps_before_turn:]):
+                if self._turn_is_done(stage, steps[steps_before_turn:]):
                     reply = _build_action_report(steps[steps_before_turn:]) or (
                         "Действие выполнено."
                     )
-                    steps.append(_step("final", content=reply))
+                    steps.append(_step("final", content=reply, reason="stage_terminal"))
                     messages.append({"role": "assistant", "content": reply})
                     state["messages"] = messages
                     state["steps"] = steps
@@ -764,6 +857,8 @@ class ReActRunner:
                     output=result,
                 )
 
+                # Stash a successful backlog plan so a forced apply (empty
+                # plan_json) can inject it.
                 if (
                     tool_call.name == "backlog_plan"
                     and isinstance(result, dict)
@@ -772,55 +867,19 @@ class ReActRunner:
                     and (result.get("tasks_count", 0) > 0 or result.get("stories_count", 0) > 0)
                 ):
                     from core.backlog_context import set_pending_backlog_plan
-                    from core.turn_guards import message_has_backlog_intent
 
                     set_pending_backlog_plan(result["plan"])
-                    turn_msg = state.get("_turn_user_message", "")
-                    apply_done = any(
-                        s.get("kind") == "tool_result"
-                        and s.get("tool_name") == "tracker_apply_backlog_plan"
-                        for s in steps[steps_before_turn:]
+
+                # Deterministic forced edges (no LLM round-trip). Generalized
+                # from the backlog_plan -> apply auto-chain.
+                if stage is not None:
+                    await self._run_forced_edges(
+                        ctx, session_id, stage, steps, steps_before_turn
                     )
-                    if message_has_backlog_intent(turn_msg) and not apply_done:
-                        apply_args = {"plan_json": ""}
-                        apply_tool = registry.get("tracker_apply_backlog_plan")
-                        steps.append(
-                            _step(
-                                "tool_call",
-                                tool_name="tracker_apply_backlog_plan",
-                                tool_args=apply_args,
-                            )
-                        )
-                        try:
-                            apply_result = await self._execute_tool(
-                                "tracker_apply_backlog_plan", apply_args
-                            )
-                            steps.append(
-                                _step(
-                                    "tool_result",
-                                    tool_name="tracker_apply_backlog_plan",
-                                    tool_args=apply_args,
-                                    result=apply_result,
-                                )
-                            )
-                            await self._persist_action(
-                                ctx,
-                                confirm_id=None,
-                                session_id=session_id,
-                                tool_name="tracker_apply_backlog_plan",
-                                tool_args=apply_args,
-                                risk=apply_tool.risk,
-                                status="completed",
-                                output=apply_result,
-                            )
-                        except Exception as apply_exc:
-                            steps.append(
-                                _step(
-                                    "tool_error",
-                                    tool_name="tracker_apply_backlog_plan",
-                                    error=str(apply_exc),
-                                )
-                            )
+                else:
+                    await self._run_legacy_backlog_chain(
+                        ctx, session_id, state, steps, steps_before_turn, tool_call.name
+                    )
 
                 feedback = _tool_result_message(tool_call.name, result, action_only=action_only)
             except Exception as exc:
@@ -839,9 +898,10 @@ class ReActRunner:
 
             messages.append({"role": "user", "content": feedback})
 
-            if action_only and _should_auto_finalize_turn(steps[steps_before_turn:]):
+            if action_only and self._turn_is_done(stage, steps[steps_before_turn:]):
                 reply = _build_action_report(steps[steps_before_turn:]) or ("Действие выполнено.")
-                steps.append(_step("final", content=reply))
+                reason = "stage_terminal" if stage is not None else "auto_finalize"
+                steps.append(_step("final", content=reply, reason=reason))
                 messages.append({"role": "assistant", "content": reply})
                 state["messages"] = messages
                 state["steps"] = steps
@@ -850,7 +910,13 @@ class ReActRunner:
                     reply=reply, session_id=session_id, steps=list(steps[steps_before_turn:])
                 )
 
-        # Max iterations reached
+        # Max iterations reached (safety cap)
+        logger.warning(
+            "max_iterations reached: session=%s agent=%s stage=%s",
+            session_id,
+            self.agent.name,
+            state.get("_stage"),
+        )
         turn_steps = steps[steps_before_turn:]
         report = _build_action_report(turn_steps)
         reply = report or "Достигнут лимит итераций. Пожалуйста, переформулируйте запрос."
@@ -860,6 +926,130 @@ class ReActRunner:
         await self._save_session(ctx, session_id, state)
         turn_steps = steps[steps_before_turn:]
         return AgentResult(reply=reply, session_id=session_id, steps=list(turn_steps))
+
+    # ------------------------------------------------------------------
+    # Stage graph helpers
+    # ------------------------------------------------------------------
+
+    def _turn_is_done(self, stage: Any, turn_steps: list[dict[str, Any]]) -> bool:
+        """Terminal decision: stage terminal node when a stage is active,
+        else the legacy magic-number heuristic (non-stage action_only agents)."""
+        if stage is not None:
+            return stage.is_terminal(turn_steps)
+        return _should_auto_finalize_turn(turn_steps)
+
+    async def _run_forced_edges(
+        self,
+        ctx: _RunCtx,
+        session_id: str,
+        stage: Any,
+        steps: list[dict[str, Any]],
+        steps_before_turn: int,
+    ) -> None:
+        """Run deterministic forced steps (no LLM round-trip) until none remain.
+
+        Generalizes the backlog_plan -> apply auto-chain: e.g. BOARD forces
+        ``tracker_apply_backlog_plan`` after a successful plan.
+        """
+        registry = get_registry()
+        guard = 0
+        while guard < 8:
+            guard += 1
+            forced = stage.next_forced_step(steps[steps_before_turn:])
+            if forced is None:
+                return
+            # Forced apply always passes an empty plan_json (the stashed plan is
+            # injected by the tool), so no plan_json validation is needed here.
+            exec_args = dict(forced.tool_args)
+            steps.append(
+                _step("tool_call", tool_name=forced.tool_name, tool_args=exec_args)
+            )
+            try:
+                forced_result = await self._execute_tool(forced.tool_name, exec_args)
+                steps.append(
+                    _step(
+                        "tool_result",
+                        tool_name=forced.tool_name,
+                        tool_args=exec_args,
+                        result=forced_result,
+                    )
+                )
+                await self._persist_action(
+                    ctx,
+                    confirm_id=None,
+                    session_id=session_id,
+                    tool_name=forced.tool_name,
+                    tool_args=exec_args,
+                    risk=registry.get(forced.tool_name).risk,
+                    status="completed",
+                    output=forced_result,
+                )
+            except Exception as forced_exc:
+                steps.append(
+                    _step("tool_error", tool_name=forced.tool_name, error=str(forced_exc))
+                )
+                return
+
+    async def _run_legacy_backlog_chain(
+        self,
+        ctx: _RunCtx,
+        session_id: str,
+        state: dict[str, Any],
+        steps: list[dict[str, Any]],
+        steps_before_turn: int,
+        last_tool_name: str,
+    ) -> None:
+        """Backlog auto-chain for non-stage action_only agents (preserved)."""
+        if last_tool_name != "backlog_plan":
+            return
+        last_plan = None
+        for s in reversed(steps[steps_before_turn:]):
+            if s.get("kind") == "tool_result" and s.get("tool_name") == "backlog_plan":
+                last_plan = s.get("result")
+                break
+        if not isinstance(last_plan, dict) or last_plan.get("error") or not last_plan.get("plan"):
+            return
+        if not (last_plan.get("tasks_count", 0) > 0 or last_plan.get("stories_count", 0) > 0):
+            return
+        from core.turn_guards import message_has_backlog_intent
+
+        turn_msg = state.get("_turn_user_message", "")
+        apply_done = any(
+            s.get("kind") == "tool_result"
+            and s.get("tool_name") == "tracker_apply_backlog_plan"
+            for s in steps[steps_before_turn:]
+        )
+        if not (message_has_backlog_intent(turn_msg) and not apply_done):
+            return
+        registry = get_registry()
+        apply_args = {"plan_json": ""}
+        steps.append(
+            _step("tool_call", tool_name="tracker_apply_backlog_plan", tool_args=apply_args)
+        )
+        try:
+            apply_result = await self._execute_tool("tracker_apply_backlog_plan", apply_args)
+            steps.append(
+                _step(
+                    "tool_result",
+                    tool_name="tracker_apply_backlog_plan",
+                    tool_args=apply_args,
+                    result=apply_result,
+                )
+            )
+            await self._persist_action(
+                ctx,
+                confirm_id=None,
+                session_id=session_id,
+                tool_name="tracker_apply_backlog_plan",
+                tool_args=apply_args,
+                risk=registry.get("tracker_apply_backlog_plan").risk,
+                status="completed",
+                output=apply_result,
+            )
+        except Exception as apply_exc:
+            steps.append(
+                _step("tool_error", tool_name="tracker_apply_backlog_plan", error=str(apply_exc))
+            )
 
     # ------------------------------------------------------------------
     # Tool execution

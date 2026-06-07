@@ -562,6 +562,119 @@ async def tracker_close_issue(
     }
 
 
+def _today_iso() -> str:
+    from datetime import date
+
+    return date.today().isoformat()
+
+
+def _is_terminal_status(status: str | None) -> bool:
+    if not status:
+        return False
+    s = status.lower()
+    return any(t in s for t in ("закры", "отмен", "closed", "cancel", "resolved", "решён", "решен"))
+
+
+@platform_tool(name="tracker_board_snapshot", risk="low", scopes=["tracker:read"])
+async def tracker_board_snapshot(
+    queue: str = "",
+    include_closed: bool = False,
+    at_risk_days: int = 3,
+) -> dict[str, Any]:
+    """
+    One aggregate read of the whole board: counts by status and assignee, plus
+    lists of overdue / unassigned / no-estimate / no-deadline / at-risk issues.
+
+    Use for board digests, standup reports, proactive sweeps and hygiene checks —
+    instead of many separate searches. Read-only, fully autonomous (low risk).
+    """
+    from datetime import date, timedelta
+
+    q = _effective_queue(queue)
+    query = f'Queue: "{q}"'
+    if not include_closed:
+        query += " AND Resolution: empty()"
+    async with TrackerClient() as client:
+        raw_issues = await client.search_issues(query, queue=q, limit=200)
+
+    today = date.today()
+    risk_cutoff = today + timedelta(days=max(0, at_risk_days))
+    by_status: dict[str, int] = {}
+    by_assignee: dict[str, int] = {}
+    overdue: list[dict[str, Any]] = []
+    unassigned: list[dict[str, Any]] = []
+    no_estimate: list[dict[str, Any]] = []
+    no_deadline: list[dict[str, Any]] = []
+    at_risk: list[dict[str, Any]] = []
+
+    for issue in raw_issues:
+        summary = issue_summary(issue, detailed=False)
+        status = summary.get("status")
+        terminal = _is_terminal_status(status)
+        if not include_closed and terminal:
+            continue
+        by_status[status or "—"] = by_status.get(status or "—", 0) + 1
+        who = summary.get("assignee") or "(не назначен)"
+        by_assignee[who] = by_assignee.get(who, 0) + 1
+
+        light = {
+            "key": summary.get("key"),
+            "summary": summary.get("summary"),
+            "assignee": summary.get("assignee"),
+            "status": status,
+            "deadline": summary.get("deadline"),
+        }
+        if not summary.get("assignee"):
+            unassigned.append(light)
+        if summary.get("story_points") in (None, "", 0):
+            no_estimate.append(light)
+        deadline = summary.get("deadline")
+        if not deadline:
+            no_deadline.append(light)
+        else:
+            try:
+                dl = date.fromisoformat(str(deadline)[:10])
+                if not terminal and dl < today:
+                    overdue.append(light)
+                elif not terminal and today <= dl <= risk_cutoff:
+                    at_risk.append(light)
+            except ValueError:
+                pass
+
+    return {
+        "queue": q,
+        "total": sum(by_status.values()),
+        "by_status": by_status,
+        "by_assignee": by_assignee,
+        "overdue": overdue,
+        "unassigned": unassigned,
+        "no_estimate": no_estimate,
+        "no_deadline": no_deadline,
+        "at_risk": at_risk,
+        "as_of": _today_iso(),
+    }
+
+
+@platform_tool(name="tracker_read_comments", risk="low", scopes=["tracker:read"])
+async def tracker_read_comments(issue_key: str, limit: int = 20) -> dict[str, Any]:
+    """
+    Read an issue's comment thread (newest last). Use to avoid re-posting a status
+    already present, to correlate updates, or to detect stale tasks by last activity.
+    """
+    async with TrackerClient() as client:
+        comments = await client.list_comments(issue_key, per_page=max(1, limit))
+    items = [
+        {
+            "author": (c.get("createdBy") or {}).get("display")
+            or (c.get("createdBy") or {}).get("id"),
+            "created": c.get("createdAt"),
+            "text": c.get("text", ""),
+        }
+        for c in comments[-limit:]
+    ]
+    return {"issue_key": issue_key, "count": len(items), "comments": items}
+
+
 __all__ = [
     "tracker_get_queue_meta",
     "tracker_list_team_members",
@@ -570,6 +683,8 @@ __all__ = [
     "tracker_find_issues",
     "tracker_search_issues",
     "tracker_list_transitions",
+    "tracker_board_snapshot",
+    "tracker_read_comments",
     "tracker_create_issue",
     "tracker_patch_issue",
     "tracker_update_issue",
