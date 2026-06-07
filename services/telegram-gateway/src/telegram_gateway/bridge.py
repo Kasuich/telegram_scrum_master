@@ -53,6 +53,14 @@ class MainBridgeClient:
         self.key_secret = key_secret
         self._client = httpx.AsyncClient(timeout=timeout_seconds)
 
+    def _request_url(self, path: str) -> tuple[str, str]:
+        base_path = httpx.URL(self.base_url).path.rstrip("/")
+        request_path = path
+        if base_path and (path == base_path or path.startswith(f"{base_path}/")):
+            request_path = path[len(base_path) :] or "/"
+        signed_path = f"{base_path}{request_path}" if base_path else request_path
+        return f"{self.base_url}{request_path}", signed_path
+
     async def aclose(self) -> None:
         await self._client.aclose()
 
@@ -77,13 +85,14 @@ class MainBridgeClient:
 
     async def _request(self, method: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        url, signed_path = self._request_url(path)
         response = await self._client.request(
             method,
-            f"{self.base_url}{path}",
+            url,
             content=body,
             headers={
                 "Content-Type": "application/json",
-                **self._headers(method, path, body),
+                **self._headers(method, signed_path, body),
             },
         )
         if 200 <= response.status_code < 300:
@@ -102,6 +111,8 @@ class MainBridgeClient:
         self,
         item: SpoolItem,
         *,
+        team_id: str,
+        installation_id: str,
         gateway_id: str,
         version: str,
     ) -> dict[str, Any]:
@@ -109,8 +120,8 @@ class MainBridgeClient:
             "POST",
             "/internal/telegram/v1/events:ingest",
             {
-                "team_id": item.payload.get("team_id"),
-                "installation_id": item.payload.get("installation_id"),
+                "team_id": team_id,
+                "installation_id": installation_id,
                 "update_id": item.update_id,
                 "payload": item.payload,
                 "received_at": item.received_at.isoformat(),
@@ -163,7 +174,11 @@ class MainBridgeClient:
                 target_user_id=item.get("target_user_id"),
                 payload=item["payload"],
                 business_connection_id=item.get("business_connection_id"),
-                lease_expires_at=datetime.fromisoformat(item["lease_expires_at"]) if item.get("lease_expires_at") else None,
+                lease_expires_at=(
+                    datetime.fromisoformat(item["lease_expires_at"])
+                    if item.get("lease_expires_at")
+                    else None
+                ),
             )
             for item in response.get("items", [])
         ]
@@ -197,6 +212,16 @@ class MainBridgeClient:
         return await self._request(
             "GET",
             f"/internal/telegram/v1/installations/by-token/{token}",
+            {},
+        )
+
+    async def resolve_bot_installation(
+        self,
+        external_bot_id: str,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            f"/internal/telegram/v1/installations/by-bot/{external_bot_id}",
             {},
         )
 

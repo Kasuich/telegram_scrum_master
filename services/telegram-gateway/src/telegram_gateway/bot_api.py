@@ -233,6 +233,9 @@ class TelegramBotClient:
             return []
         return [dict(item) for item in updates if isinstance(item, dict)]
 
+    async def get_me(self) -> dict[str, object]:
+        return await self._request("getMe", {})
+
     async def set_webhook(
         self,
         *,

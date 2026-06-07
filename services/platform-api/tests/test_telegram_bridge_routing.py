@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from core.models import TelegramChat, TelegramInstallation, TelegramMessage, TelegramUser
@@ -112,6 +112,27 @@ def test_should_route_private_direct_message() -> None:
         )
         is False
     )
+
+
+@pytest.mark.asyncio
+async def test_upsert_new_private_chat_defaults_to_direct() -> None:
+    installation = _installation()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+    session.flush = AsyncMock()
+
+    from platform_api.telegram_bridge import _upsert_chat
+
+    chat = await _upsert_chat(
+        session,
+        installation,
+        {"id": 991, "type": "private", "first_name": "Ivan"},
+    )
+
+    assert chat.ingest_mode == "direct"
+    session.add.assert_called_once_with(chat)
 
 
 def test_should_route_mentions_and_replies_to_bot() -> None:

@@ -173,3 +173,16 @@ async def test_delete_webhook_success(client: TelegramBotClient) -> None:
         mock_post.assert_called_once()
         call_json = mock_post.call_args.kwargs["json"]
         assert call_json["drop_pending_updates"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_me_success(client: TelegramBotClient) -> None:
+    with patch.object(client._client, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = FakeResponse(
+            200,
+            {"ok": True, "result": {"id": 777001, "username": "pm_bot"}},
+        )
+
+        result = await client.get_me()
+
+        assert result["id"] == 777001

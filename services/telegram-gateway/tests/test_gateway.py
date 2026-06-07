@@ -17,6 +17,9 @@ class FakeBridge:
     def __init__(self) -> None:
         self.ingest_update = AsyncMock(return_value={})
         self.heartbeat = AsyncMock(return_value={})
+        self.resolve_bot_installation = AsyncMock(
+            return_value={"installation_id": "inst-1", "team_id": "team-1"}
+        )
         self.aclose = AsyncMock(return_value=None)
 
 
@@ -35,6 +38,8 @@ def make_runtime(tmp_path: Path) -> GatewayRuntime:
         spool=GatewaySpool(settings.spool_path),
         bridge=bridge,
         auto_start_workers=False,
+        installation_id="inst-1",
+        team_id="team-1",
     )
 
 
@@ -93,6 +98,8 @@ async def test_drain_once_forwards_to_main(runtime: GatewayRuntime) -> None:
 
     assert processed == 1
     runtime.bridge.ingest_update.assert_awaited_once()
+    assert runtime.bridge.ingest_update.await_args.kwargs["installation_id"] == "inst-1"
+    assert runtime.bridge.ingest_update.await_args.kwargs["team_id"] == "team-1"
     assert runtime.spool.depth() == 0
 
 

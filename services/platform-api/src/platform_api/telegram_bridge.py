@@ -758,23 +758,27 @@ async def _get_installation(
 
 async def _upsert_chat(
     session: AsyncSession,
-    installation_id: uuid.UUID,
+    installation: TelegramInstallation,
     chat_payload: dict[str, Any],
 ) -> TelegramChat:
     external_chat_id = str(chat_payload.get("id"))
     stmt = select(TelegramChat).where(
-        TelegramChat.installation_id == installation_id,
+        TelegramChat.installation_id == installation.id,
         TelegramChat.external_chat_id == external_chat_id,
     )
     chat = (await session.execute(stmt)).scalar_one_or_none()
     if chat is None:
+        chat_type = str(chat_payload.get("type") or "unknown")
+        private_ingest_mode = str(
+            (installation.settings or {}).get("private_ingest_mode", "direct")
+        )
         chat = TelegramChat(
-            installation_id=installation_id,
+            installation_id=installation.id,
             external_chat_id=external_chat_id,
-            type=str(chat_payload.get("type") or "unknown"),
+            type=chat_type,
             title=chat_payload.get("title"),
             username=chat_payload.get("username"),
-            ingest_mode="disabled",
+            ingest_mode=private_ingest_mode if chat_type == "private" else "disabled",
             access_mode="workspace_bot",
             send_policy={},
             active=True,
@@ -911,7 +915,7 @@ async def ingest_event(session: AsyncSession, data: IngestEventRequest) -> dict[
     routing_result: dict[str, Any] | None = None
     kind, message_payload = _message_payload_kind(data.payload)
     if message_payload is not None:
-        chat = await _upsert_chat(session, installation.id, message_payload.get("chat") or {})
+        chat = await _upsert_chat(session, installation, message_payload.get("chat") or {})
         telegram_user = await _upsert_user(session, message_payload.get("from"))
         business_connection = await _find_business_connection(
             session,
@@ -1174,6 +1178,33 @@ async def resolve_installation_by_token(
         installation_id=str(installation.id),
         team_id=str(installation.team_id),
         bot_username=installation.settings.get("bot_username") if installation.settings else None,
+        status=installation.status,
+    )
+
+
+@router.get(
+    "/installations/by-bot/{external_bot_id}",
+    response_model=ResolveInstallationResponse,
+)
+async def resolve_installation_by_bot(
+    external_bot_id: str,
+    _auth: None = Depends(verify_bridge_request),
+    session: AsyncSession = Depends(get_session),
+) -> ResolveInstallationResponse:
+    stmt = select(TelegramInstallation).where(
+        TelegramInstallation.external_bot_id == external_bot_id,
+        TelegramInstallation.status == "active",
+    )
+    installation = (await session.execute(stmt)).scalar_one_or_none()
+    if installation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Active installation not found for bot",
+        )
+    return ResolveInstallationResponse(
+        installation_id=str(installation.id),
+        team_id=str(installation.team_id),
+        bot_username=_bot_username(installation),
         status=installation.status,
     )
 

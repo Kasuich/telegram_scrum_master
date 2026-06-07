@@ -39,6 +39,8 @@ class GatewayRuntime:
     bot_client: TelegramBotClient | None = None
     auto_start_workers: bool = True
     next_update_offset: int | None = None
+    installation_id: str | None = None
+    team_id: str | None = None
 
     def _now(self) -> datetime:
         return datetime.now(tz=timezone.utc)
@@ -55,6 +57,17 @@ class GatewayRuntime:
             return
         if self.settings.transport_mode == "polling":
             await self.bot_client.delete_webhook(drop_pending_updates=False)
+
+    async def resolve_installation_once(self) -> None:
+        if self.bridge is None or self.bot_client is None:
+            return
+        bot = await self.bot_client.get_me()
+        external_bot_id = bot.get("id")
+        if external_bot_id is None:
+            raise RuntimeError("Telegram getMe response has no bot id")
+        installation = await self.bridge.resolve_bot_installation(str(external_bot_id))
+        self.installation_id = installation["installation_id"]
+        self.team_id = installation["team_id"]
 
     async def poll_updates_once(self, *, timeout: int = 30) -> int:
         if self.bot_client is None or self.settings.transport_mode != "polling":
@@ -95,6 +108,10 @@ class GatewayRuntime:
     async def drain_once(self, *, limit: int | None = None) -> int:
         if self.bridge is None:
             return 0
+        if self.installation_id is None or self.team_id is None:
+            await self.resolve_installation_once()
+        if self.installation_id is None or self.team_id is None:
+            return 0
         batch = self.spool.claim_due(
             limit=limit or 20,
             lease_seconds=self.settings.lease_seconds,
@@ -109,6 +126,8 @@ class GatewayRuntime:
                 try:
                     await self.bridge.ingest_update(
                         item,
+                        team_id=self.team_id,
+                        installation_id=self.installation_id,
                         gateway_id=self.settings.gateway_id,
                         version=self.settings.version,
                     )
@@ -231,7 +250,9 @@ class GatewayRuntime:
         await self.sync_transport_mode()
         while not stop_event.is_set():
             try:
-                await self.poll_updates_once(timeout=max(1, int(self.settings.heartbeat_interval_seconds)))
+                await self.poll_updates_once(
+                    timeout=max(1, int(self.settings.heartbeat_interval_seconds))
+                )
                 await self.drain_once()
                 await self.deliver_once()
                 await self.heartbeat_once()
