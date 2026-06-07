@@ -4,6 +4,21 @@
 > Это **вход** для уже существующего агента [Meeting Summarizer](README.md#агенты-и-тулзы):
 > подсистема добывает транскрипт, Summarizer превращает его в action items.
 
+## Статус MVP
+
+Реализация добавлена как отдельный сервис **`services/meeting-capture`**:
+- HTTP API: `POST /meetings`, `POST /meetings/{id}/stop`, `GET /meetings/{id}`, `GET /meetings/{id}/transcript`.
+- БД: `meetings`, `meeting_artifacts`, `transcripts` в общей схеме `core`.
+- Оркестраторные тулзы: `schedule_meeting_bot` и `get_meeting_transcript`.
+- Runtime: Playwright/Chromium + Xvfb + PulseAudio + FFmpeg; STT через SpeechKit v3, с безопасным no-op режимом без `SPEECHKIT_API_KEY`.
+- Локальное object storage по умолчанию пишет в `/tmp/meeting-capture-objects`; при наличии `S3_*` используется S3-compatible storage.
+
+Проверка:
+
+```bash
+uv run --group dev pytest services/meeting-capture/tests -q
+```
+
 ---
 
 ## Проблема

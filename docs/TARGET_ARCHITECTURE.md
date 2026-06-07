@@ -55,7 +55,7 @@ flowchart LR
 | **call_agent (делегирование агент→агент)** | ✅ Готово | B4: `@platform_tool`, защита от рекурсии и циклов, ContextVar цепочка |
 | **Scheduler daemon** | ✅ Готово | B2: `SchedulerDaemon`, SKIP LOCKED, graceful cancel |
 | **schedule_task tool** | ✅ Готово | B3: `@platform_tool`, cron-валидация, квота, AgentInstance |
-| **Telegram-адаптер** | 🔴 Нет | Трек A, следующий шаг |
+| **Telegram gateway** | 🔴 Нет | Трек A, отдельный сервер + main bridge |
 | **Meeting Summarizer** | 🔴 Нет | Трек C, агент #1 из must-have |
 | **Meeting Capture (Telemost запись/STT)** | 🔴 Нет | дизайн готов (`meeting_capture.md`), отдельный тяжёлый сервис |
 | **Correspondence Analyzer** | 🔴 Нет | агент #2 |
@@ -93,6 +93,7 @@ flowchart TB
         G3["tracker_snapshots<br/>→ для метрик/лидерборда"]
         G5["meetings · transcripts<br/>→ для Meeting Capture"]
         G4["agent_cards · a2a_tasks<br/>→ только если networked A2A"]
+        G6["telegram bindings · messages<br/>inbox · outbox<br/>→ для durable Telegram"]
     end
 
     style ready fill:#e8f5e9,color:#000
@@ -103,7 +104,7 @@ flowchart TB
 
 | Будущий шаг | Покрытие БД | Что нужно |
 |-------------|:-----------:|-----------|
-| Telegram-адаптер | ✅ полное | ничего — сессии в `traces`, действия в `actions` |
+| Telegram gateway | 🔴 нет | нужны chat/user bindings, normalized messages, durable inbox/outbox и callback tokens |
 | Control plane (агенты из БД) | ✅ полное | `agent_specs` + `agent_instances.overlay` готовы; нужен **код** (оркестратор должен читать БД, а не только классы) |
 | Scheduler / алерты | ✅ полное | `scheduled_jobs` готова; нужен **демон** (tick + SKIP LOCKED) |
 | call_agent / multi-agent | ✅ полное | `traces` хранит шаги; делегирование — **код**, не схема |
@@ -449,7 +450,7 @@ flowchart LR
     end
 
     subgraph s1["Шаг 1 — Замкнуть демо"]
-        A["Telegram-адаптер<br/>+ DB-персист в проде<br/>+ call_agent tool"]
+        A["Telegram gateway на втором сервере<br/>+ durable inbox/outbox<br/>+ call_agent tool"]
     end
 
     subgraph s2["Шаг 2 — Ценность встреч"]
@@ -489,7 +490,7 @@ flowchart LR
 
 | Шаг | Ценность | Усилие | DB-изменения |
 |-----|:--------:|:------:|--------------|
-| 1. Telegram + персист + call_agent | 🔥 высокая (демо, мультиагент) | средне | нет |
+| 1. Telegram + персист + call_agent | 🔥 высокая (демо, мультиагент) | высокое | +Telegram inbox/outbox/messages/bindings |
 | 2. Meeting Summarizer (ручной транскрипт) | 🔥 высокая (ядро продукта) | средне | нет |
 | 3. Scheduler + алерты | высокая (проактивность) | средне | нет (`scheduled_jobs` есть) |
 | 4. Консоль: dev+admin минимум + Effective Config | высокая (отладка, доверие, тюнинг) | высокое | +`users`+сессии (auth) |
@@ -506,7 +507,8 @@ flowchart LR
 ## 10. Технические аспекты по шагам
 
 ### Шаг 1 — Замкнуть демо
-- **Telegram-адаптер** (`platform-api`, aiogram): webhook → `/chat`, inline-кнопки ✅/❌ → `/confirm/{id}`. Сессия = chat_id.
+- **Telegram gateway на втором сервере** (`services/telegram-gateway`, aiogram): webhook → durable local spool → internal bridge основного `platform-api`. Исходящие ответы и confirm-кнопки gateway забирает из durable outbox; основной сервер не обращается к Telegram.
+- Новые сообщения разрешённых чатов сохраняются в нормализованном виде. Запуск агента определяется routing policy; историческая переписка импортируется из Telegram Desktop JSON.
 - **DB-персист в оркестраторе** ✅ (B1): `OrchestratorService` открывает сессию per-request и пробрасывает `db_session`+`team_id` в `ReActRunner` (per-call `_RunCtx`). Схема создаётся идемпотентно на старте, сидится команда по умолчанию (`DEFAULT_TEAM_ID`). `traces/actions/confirms` пишутся в БД. Не-UUID session_id маппится через uuid5.
 - **`call_agent` tool** ✅ (B4): `@platform_tool`, in-process делегирование через `OrchestratorService.invoke`; защита от рекурсии (MAX_DEPTH=3) и циклов (ContextVar цепочка). Стабильный sub-session_id по пути делегирования.
 
@@ -573,7 +575,7 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph A["🅰 Транспорт + Telegram"]
-        AA["platform-api<br/>+ core/notify.py"]
+        AA["telegram-gateway (второй сервер)<br/>+ platform-api bridge<br/>+ durable inbox/outbox"]
     end
     subgraph B["🅱 Ядро рантайма"]
         BB["pm-orchestrator + core<br/>персист · scheduler · call_agent"]
@@ -599,15 +601,20 @@ flowchart TB
     style D fill:#f3e5f5,color:#000
 ```
 
-### 🅰 Трек A — Транспорт + Telegram (`platform-api`)
-**Слой:** точка входа / транспорт. Самый независимый — работает против уже существующих `/chat`, `/confirm`.
-- Telegram-адаптер (aiogram): webhook → `/chat`, inline-кнопки ✅/❌ → `/confirm/{id}`, сессия = chat_id.
-- `core/notify.py` — отправка сообщений в Telegram (bot token); единый интерфейс `notify(target, text, buttons?)`.
+### 🅰 Трек A — Транспорт + Telegram (`telegram-gateway` + `platform-api`)
+**Слой:** точка входа / транспорт. Gateway и main bridge работают против зафиксированного transport-контракта и существующих `invoke/resume`.
+- Из-за блокировки Telegram на основном хосте `telegram-gateway` разворачивается отдельным сервисом на втором сервере. Он принимает webhook, хранит durable ingress spool, передаёт события на internal bridge основного `platform-api` и сам забирает исходящий outbox длинным polling-запросом.
+- Основной сервер не обращается к Telegram. Межсерверный канал работает через WireGuard, firewall allowlist и HMAC-подпись запросов; bot token хранится только на втором сервере.
+- Новые сообщения разрешённых чатов нормализуются и сохраняются для будущего Correspondence Agent. История до установки бота импортируется из Telegram Desktop JSON, так как Bot API не предоставляет её выгрузку.
+- Provider-neutral `notify(...)` пишет в durable outbox; gateway доставляет ответы, уточнения, confirm-кнопки, личные уведомления, digest и алерты.
 - **По умолчанию весь диалог идёт в PM Orchestrator** — он сам делегирует специалистам через `call_agent`. Пользователь не выбирает агента вручную (это противоречило бы паттерну оркестратора). Прямой выбор агента (`/agents/{name}/chat`) остаётся только как dev/debug-удобство, не пользовательская фича.
 
 **Отдаёт:** `notify(...)` для Трека C (алерты/уведомления).
-**Зависит от:** ничего нового (контракты `/chat`, `/confirm` уже есть).
-**DoD:** в Telegram можно поговорить с агентом и подтвердить действие кнопкой → задача в Трекере.
+**Зависит от:** transport context в `invoke` и durable confirm lookup в Треке B.
+**DoD:** Telegram работает через второй сервер; можно читать разрешённые чаты, поговорить с агентом, запросить уточнение, получить личное уведомление и подтвердить действие кнопкой после рестарта любого сервиса.
+
+Полная декомпозиция, схема данных, двухсерверный deployment и методика тестирования:
+[`docs/TRACK_A_TELEGRAM_PLAN.md`](TRACK_A_TELEGRAM_PLAN.md).
 
 ### 🅱 Трек B — Ядро рантайма (`pm-orchestrator` + `core`)
 **Слой:** «мозг» / runtime. Внутренности оркестратора и `core`.
@@ -645,11 +652,12 @@ flowchart TB
 
 | # | Контракт | Владелец | Потребитель |
 |---|----------|----------|-------------|
-| 1 | `notify(target, text, buttons?)` в `core/notify.py` | A | C (alert) |
+| 1 | Provider-neutral `Notification` + durable outbox | A | C (alert) |
 | 2 | `call_agent:X` tool (имя, сигнатура) | B | C (агенты) |
 | 3 | Effective Config: приоритет `класс < spec < overlay` | B + C | оба |
 | 4 | Read-модели: поля `actions/traces/runtime_configs/feedback` (зафиксированы в `models.py`) | B (пишет) | D (читает) |
 | 5 | Формат `AgentResult` / `PendingConfirm` (уже есть) | — | A, D |
+| 6 | `MessageEnvelope` и optional `context` в RPC `invoke` | A + B | A, C |
 
 **Критический путь:** Трек B (персист) разблокирует реальные данные для Трека D, а `call_agent` — для Трека C. Поэтому B стартует первым на этих двух вещах; A, C, D кодят против контрактов/моков параллельно. Интеграция — в конце, как и раньше.
 

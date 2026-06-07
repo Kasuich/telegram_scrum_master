@@ -1,0 +1,52 @@
+# Telegram Gateway — standalone deploy unit
+# Runs on Telegram-accessible server, communicates with main via bridge API
+
+services:
+  telegram-gateway:
+    image: ${IMAGE:-ghcr.io/artem216/digital-breakthrough-2026/telegram-gateway}:${IMAGE_TAG:-latest}
+    container_name: telegram-gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"  # internal metrics only
+    volumes:
+      - /var/lib/telegram-gateway:/var/lib/telegram-gateway
+      - ./config/telegram-gateway:/etc/telegram-gateway:ro
+    environment:
+      # Telegram Bot API
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET}
+      - TELEGRAM_WEBHOOK_BASE_URL=${TELEGRAM_WEBHOOK_BASE_URL}
+      - TELEGRAM_TRANSPORT_MODE=${TELEGRAM_TRANSPORT_MODE:-webhook}
+
+      # Bridge to main server
+      - MAIN_BRIDGE_URL=${MAIN_BRIDGE_URL}
+      - TELEGRAM_BRIDGE_HMAC_KEY_ID=${TELEGRAM_BRIDGE_HMAC_KEY_ID}
+      - TELEGRAM_BRIDGE_HMAC_KEYS=${TELEGRAM_BRIDGE_HMAC_KEYS}
+      - TELEGRAM_BRIDGE_NONCE_TTL=${TELEGRAM_BRIDGE_NONCE_TTL:-300}
+
+      # Outbox lease settings
+      - TELEGRAM_OUTBOX_LEASE_SECONDS=${TELEGRAM_OUTBOX_LEASE_SECONDS:-60}
+      - TELEGRAM_OUTBOX_POLL_INTERVAL=${TELEGRAM_OUTBOX_POLL_INTERVAL:-5}
+
+      # Spool / persistence
+      - GATEWAY_SPOOL_PATH=/var/lib/telegram-gateway/spool.db
+      - GATEWAY_DELIVERY_JOURNAL_PATH=/var/lib/telegram-gateway/delivery.db
+
+      # Limits
+      - GATEWAY_MAX_CONCURRENT_DELIVERIES=${GATEWAY_MAX_CONCURRENT_DELIVERIES:-10}
+      - GATEWAY_SPOOL_MAX_SIZE_MB=${GATEWAY_SPOOL_MAX_SIZE_MB:-1000}
+      - GATEWAY_MAX_MESSAGE_SIZE_MB=${GATEWAY_MAX_MESSAGE_SIZE_MB:-50}
+
+      # Retry policy
+      - GATEWAY_MAX_RETRIES=${GATEWAY_MAX_RETRIES:-5}
+      - GATEWAY_RETRY_BASE_DELAY=${GATEWAY_RETRY_BASE_DELAY:-30}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health/live')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

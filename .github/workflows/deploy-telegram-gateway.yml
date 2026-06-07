@@ -1,0 +1,192 @@
+name: Deploy Telegram Gateway
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment'
+        required: true
+        type: choice
+        options:
+          - telegram-staging
+          - telegram-production
+      action:
+        description: 'Action'
+        required: true
+        type: choice
+        options:
+          - deploy
+          - rollback
+      transport_mode:
+        description: 'Telegram transport mode'
+        required: false
+        default: webhook
+        type: choice
+        options:
+          - webhook
+          - polling
+
+env:
+  SERVICE_NAME: telegram-gateway
+  IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    if: ${{ inputs.action == 'deploy' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_REGISTRY }}/${{ env.SERVICE_NAME }}
+          tags: |
+            type=sha,prefix=${{ inputs.environment }}-
+            type=raw,value=${{ inputs.environment }}-latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./services/telegram-gateway/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Select image tag
+        id: image
+        run: echo "image=$(echo '${{ steps.meta.outputs.tags }}' | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Export Docker image archive
+        run: |
+          docker pull "${{ steps.image.outputs.image }}"
+          docker save "${{ steps.image.outputs.image }}" | gzip > telegram-gateway-image.tar.gz
+
+      - name: Prepare remote deploy directory
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.TG_VPS_HOST || vars.TG_VPS_HOST }}
+          username: ${{ secrets.TG_VPS_USER || vars.TG_VPS_USER }}
+          key: ${{ secrets.TG_VPS_SSH_KEY }}
+          script: mkdir -p /opt/telegram-gateway /var/lib/telegram-gateway
+
+      - name: Upload Docker image archive
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.TG_VPS_HOST || vars.TG_VPS_HOST }}
+          username: ${{ secrets.TG_VPS_USER || vars.TG_VPS_USER }}
+          key: ${{ secrets.TG_VPS_SSH_KEY }}
+          source: telegram-gateway-image.tar.gz
+          target: /opt/telegram-gateway
+
+      - name: Upload Docker Compose file
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.TG_VPS_HOST || vars.TG_VPS_HOST }}
+          username: ${{ secrets.TG_VPS_USER || vars.TG_VPS_USER }}
+          key: ${{ secrets.TG_VPS_SSH_KEY }}
+          source: docker-compose.telegram-gateway.yml
+          target: /opt/telegram-gateway
+
+      - name: Write .env and deploy
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.TG_VPS_HOST || vars.TG_VPS_HOST }}
+          username: ${{ secrets.TG_VPS_USER || vars.TG_VPS_USER }}
+          key: ${{ secrets.TG_VPS_SSH_KEY }}
+          script: |
+            set -e
+            mkdir -p /opt/telegram-gateway /var/lib/telegram-gateway
+
+            cat > /opt/telegram-gateway/.env << EOF
+            TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN_DIRECT }}
+            TELEGRAM_WEBHOOK_SECRET=${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+            TELEGRAM_WEBHOOK_BASE_URL=${{ secrets.TELEGRAM_WEBHOOK_BASE_URL || vars.TELEGRAM_WEBHOOK_BASE_URL }}
+            TELEGRAM_WEBHOOK_PATH=/telegram/webhook
+            TELEGRAM_TRANSPORT_MODE=${{ inputs.transport_mode || 'webhook' }}
+            MAIN_BRIDGE_URL=${{ secrets.MAIN_BRIDGE_URL || vars.MAIN_BRIDGE_URL }}
+            TELEGRAM_BRIDGE_HMAC_KEY_ID=${{ secrets.TELEGRAM_BRIDGE_HMAC_KEY_ID || vars.TELEGRAM_BRIDGE_HMAC_KEY_ID }}
+            TELEGRAM_BRIDGE_HMAC_KEYS=${{ format('{0}:{1}', secrets.TELEGRAM_BRIDGE_HMAC_KEY_ID || vars.TELEGRAM_BRIDGE_HMAC_KEY_ID, secrets.TELEGRAM_BRIDGE_HMAC_KEY) }}
+            GATEWAY_SPOOL_PATH=/var/lib/telegram-gateway/spool.db
+            GATEWAY_ID=telegram-gateway-${{ inputs.environment }}
+            GATEWAY_VERSION=${{ github.sha }}
+            TELEGRAM_OUTBOX_LEASE_SECONDS=60
+            GATEWAY_MAX_ATTEMPTS=8
+            GATEWAY_BRIDGE_TIMEOUT=10
+            GATEWAY_WORKER_POLL_INTERVAL=0.5
+            GATEWAY_HEARTBEAT_INTERVAL=30
+            LOG_LEVEL=${{ vars.LOG_LEVEL || 'INFO' }}
+            ENVIRONMENT=${{ inputs.environment }}
+            EOF
+
+            chmod 600 /opt/telegram-gateway/.env
+
+            IMAGE="${{ steps.image.outputs.image }}"
+            gzip -dc /opt/telegram-gateway/telegram-gateway-image.tar.gz | docker load
+            cp /opt/telegram-gateway/docker-compose.telegram-gateway.yml /opt/telegram-gateway/docker-compose.yml
+            sed -i "s|image:.*|image: $IMAGE|" /opt/telegram-gateway/docker-compose.yml
+            cd /opt/telegram-gateway && docker compose up -d
+
+            for attempt in $(seq 1 12); do
+              if curl -sf http://localhost:8080/health/live; then
+                break
+              fi
+              if [ "$attempt" -eq 12 ]; then
+                docker compose logs --tail=50
+                exit 1
+              fi
+              sleep 5
+            done
+            echo "=== Deploy complete: $IMAGE ==="
+
+  rollback:
+    if: ${{ inputs.action == 'rollback' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Rollback to previous image
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.TG_VPS_HOST || vars.TG_VPS_HOST }}
+          username: ${{ secrets.TG_VPS_USER || vars.TG_VPS_USER }}
+          key: ${{ secrets.TG_VPS_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/telegram-gateway
+
+            PREV=$(docker images ghcr.io/${{ github.repository_owner }}/telegram-gateway \
+              --format '{{.Tag}} {{.CreatedAt}}' | sort -k2 -r | awk 'NR==2{print $1}')
+
+            if [ -z "$PREV" ]; then
+              echo "No previous image found" && exit 1
+            fi
+
+            IMAGE="ghcr.io/${{ github.repository_owner }}/telegram-gateway:$PREV"
+            echo "Rolling back to: $IMAGE"
+
+            sed -i "s|image:.*|image: $IMAGE|" docker-compose.yml
+            docker compose up -d
+
+            sleep 15
+            curl -sf http://localhost:8080/health/live || (docker compose logs --tail=50 && exit 1)
+            echo "=== Rollback complete: $IMAGE ==="

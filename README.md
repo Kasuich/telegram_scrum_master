@@ -6,6 +6,7 @@
 **Документация:**
 - [Архитектура системы](docs/ARCHITECTURE.md)
 - [Целевая архитектура и roadmap](docs/TARGET_ARCHITECTURE.md)
+- [Трек A — полный план Telegram-контура](docs/TRACK_A_TELEGRAM_PLAN.md)
 - [Как добавить нового агента](docs/ADDING_AGENTS.md)
 - [Трек B — задачи рантайма](docs/TRACK_B_TASKS.md)
 
@@ -98,6 +99,7 @@ docker compose -f docker-compose.yml -f docker-compose.test.yml -f docker-compos
 |--------|-----|
 | Platform API | http://localhost:8000/docs |
 | PM Orchestrator | http://localhost:8001 |
+| Meeting Capture | http://localhost:8003/health |
 | Prometheus | http://localhost:9090 |
 | Grafana | http://localhost:3000 |
 

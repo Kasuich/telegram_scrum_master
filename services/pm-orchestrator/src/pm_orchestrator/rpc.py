@@ -43,12 +43,14 @@ async def lifespan(app: FastAPI):
     from core.scheduler import SchedulerDaemon
 
     from pm_orchestrator.tools.call_agent import register_call_agent_tool
+    from pm_orchestrator.tools.meeting_capture import register_meeting_capture_tools
     from pm_orchestrator.tools.schedule_task import register_schedule_task_tool
 
     _svc.discover_agents()
     _svc.configure_persistence()
     await _svc.ensure_schema_and_seed()
     register_call_agent_tool(_svc)
+    register_meeting_capture_tools(_svc)
     register_schedule_task_tool(_svc)
 
     scheduler_task = None
@@ -99,7 +101,8 @@ async def _invoke(params: dict) -> dict:
     agent = params.get("agent", "pm_agent")
     message = params["message"]
     session_id = params["session_id"]
-    result = await _svc.invoke(agent, message, session_id)
+    context = params.get("context")
+    result = await _svc.invoke(agent, message, session_id, context=context)
     return result.model_dump()
 
 

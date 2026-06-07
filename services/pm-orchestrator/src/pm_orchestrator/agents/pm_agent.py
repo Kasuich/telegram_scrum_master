@@ -90,6 +90,8 @@ Summary: "текст", Assignee: login или имя. ЗАПРЕЩЕНО: assign
 
 ## Прочее
 - Закрытие: tracker_close_issue(issue_key, resolution="fixed").
+- Встречи Telemost: schedule_meeting_bot(url, consent_ack=true) ставит видимого бота на запись;
+  get_meeting_transcript(meeting_id) возвращает готовый транскрипт.
 """
 
 
@@ -122,6 +124,8 @@ class PMAgent(BaseAgent):
         "tracker_apply_backlog_plan",
         "call_agent",
         "schedule_task",
+        "schedule_meeting_bot",
+        "get_meeting_transcript",
     ]
     llm_configs = [
         LLMSettings(model="yandexgpt", temperature=0.1),

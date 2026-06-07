@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from core.agent import BaseAgent, LLMSettings
 from core.exceptions import AgentError
+from core.invocation import InvocationContext
 from core.react import AgentResult, PendingConfirm
 from core.tools import ToolRegistry
 from fastapi.testclient import TestClient
@@ -93,6 +94,15 @@ class TestOrchestratorService:
             result = await svc.invoke("alpha", "hello", "s1")
         assert result.reply == "Done"
 
+    async def test_invoke_passes_context(self):
+        svc = self._svc(_make_agent("alpha"))
+        ctx = InvocationContext(channel="telegram", chat_id="-1001", message_id="42")
+        with patch.object(
+            svc._runners["alpha"], "invoke", AsyncMock(return_value=_text())
+        ) as mocked:
+            await svc.invoke("alpha", "hello", "s1", context=ctx)
+        assert mocked.call_args.kwargs["invocation_context"] == ctx
+
     async def test_invoke_unknown_agent_raises(self):
         svc = self._svc()
         with pytest.raises(KeyError, match="not found"):
@@ -112,6 +122,24 @@ class TestOrchestratorService:
         svc = self._svc(_make_agent("alpha"))
         with pytest.raises(KeyError, match="not found"):
             await svc.resume("no-such-id", approved=True)
+
+    async def test_resume_uses_db_lookup_when_confirm_not_in_memory(self):
+        svc = self._svc(_make_agent("alpha"))
+        with (
+            patch.object(
+                svc,
+                "_lookup_agent_name_for_confirm_db",
+                AsyncMock(return_value="alpha"),
+            ) as lookup,
+            patch.object(
+                svc._runners["alpha"],
+                "resume",
+                AsyncMock(return_value=_text("resumed")),
+            ),
+        ):
+            result = await svc.resume("c42", approved=True)
+        lookup.assert_awaited_once_with("c42")
+        assert result.reply == "resumed"
 
     async def test_confirm_indexed_on_invoke_with_pending(self):
         svc = self._svc(_make_agent("alpha"))
