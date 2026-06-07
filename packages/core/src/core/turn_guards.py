@@ -19,6 +19,13 @@ _CREATE_MARKERS = (
     "сделай задачу",
 )
 _CREATE_MARKERS_NARROW = _CREATE_MARKERS + ("оформи",)  # excludes backlog phrases
+_CREATE_SPRINT_MARKERS = (
+    "создай спринт",
+    "заведи спринт",
+    "создать спринт",
+    "новый спринт",
+    "create sprint",
+)
 
 # Specific board/backlog phrases — bare «резюме»/«саммари» omitted (too many false positives).
 _BACKLOG_MARKERS = (
@@ -36,7 +43,15 @@ _BACKLOG_MARKERS = (
     "из встречи",
     "заведи в трекер",
 )
-_CLOSE_MARKERS = ("закрой", "закрыть", "заверши задачу", "close issue", "закрытие")
+_CLOSE_MARKERS = (
+    "закрой",
+    "закрыть",
+    "закрыто",
+    "в закрыто",
+    "заверши задачу",
+    "close issue",
+    "закрытие",
+)
 
 _BACKLOG_ALLOWED = frozenset(
     {
@@ -87,6 +102,11 @@ def message_has_create_intent(text: str) -> bool:
         return False
     t = normalize_text(text)
     return any(m in t for m in _CREATE_MARKERS_NARROW)
+
+
+def message_has_create_sprint_intent(text: str) -> bool:
+    t = normalize_text(text)
+    return any(m in t for m in _CREATE_SPRINT_MARKERS)
 
 
 def message_has_close_intent(text: str) -> bool:

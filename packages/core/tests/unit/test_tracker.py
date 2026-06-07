@@ -33,6 +33,17 @@ ISSUE_RESPONSE = {
 }
 
 COMMENT_RESPONSE = {"id": "42", "text": "Hello!"}
+SPRINT_RESPONSE = {
+    "self": "https://api.tracker.yandex.net/v3/sprints/44",
+    "id": 44,
+    "name": "Sprint 1",
+    "board": {"id": "3", "display": "Testing"},
+    "status": "draft",
+    "archived": False,
+    "startDate": "2026-06-10",
+    "endDate": "2026-06-24",
+}
+BOARD_RESPONSE = {"id": 3, "name": "Testing"}
 
 
 def _ok(data: Any, status: int = 200) -> MagicMock:
@@ -205,6 +216,63 @@ class TestCommentIssue:
         assert body["text"] == "Hello!"
 
 
+class TestCreateSprint:
+    async def test_posts_sprint_body(self):
+        c = _client()
+        with _patch_request(_ok(SPRINT_RESPONSE, status=201)) as mock_req:
+            result = await c.create_sprint(
+                name="Sprint 1",
+                board_id="3",
+                start_date="2026-06-10",
+                end_date="2026-06-24",
+            )
+        method, url = mock_req.call_args[0]
+        body = mock_req.call_args[1]["json"]
+        assert method == "POST"
+        assert url.endswith("/sprints")
+        assert body == {
+            "name": "Sprint 1",
+            "board": {"id": "3"},
+            "startDate": "2026-06-10",
+            "endDate": "2026-06-24",
+        }
+        assert result["id"] == 44
+
+    async def test_lists_boards(self):
+        c = _client()
+        with _patch_request(_ok([BOARD_RESPONSE])) as mock_req:
+            result = await c.list_boards()
+        method, url = mock_req.call_args[0]
+        assert method == "GET"
+        assert url.endswith("/boards")
+        assert result[0]["name"] == "Testing"
+
+    async def test_lists_board_sprints(self):
+        c = _client()
+        with _patch_request(_ok([SPRINT_RESPONSE])) as mock_req:
+            result = await c.list_sprints("3")
+        method, url = mock_req.call_args[0]
+        assert method == "GET"
+        assert url.endswith("/boards/3/sprints")
+        assert result[0]["id"] == 44
+
+    async def test_add_issue_to_sprint_preserves_existing(self):
+        c = _client()
+        issue_with_sprint = {**ISSUE_RESPONSE, "sprint": [{"id": "11", "display": "Old"}]}
+        with _patch_request(side_effect=[_ok(issue_with_sprint), _ok(ISSUE_RESPONSE)]) as mock_req:
+            result = await c.add_issue_to_sprint("TEST-1", "44")
+        body = mock_req.call_args_list[1][1]["json"]
+        assert body == {"sprint": [{"id": "11"}, {"id": "44"}]}
+        assert result["key"] == "TEST-1"
+
+    async def test_add_issue_to_sprint_can_replace_existing(self):
+        c = _client()
+        with _patch_request(_ok(ISSUE_RESPONSE)) as mock_req:
+            await c.add_issue_to_sprint("TEST-1", "44", preserve_existing=False)
+        body = mock_req.call_args[1]["json"]
+        assert body == {"sprint": [{"id": "44"}]}
+
+
 class TestSearchIssues:
     async def test_returns_list(self):
         c = _client()
@@ -243,6 +311,26 @@ class TestTransitionIssue:
         with _patch_request(side_effect=[_ok(transitions), _ok({"status": "closed"})]):
             result = await c.transition_issue("TEST-1", "close")
         assert result == {"status": "closed"}
+
+    async def test_executes_matching_target_status_display(self):
+        c = _client()
+        transitions = [
+            {"id": "start", "display": "Взять в работу", "to": {"display": "В работе"}}
+        ]
+        with _patch_request(side_effect=[_ok(transitions), _ok({"status": "inProgress"})]):
+            result = await c.transition_issue("TEST-1", "в работе")
+        assert result == {"status": "inProgress"}
+
+    async def test_executes_close_by_target_status_display(self):
+        c = _client()
+        transitions = [
+            {"id": "finish", "display": "Завершить", "to": {"display": "Закрыто"}}
+        ]
+        with _patch_request(side_effect=[_ok(transitions), _ok({"status": "closed"})]) as mock_req:
+            await c.transition_issue("TEST-1", "closed", resolution="fixed")
+        assert mock_req.call_args_list[1][0][1].endswith(
+            "/issues/TEST-1/transitions/finish/_execute"
+        )
 
     async def test_executes_with_resolution_in_body(self):
         c = _client()
@@ -358,6 +446,83 @@ class TestTrackerTools:
         client.create_issue.assert_not_called()
 
     @patch.dict("os.environ", ENV)
+    async def test_tracker_create_sprint_tool(self):
+        from core.tracker_tools import tracker_create_sprint
+
+        with patch(
+            "core.tracker.TrackerClient.create_sprint",
+            AsyncMock(return_value=SPRINT_RESPONSE),
+        ) as mock_create:
+            result = await tracker_create_sprint(
+                "Sprint 1",
+                board_id="3",
+                start_date="2026-06-10",
+                end_date="2026-06-24",
+            )
+
+        mock_create.assert_awaited_once_with(
+            name="Sprint 1",
+            board_id="3",
+            start_date="2026-06-10",
+            end_date="2026-06-24",
+        )
+        assert result["id"] == 44
+        assert result["board_id"] == "3"
+        assert result["start_date"] == "2026-06-10"
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_create_sprint_tool_resolves_board_name(self):
+        from core.tracker_tools import tracker_create_sprint
+
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.list_boards.return_value = [BOARD_RESPONSE]
+            client.create_sprint.return_value = SPRINT_RESPONSE
+
+            result = await tracker_create_sprint(
+                "Sprint 1",
+                board_name="Testing",
+                start_date="2026-06-10",
+                end_date="2026-06-24",
+            )
+
+        client.create_sprint.assert_awaited_once_with(
+            name="Sprint 1",
+            board_id="3",
+            start_date="2026-06-10",
+            end_date="2026-06-24",
+        )
+        assert result["board_id"] == "3"
+        assert result["board"] == "Testing"
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_add_issues_to_sprint_by_name(self):
+        from core.tracker_tools import tracker_add_issues_to_sprint
+
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.list_boards.return_value = [BOARD_RESPONSE]
+            client.list_sprints.return_value = [SPRINT_RESPONSE]
+            client.add_issue_to_sprint.side_effect = [
+                {**ISSUE_RESPONSE, "key": "TEST-1"},
+                {**ISSUE_RESPONSE, "key": "TEST-2"},
+            ]
+
+            result = await tracker_add_issues_to_sprint(
+                "TEST-1, TEST-2",
+                sprint_name="Sprint 1",
+                board_name="Testing",
+            )
+
+        assert result["sprint_id"] == "44"
+        assert result["updated_count"] == 2
+        assert result["error_count"] == 0
+        client.add_issue_to_sprint.assert_any_await("TEST-1", "44", preserve_existing=True)
+        client.add_issue_to_sprint.assert_any_await("TEST-2", "44", preserve_existing=True)
+
+    @patch.dict("os.environ", ENV)
     async def test_tracker_search_tool(self):
         from core.tracker_tools import tracker_search_issues
 
@@ -407,6 +572,47 @@ class TestTrackerTools:
         assert "error" in result
 
     @patch.dict("os.environ", ENV)
+    async def test_tracker_move_issues_to_in_progress_tool(self):
+        from core.tracker_tools import tracker_move_issues_to_in_progress
+
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.transition_issue.return_value = {"status": "inProgress"}
+            client.get_issue.side_effect = [
+                {**ISSUE_RESPONSE, "key": "TEST-1"},
+                {**ISSUE_RESPONSE, "key": "TEST-2"},
+            ]
+
+            result = await tracker_move_issues_to_in_progress("TEST-1, TEST-2")
+
+        assert result["updated_count"] == 2
+        assert result["error_count"] == 0
+        client.transition_issue.assert_any_await("TEST-1", "in_progress", comment=None)
+        client.transition_issue.assert_any_await("TEST-2", "in_progress", comment=None)
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_close_issues_tool(self):
+        from core.tracker_tools import tracker_close_issues
+
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.transition_issue.return_value = {"status": "closed"}
+            client.get_issue.return_value = {**ISSUE_RESPONSE, "key": "TEST-1"}
+
+            result = await tracker_close_issues("TEST-1", resolution="fixed")
+
+        assert result["closed_count"] == 1
+        assert result["error_count"] == 0
+        client.transition_issue.assert_awaited_once_with(
+            "TEST-1",
+            "closed",
+            resolution="fixed",
+            comment=None,
+        )
+
+    @patch.dict("os.environ", ENV)
     async def test_tracker_patch_issue_tool(self):
         from core.tracker_tools import tracker_patch_issue
 
@@ -429,6 +635,23 @@ class TestTrackerTools:
 
         assert result["count"] == 1
         assert result["issues"][0]["key"] == "TEST-1"
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_find_issues_query_key_fetches_exact_issue(self):
+        from core.tracker_tools import tracker_find_issues
+
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.get_issue.return_value = {**ISSUE_RESPONSE, "key": "DARKHORSE-171"}
+
+            result = await tracker_find_issues(query="key:DARKHORSE-171")
+
+        assert result["count"] == 1
+        assert result["query_used"] == "key:DARKHORSE-171"
+        assert result["issues"][0]["key"] == "DARKHORSE-171"
+        client.get_issue.assert_awaited_once_with("DARKHORSE-171")
+        client.search_issues.assert_not_called()
 
     @patch.dict("os.environ", ENV)
     async def test_tracker_get_queue_meta_tool(self):

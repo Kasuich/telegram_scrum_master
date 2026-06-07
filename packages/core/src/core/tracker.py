@@ -25,6 +25,42 @@ from core.exceptions import CoreError
 logger = logging.getLogger(__name__)
 
 
+def _norm_transition_label(value: Any) -> str:
+    return " ".join(str(value or "").casefold().replace("ё", "е").split())
+
+
+def _transition_aliases(value: str) -> set[str]:
+    normalized = _norm_transition_label(value)
+    aliases = {normalized}
+    if normalized in {"in_progress", "inprogress", "in progress", "в работе", "в работу"}:
+        aliases.update(
+            {
+                "in_progress",
+                "inprogress",
+                "in progress",
+                "в работе",
+                "в работу",
+                "взять в работу",
+                "начать работу",
+            }
+        )
+    if normalized in {"close", "closed", "done", "resolved", "закрыть", "закрыто", "закрыт"}:
+        aliases.update(
+            {
+                "close",
+                "closed",
+                "done",
+                "resolved",
+                "закрыть",
+                "закрыто",
+                "закрыт",
+                "решено",
+                "завершено",
+            }
+        )
+    return aliases
+
+
 class TrackerError(CoreError):
     """Yandex Tracker API error."""
 
@@ -189,6 +225,67 @@ class TrackerClient:
         )
         return result if isinstance(result, list) else []
 
+    # ------------------------------------------------------------------
+    # Sprints
+    # ------------------------------------------------------------------
+
+    async def create_sprint(
+        self,
+        *,
+        name: str,
+        board_id: str,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, Any]:
+        """Create a sprint on a Tracker board and return its representation."""
+        body: dict[str, Any] = {
+            "name": name,
+            "board": {"id": str(board_id)},
+            "startDate": start_date,
+            "endDate": end_date,
+        }
+        return await self._request("POST", "/sprints", json=body)
+
+    async def get_sprint(self, sprint_id: str) -> dict[str, Any]:
+        """Return sprint by ID."""
+        return await self._request("GET", f"/sprints/{sprint_id}")
+
+    async def list_sprints(self, board_id: str) -> list[dict[str, Any]]:
+        """Return all sprints of a board."""
+        result = await self._request("GET", f"/boards/{board_id}/sprints")
+        return result if isinstance(result, list) else []
+
+    async def list_boards(self) -> list[dict[str, Any]]:
+        """Return all accessible Agile boards."""
+        result = await self._request("GET", "/boards")
+        return result if isinstance(result, list) else []
+
+    async def add_issue_to_sprint(
+        self,
+        issue_key: str,
+        sprint_id: str,
+        *,
+        preserve_existing: bool = True,
+    ) -> dict[str, Any]:
+        """Add an issue to a sprint by patching the issue's sprint field."""
+        sprint_items = [{"id": str(sprint_id)}]
+        if preserve_existing:
+            issue = await self.get_issue(issue_key)
+            current = issue.get("sprint") if isinstance(issue, dict) else []
+            seen = {str(sprint_id)}
+            sprint_items = []
+            if isinstance(current, list):
+                for item in current:
+                    if not isinstance(item, dict) or item.get("id") is None:
+                        continue
+                    sid = str(item["id"])
+                    if sid in seen:
+                        continue
+                    sprint_items.append({"id": sid})
+                    seen.add(sid)
+            sprint_items.append({"id": str(sprint_id)})
+        return await self.patch_issue(issue_key, {"sprint": sprint_items})
+
     async def search_issues(
         self,
         query: str,
@@ -243,19 +340,41 @@ class TrackerClient:
         comment: str | None = None,
         extra_fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Execute a workflow transition by id or display name (e.g. 'close', 'inProgress')."""
+        """Execute a workflow transition by id/display or target status display."""
         transitions = await self.list_transitions(issue_key)
+        target_aliases = _transition_aliases(transition_id)
+
+        def matches_transition(transition: dict[str, Any]) -> bool:
+            labels = {
+                _norm_transition_label(transition.get("id")),
+                _norm_transition_label(transition.get("display")),
+                _norm_transition_label((transition.get("to") or {}).get("key")),
+                _norm_transition_label((transition.get("to") or {}).get("display")),
+            }
+            if labels & target_aliases:
+                return True
+            return any(
+                alias and any(alias in label for label in labels if label)
+                for alias in target_aliases
+            )
+
         match = next(
             (
                 t
                 for t in transitions
-                if t.get("id") == transition_id
-                or (t.get("display") or "").lower() == transition_id.lower()
+                if matches_transition(t)
             ),
             None,
         )
         if match is None:
-            available = [{"id": t.get("id"), "display": t.get("display")} for t in transitions]
+            available = [
+                {
+                    "id": t.get("id"),
+                    "display": t.get("display"),
+                    "to": (t.get("to") or {}).get("display"),
+                }
+                for t in transitions
+            ]
             raise TrackerError(f"Transition {transition_id!r} not found. Available: {available}")
         body: dict[str, Any] = dict(extra_fields or {})
         if resolution:

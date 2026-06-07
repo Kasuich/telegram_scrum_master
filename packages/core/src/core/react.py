@@ -41,7 +41,11 @@ from core.llm import Message
 from core.stage_graph import StageId, get_stage
 from core.stage_router import detect_stage
 from core.tools import get_registry
-from core.turn_guards import check_create_assignee, created_issue_keys_in_turn
+from core.turn_guards import (
+    check_create_assignee,
+    created_issue_keys_in_turn,
+    message_has_create_sprint_intent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -177,9 +181,38 @@ def _format_action_tool_line(tool_name: str, result: dict[str, Any]) -> str:
         if who:
             line += f", исполнитель {who}"
         return line
+    if tool_name == "tracker_create_sprint":
+        name = result.get("name") or ""
+        sprint_id = result.get("id") or "?"
+        board = result.get("board") or result.get("board_id") or "?"
+        start = result.get("start_date") or "?"
+        end = result.get("end_date") or "?"
+        return f"Создан спринт {sprint_id} «{name}» на доске {board}: {start} — {end}"
+    if tool_name == "tracker_add_issues_to_sprint":
+        sprint = result.get("sprint_name") or result.get("sprint_id") or "?"
+        n = result.get("updated_count", 0)
+        err = result.get("error_count", 0)
+        line = f"В спринт «{sprint}» добавлено задач: {n}"
+        if err:
+            line += f", ошибок: {err}"
+        return line
     if tool_name == "tracker_update_followers":
         key = result.get("key") or result.get("issue_key", "")
         return f"Наблюдатели обновлены: {key}"
+    if tool_name == "tracker_move_issues_to_in_progress":
+        n = result.get("updated_count", 0)
+        err = result.get("error_count", 0)
+        line = f"Переведено в работу: {n}"
+        if err:
+            line += f", ошибок: {err}"
+        return line
+    if tool_name == "tracker_close_issues":
+        n = result.get("closed_count", 0)
+        err = result.get("error_count", 0)
+        line = f"Закрыто задач: {n}"
+        if err:
+            line += f", ошибок: {err}"
+        return line
     if tool_name == "tracker_comment_issue":
         key = result.get("issue_key", "")
         text = (result.get("text") or "")[:120]
@@ -709,6 +742,9 @@ class ReActRunner:
                             "role": "user",
                             "content": (
                                 "Запрещено спрашивать у пользователя. "
+                                "Если просят создать спринт — tracker_create_sprint "
+                                "(name, start_date, end_date, board_id или board_name), "
+                                "не tracker_create_issue. "
                                 "Если просят СОЗДАТЬ задачу "
                                 "(создай/заведи/поставь) — tracker_create_issue "
                                 "(summary, assignee), без поиска. "
@@ -762,13 +798,20 @@ class ReActRunner:
                     stage.id == StageId.INTAKE
                     and tool_call.name == "tracker_create_issue"
                 ):
-                    # Async assignee-mismatch correction lives outside the pure
-                    # sync graph; only INTAKE creates need it.
-                    guard_err = await check_create_assignee(
-                        tool_args=tool_call.arguments,
-                        turn_user_message=state.get("_turn_user_message", ""),
-                        queue_key=get_config().tracker.tracker_queue,
-                    )
+                    if message_has_create_sprint_intent(state.get("_turn_user_message", "")):
+                        guard_err = (
+                            "Пользователь просит создать спринт. Используй "
+                            "tracker_create_sprint(name, start_date, end_date, board_id или board_name), "
+                            "а не tracker_create_issue."
+                        )
+                    else:
+                        # Async assignee-mismatch correction lives outside the pure
+                        # sync graph; only INTAKE creates need it.
+                        guard_err = await check_create_assignee(
+                            tool_args=tool_call.arguments,
+                            turn_user_message=state.get("_turn_user_message", ""),
+                            queue_key=get_config().tracker.tracker_queue,
+                        )
                 if guard_err:
                     steps.append(_step("tool_error", tool_name=tool_call.name, error=guard_err))
                     messages.append(

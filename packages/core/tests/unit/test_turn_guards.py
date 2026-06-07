@@ -8,6 +8,7 @@ from core.turn_guards import (
     message_has_backlog_intent,
     message_has_close_intent,
     message_has_create_intent,
+    message_has_create_sprint_intent,
     message_has_status_update_intent,
 )
 
@@ -15,6 +16,16 @@ from core.turn_guards import (
 def test_create_intent():
     assert message_has_create_intent("Создай Коле задачу MCP")
     assert not message_has_close_intent("Создай Коле задачу MCP")
+
+
+def test_create_sprint_intent():
+    assert message_has_create_sprint_intent("create sprint Sprint 1")
+    assert message_has_create_sprint_intent("Создай спринт Sprint 1")
+    assert not message_has_create_sprint_intent("move issue to sprint Sprint 1")
+
+
+def test_close_intent_by_target_status():
+    assert message_has_close_intent("перемести TEST-1 в закрыто")
 
 
 @pytest.mark.asyncio
