@@ -597,3 +597,21 @@ class TestActionOnlyReport:
             }
         ]
         assert _build_action_report(steps) == "Задача не найдена"
+
+    def test_comment_report_over_call_agent(self):
+        from core.react import _build_action_report
+
+        steps = [
+            {
+                "kind": "tool_result",
+                "tool_name": "call_agent",
+                "result": "**Статус**\n\n## Сделано\n- фича",
+            },
+            {
+                "kind": "tool_result",
+                "tool_name": "tracker_comment_issue",
+                "result": {"issue_key": "TEST-1", "text": "**Статус**"},
+            },
+        ]
+        report = _build_action_report(steps)
+        assert report.startswith("Комментарий к TEST-1")

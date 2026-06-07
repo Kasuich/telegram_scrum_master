@@ -8,6 +8,7 @@
 - [Целевая архитектура и roadmap](docs/TARGET_ARCHITECTURE.md)
 - [Трек A — полный план Telegram-контура](docs/TRACK_A_TELEGRAM_PLAN.md)
 - [Как добавить нового агента](docs/ADDING_AGENTS.md)
+- [PM Agent — Stage Graph (схема сценариев)](docs/pm_agent_stage_graph.md)
 - [Трек B — задачи рантайма](docs/TRACK_B_TASKS.md)
 
 ---
@@ -143,14 +144,6 @@ curl -X POST http://localhost:8000/confirm/abc123 \
   -d '{"approved": true}'
 ```
 
-### Делегирование между агентами (call_agent)
-
-```bash
-# PM Orchestrator вызывает Meeting Summarizer через call_agent
-curl -X POST http://localhost:8000/chat \
-  -d '{"message": "обработай транскрипт: <текст>", "session_id": "s1"}'
-```
-
 ### Запланировать задачу (schedule_task)
 
 ```bash
@@ -160,6 +153,10 @@ curl -X POST http://localhost:8000/chat \
 ```
 
 ### Суммаризация встречи (meeting_summarizer)
+
+Прямой вызов (транскрипт встречи) или **через `pm_agent`** при статусе «Имя: …» — тогда текст комментария в Трекере оформляется через суммаризатор.
+
+Прямой вызов:
 
 ```bash
 curl -X POST http://localhost:8000/agents/meeting_summarizer/chat \

@@ -70,3 +70,7 @@ def test_extract_from_chat_transcript_naznachim_kolyu():
 
 def test_extract_zadacha_kolya_line():
     assert extract_assignee_mention("Задача: Коля готовит инструкцию") == "Коля"
+
+
+def test_extract_chat_status_prefix():
+    assert extract_assignee_mention("Коля: добавил meeting_summarizer") == "Коля"

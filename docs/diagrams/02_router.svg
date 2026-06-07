@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 586" width="580" height="586" font-family="system-ui,sans-serif" font-size="13">
+<rect width="100%" height="100%" fill="#fafafa"/>
+<defs><marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#444"/></marker></defs>
+<rect x="250" y="10" width="100" height="32" rx="6" ry="6" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="300" y="26" text-anchor="middle" fill="#111">message</text>
+<polygon points="300,60 380,78 300,96 220,78" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="300" y="78" text-anchor="middle" fill="#111">R1 status</text>
+<rect x="430" y="64" width="110" height="28" rx="6" ry="6" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="485" y="78" text-anchor="middle" fill="#111">STATUS</text>
+<line x1="300" y1="42" x2="300" y2="60" stroke="#444" marker-end="url(#arr)"/>
+<line x1="380" y1="78" x2="430" y2="78" stroke="#444" marker-end="url(#arr)"/><text x="405" y="74" text-anchor="middle" fill="#555" font-size="11">yes</text>
+<polygon points="300,112 380,130 300,148 220,130" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="300" y="130" text-anchor="middle" fill="#111">R2 backlog</text>
+<rect x="430" y="116" width="110" height="28" rx="6" ry="6" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="485" y="130" text-anchor="middle" fill="#111">BOARD</text>
+<line x1="300" y1="42" x2="300" y2="112" stroke="#444" marker-end="url(#arr)"/>
+<line x1="380" y1="130" x2="430" y2="130" stroke="#444" marker-end="url(#arr)"/><text x="405" y="126" text-anchor="middle" fill="#555" font-size="11">yes</text>
+<line x1="300" y1="88" x2="300" y2="112" stroke="#444" marker-end="url(#arr)"/><text x="300" y="96" text-anchor="middle" fill="#555" font-size="11">no</text>
+<polygon points="300,164 380,182 300,200 220,182" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="300" y="182" text-anchor="middle" fill="#111">R3 reorg</text>
+<rect x="430" y="168" width="110" height="28" rx="6" ry="6" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="485" y="182" text-anchor="middle" fill="#111">REORG</text>
+<line x1="300" y1="42" x2="300" y2="164" stroke="#444" marker-end="url(#arr)"/>
+<line x1="380" y1="182" x2="430" y2="182" stroke="#444" marker-end="url(#arr)"/><text x="405" y="178" text-anchor="middle" fill="#555" font-size="11">yes</text>
+<line x1="300" y1="140" x2="300" y2="164" stroke="#444" marker-end="url(#arr)"/><text x="300" y="148" text-anchor="middle" fill="#555" font-size="11">no</text>
+<polygon points="300,216 380,234 300,252 220,234" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="300" y="234" text-anchor="middle" fill="#111">R4 transition</text>
+<rect x="430" y="220" width="110" height="28" rx="6" ry="6" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="485" y="234" text-anchor="middle" fill="#111">TRANSITION</text>
+<line x1="300" y1="42" x2="300" y2="216" stroke="#444" marker-end="url(#arr)"/>
+<line x1="380" y1="234" x2="430" y2="234" stroke="#444" marker-end="url(#arr)"/><text x="405" y="230" text-anchor="middle" fill="#555" font-size="11">yes</text>
+<line x1="300" y1="192" x2="300" y2="216" stroke="#444" marker-end="url(#arr)"/><text x="300" y="200" text-anchor="middle" fill="#555" font-size="11">no</text>
+<polygon points="300,268 380,286 300,304 220,286" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="300" y="286" text-anchor="middle" fill="#111">R5 proactive</text>
+<rect x="430" y="272" width="110" height="28" rx="6" ry="6" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="485" y="286" text-anchor="middle" fill="#111">PROACTIVE</text>
+<line x1="300" y1="42" x2="300" y2="268" stroke="#444" marker-end="url(#arr)"/>
+<line x1="380" y1="286" x2="430" y2="286" stroke="#444" marker-end="url(#arr)"/><text x="405" y="282" text-anchor="middle" fill="#555" font-size="11">yes</text>
+<line x1="300" y1="244" x2="300" y2="268" stroke="#444" marker-end="url(#arr)"/><text x="300" y="252" text-anchor="middle" fill="#555" font-size="11">no</text>
+<polygon points="300,320 380,338 300,356 220,338" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="300" y="338" text-anchor="middle" fill="#111">R6 hygiene</text>
+<rect x="430" y="324" width="110" height="28" rx="6" ry="6" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="485" y="338" text-anchor="middle" fill="#111">HYGIENE</text>
+<line x1="300" y1="42" x2="300" y2="320" stroke="#444" marker-end="url(#arr)"/>
+<line x1="380" y1="338" x2="430" y2="338" stroke="#444" marker-end="url(#arr)"/><text x="405" y="334" text-anchor="middle" fill="#555" font-size="11">yes</text>
+<line x1="300" y1="296" x2="300" y2="320" stroke="#444" marker-end="url(#arr)"/><text x="300" y="304" text-anchor="middle" fill="#555" font-size="11">no</text>
+<polygon points="300,372 380,390 300,408 220,390" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="300" y="390" text-anchor="middle" fill="#111">R7 create</text>
+<rect x="430" y="376" width="110" height="28" rx="6" ry="6" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="485" y="390" text-anchor="middle" fill="#111">INTAKE</text>
+<line x1="300" y1="42" x2="300" y2="372" stroke="#444" marker-end="url(#arr)"/>
+<line x1="380" y1="390" x2="430" y2="390" stroke="#444" marker-end="url(#arr)"/><text x="405" y="386" text-anchor="middle" fill="#555" font-size="11">yes</text>
+<line x1="300" y1="348" x2="300" y2="372" stroke="#444" marker-end="url(#arr)"/><text x="300" y="356" text-anchor="middle" fill="#555" font-size="11">no</text>
+<polygon points="300,424 380,442 300,460 220,442" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="300" y="442" text-anchor="middle" fill="#111">R8 query</text>
+<rect x="430" y="428" width="110" height="28" rx="6" ry="6" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="485" y="442" text-anchor="middle" fill="#111">QUERY</text>
+<line x1="300" y1="42" x2="300" y2="424" stroke="#444" marker-end="url(#arr)"/>
+<line x1="380" y1="442" x2="430" y2="442" stroke="#444" marker-end="url(#arr)"/><text x="405" y="438" text-anchor="middle" fill="#555" font-size="11">yes</text>
+<line x1="300" y1="400" x2="300" y2="424" stroke="#444" marker-end="url(#arr)"/><text x="300" y="408" text-anchor="middle" fill="#555" font-size="11">no</text>
+<rect x="220" y="476" width="160" height="36" rx="6" ry="6" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="300" y="494" text-anchor="middle" fill="#111">R9 LLM classifier</text>
+<line x1="300" y1="460" x2="300" y2="476" stroke="#444" marker-end="url(#arr)"/>
+<polygon points="300,526 380,544 300,562 220,544" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="300" y="544" text-anchor="middle" fill="#111">R10 invalid?</text>
+<line x1="300" y1="512" x2="300" y2="526" stroke="#444" marker-end="url(#arr)"/>
+<rect x="430" y="530" width="110" height="28" rx="6" ry="6" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="485" y="544" text-anchor="middle" fill="#111">QUERY</text>
+<line x1="380" y1="544" x2="430" y2="544" stroke="#444" marker-end="url(#arr)"/><text x="405" y="540" text-anchor="middle" fill="#555" font-size="11">no</text></svg>
