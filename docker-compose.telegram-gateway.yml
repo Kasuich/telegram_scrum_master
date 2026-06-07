@@ -49,26 +49,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-    networks:
-      - gateway_net
-
-  # Nginx reverse proxy for HTTPS webhook
-  nginx:
-    image: nginx:alpine
-    container_name: telegram-nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./config/nginx/telegram-gateway.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./config/ssl:/etc/nginx/ssl:ro
-    depends_on:
-      telegram-gateway:
-        condition: service_healthy
-    networks:
-      - gateway_net
-
-networks:
-  gateway_net:
-    driver: bridge
