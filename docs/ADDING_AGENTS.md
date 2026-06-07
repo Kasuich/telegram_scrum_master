@@ -30,6 +30,16 @@ class MyAgent(BaseAgent):
 
 **Всё.** При следующем старте оркестратора агент появится в `GET /agents` и будет доступен на `POST /agents/my_agent/chat`.
 
+### Пример: text-only агент (без tools)
+
+[`meeting_summarizer.py`](../services/pm-orchestrator/src/pm_orchestrator/agents/meeting_summarizer.py) — вход: сырой текст, выход: markdown-отчёт. `tools = []`, `action_only = False`. Один ход ReAct, без confirm.
+
+```bash
+curl -X POST http://localhost:8000/agents/meeting_summarizer/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "транскрипт встречи...", "session_id": "sum-1"}'
+```
+
 ---
 
 ## Подробный гайд

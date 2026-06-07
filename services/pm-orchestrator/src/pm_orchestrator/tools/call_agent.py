@@ -21,6 +21,11 @@ import uuid
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from core.comment_format import (
+    TRACKER_COMMENT_PREFIX,
+    build_tracker_comment_summarize_message,
+    extract_status_author,
+)
 from core.exceptions import ToolExecutionError
 from core.tools import platform_tool
 
@@ -86,10 +91,17 @@ def register_call_agent_tool(svc: Any) -> None:
                 f"call_agent: agent {target_agent!r} not found. Available: {available}"
             )
 
+        payload = message
+        if target_agent == "meeting_summarizer" and not payload.strip().startswith(
+            TRACKER_COMMENT_PREFIX
+        ):
+            if extract_status_author(payload) or chain == ("pm_agent",):
+                payload = build_tracker_comment_summarize_message(payload)
+
         sub_session = _sub_session_id(chain, target_agent)
         token = _call_chain.set((*chain, target_agent))
         try:
-            result = await svc.invoke(target_agent, message, sub_session)
+            result = await svc.invoke(target_agent, payload, sub_session)
         finally:
             _call_chain.reset(token)
 

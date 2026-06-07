@@ -255,6 +255,18 @@ def _clean_assignee_token(raw: str) -> str | None:
 def extract_assignee_mention(message: str) -> str | None:
     """Pull assignee name from Russian chat / PM phrasing."""
     text = message.strip()
+    first_line = text.split("\n", 1)[0]
+    chat_prefix = re.match(r"^([А-Яа-яA-Za-z][А-Яа-яA-Za-z.\-]*):\s", first_line)
+    if chat_prefix:
+        speaker_lines = re.findall(
+            r"^([А-Яа-яA-Za-z][А-Яа-яA-Za-z.\-]*):\s",
+            text,
+            re.MULTILINE,
+        )
+        if len(speaker_lines) == 1:
+            cleaned = _clean_assignee_token(chat_prefix.group(1))
+            if cleaned:
+                return cleaned
     # Higher priority first (chat transcripts, explicit assignment)
     patterns = [
         r"ответственн\w*\s+назначим\s+([А-Яа-яA-Za-z][А-Яа-яA-Za-z.\-]*)",

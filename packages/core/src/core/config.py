@@ -101,6 +101,11 @@ class TrackerConfig(BaseSettings):
         description="Yandex Tracker API base URL",
     )
 
+    tracker_dedup_enabled: bool = Field(
+        default=True,
+        description="Check for duplicate issues before tracker_create_issue",
+    )
+
     @field_validator("tracker_token")
     @classmethod
     def validate_tracker_token(cls, v: str) -> str:
@@ -238,6 +243,18 @@ class BacklogConfig(BaseSettings):
         default=800,
         ge=200,
         description="Auto-detect backlog intent when message length exceeds this",
+    )
+
+    dedup_enabled: bool = Field(
+        default=True,
+        description="Skip creating backlog issues that already exist in the queue",
+    )
+
+    dedup_similarity: float = Field(
+        default=0.88,
+        ge=0.5,
+        le=1.0,
+        description="Summary similarity threshold for duplicate detection (0-1)",
     )
 
     def start_date_parsed(self) -> date:

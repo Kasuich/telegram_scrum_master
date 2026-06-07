@@ -11,4 +11,5 @@ RUN npm run build
 FROM nginx:1.27-alpine
 
 COPY --from=builder /app/dist /usr/share/nginx/html
-COPY apps/web-ui/nginx.conf /etc/nginx/conf.d/default.conf
+# Copy from builder, not host — Podman on macOS can fail on host COPY with xattr OOM.
+COPY --from=builder /app/nginx.conf /etc/nginx/conf.d/default.conf

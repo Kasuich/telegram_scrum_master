@@ -18,12 +18,32 @@ from core.backlog_plan import (
 )
 from core.backlog_scheduler import compute_deadlines, sort_tasks_for_scheduling
 from core.config import get_config
+from core.issue_dedup import dedup_enabled_for_backlog, find_duplicate_issue
 from core.tools import platform_tool
 from core.tracker import TrackerClient, TrackerError
 from core.tracker_tools import _effective_queue, _resolve_login
 
-_TRUNC_MARKERS = ("сокращено", "…")
-_TRUNC_PHRASES = ("остальной текст", "остальное", "(сокращено)")
+# Phrases that signal the LLM dropped content instead of passing the full text.
+_TRUNC_PHRASES = (
+    "остальной текст",
+    "остальное опущен",
+    "текст опущен",
+    "(сокращено)",
+    "сокращено)",
+)
+
+
+def _text_looks_truncated(text: str) -> bool:
+    """True when the LLM truncated the summary instead of passing it in full.
+
+    An ellipsis counts as truncation ONLY at the very end of the text — a `…`
+    in the middle is legitimate content (e.g. a quoted label), not an omission.
+    """
+    t = text.strip()
+    lower = t.lower()
+    if any(p in lower for p in _TRUNC_PHRASES):
+        return True
+    return t.endswith("…") or t.endswith("...")
 
 
 def plan_json_looks_invalid(plan_json: str) -> bool:
@@ -31,9 +51,8 @@ def plan_json_looks_invalid(plan_json: str) -> bool:
     if not str(plan_json).strip():
         return True
     s = str(plan_json).strip()
-    lower = s.lower()
-    if any(m in lower for m in _TRUNC_MARKERS):
-        return True
+    # An ellipsis inside a JSON payload is never valid JSON — but only treat it
+    # as truncation when the string isn't parseable; valid JSON wins below.
     try:
         json.loads(s)
         return False
@@ -97,8 +116,7 @@ async def backlog_plan(
 
     Does NOT create Tracker issues — use tracker_apply_backlog_plan next.
     """
-    lower_text = text.lower()
-    if any(p in lower_text for p in _TRUNC_PHRASES) or any(m in lower_text for m in _TRUNC_MARKERS):
+    if _text_looks_truncated(text):
         return {
             "error": (
                 "Summary text looks truncated. Pass the full user message to backlog_plan "
@@ -173,6 +191,7 @@ async def _apply_plan_impl(
 
         id_map: dict[str, str] = {}
         created: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
 
         sorted_tasks = sort_tasks_for_scheduling(plan)
@@ -199,6 +218,28 @@ async def _apply_plan_impl(
             parent = parent_key
             if issue.parent_local_id and issue.parent_local_id in id_map:
                 parent = id_map[issue.parent_local_id]
+
+            if dedup_enabled_for_backlog():
+                dup = await find_duplicate_issue(
+                    client,
+                    queue,
+                    summary=issue.summary,
+                    issue_type=type_key,
+                    parent_key=parent,
+                )
+                if dup:
+                    key = str(dup.get("key") or "")
+                    id_map[issue.local_id] = key
+                    skipped.append(
+                        {
+                            "local_id": issue.local_id,
+                            "key": key,
+                            "summary": issue.summary,
+                            "status": (dup.get("status") or {}).get("display"),
+                            "reason": "duplicate",
+                        }
+                    )
+                    return
 
             try:
                 raw = await client.create_issue(
@@ -275,8 +316,10 @@ async def _apply_plan_impl(
 
     return {
         "created_count": len(created),
+        "skipped_count": len(skipped),
         "error_count": len(errors),
         "created": created,
+        "skipped": skipped,
         "errors": errors,
         "id_map": id_map,
         "tree": tree_lines,

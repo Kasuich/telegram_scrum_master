@@ -326,11 +326,36 @@ class TestTrackerTools:
     async def test_tracker_create_issue_tool(self):
         from core.tracker_tools import tracker_create_issue
 
-        with patch("core.tracker.TrackerClient._request", AsyncMock(return_value=ISSUE_RESPONSE)):
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.search_issues.return_value = []
+            client.create_issue.return_value = ISSUE_RESPONSE
             result = await tracker_create_issue("Fix login bug", queue="TEST")
 
         assert result["key"] == "TEST-1"
         assert "url" in result
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_create_issue_returns_existing_duplicate(self):
+        from core.tracker_tools import tracker_create_issue
+
+        existing = {
+            **ISSUE_RESPONSE,
+            "key": "TEST-99",
+            "summary": "Fix login bug",
+            "status": {"display": "Закрыт", "key": "closed"},
+            "type": {"key": "task"},
+        }
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.search_issues.return_value = [existing]
+            result = await tracker_create_issue("Fix login bug", queue="TEST")
+
+        assert result["key"] == "TEST-99"
+        assert result.get("skipped_duplicate") is True
+        client.create_issue.assert_not_called()
 
     @patch.dict("os.environ", ENV)
     async def test_tracker_search_tool(self):
