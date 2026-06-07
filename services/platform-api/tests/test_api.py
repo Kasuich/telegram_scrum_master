@@ -34,7 +34,7 @@ os.environ.setdefault("TELEGRAM_BRIDGE_HMAC_KEYS", "test-key:supersecret")
 @pytest.fixture
 def client():
     from platform_api.main import app
-    from platform_api.telegram_bridge import get_session as bridge_get_session
+    from platform_api.telegram_bridge import _db_session
 
     async def _fake_session():
         yield object()
@@ -42,7 +42,7 @@ def client():
     with (
         patch("platform_api.rpc_client.list_agents", AsyncMock(return_value=[])),
     ):
-        app.dependency_overrides[bridge_get_session] = _fake_session
+        app.dependency_overrides[_db_session] = _fake_session
         with TestClient(app) as test_client:
             yield test_client
         app.dependency_overrides.clear()

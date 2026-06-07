@@ -39,6 +39,12 @@ _DEFAULT_NONCE_TTL = 300
 _DEFAULT_LEASE_LIMIT = 20
 _DEFAULT_LEASE_SECONDS = 60
 
+
+async def _db_session():
+    async with get_session() as session:
+        yield session
+
+
 try:
     from prometheus_client import Counter, Gauge, Histogram
 
@@ -1123,7 +1129,7 @@ async def heartbeat(
 async def ingest_events(
     payload: IngestEventRequest,
     _auth: None = Depends(verify_bridge_request),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(_db_session),
 ) -> dict[str, Any]:
     return await ingest_event(session, payload)
 
@@ -1132,7 +1138,7 @@ async def ingest_events(
 async def outbox_lease(
     payload: LeaseRequest,
     _auth: None = Depends(verify_bridge_request),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(_db_session),
 ) -> LeaseResponse:
     return LeaseResponse(items=await lease_outbox(session, payload))
 
@@ -1142,7 +1148,7 @@ async def outbox_ack(
     delivery_id: str,
     payload: AckRequest,
     _auth: None = Depends(verify_bridge_request),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(_db_session),
 ) -> dict[str, Any]:
     return await ack_outbox(session, delivery_id, payload)
 
@@ -1151,7 +1157,7 @@ async def outbox_ack(
 async def resolve_installation_by_token(
     token: str,
     _auth: None = Depends(verify_bridge_request),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(_db_session),
 ) -> ResolveInstallationResponse:
     """
     Resolve onboarding token to installation info.
@@ -1189,7 +1195,7 @@ async def resolve_installation_by_token(
 async def resolve_installation_by_bot(
     external_bot_id: str,
     _auth: None = Depends(verify_bridge_request),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(_db_session),
 ) -> ResolveInstallationResponse:
     stmt = select(TelegramInstallation).where(
         TelegramInstallation.external_bot_id == external_bot_id,
@@ -1213,7 +1219,7 @@ async def resolve_installation_by_bot(
 async def business_connection_connect(
     payload: BusinessConnectionConnectRequest,
     _auth: None = Depends(verify_bridge_request),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(_db_session),
 ) -> dict[str, Any]:
     """
     Handle Telegram update: bot connected as business account.
@@ -1259,7 +1265,7 @@ async def business_connection_connect(
 async def business_connection_revoke(
     payload: BusinessConnectionDisconnectRequest,
     _auth: None = Depends(verify_bridge_request),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(_db_session),
 ) -> dict[str, Any]:
     """
     Handle Telegram update: bot disconnected from business account.
@@ -1296,7 +1302,7 @@ async def business_connection_revoke(
 async def get_business_connection(
     business_connection_id: str,
     _auth: None = Depends(verify_bridge_request),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(_db_session),
 ) -> dict[str, Any]:
     """Get business connection details and permissions."""
     stmt = select(TelegramBusinessConnection).where(
@@ -1384,7 +1390,7 @@ async def list_messages(
     limit: int = 50,
     cursor_sent_at: datetime | None = None,
     cursor_id: str | None = None,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(_db_session),
 ) -> MessageListResponse:
     """Query normalized message corpus with cursor-based pagination."""
     from core.repositories import MessageCursor, MessageQueryOptions, TelegramMessageRepository
@@ -1438,7 +1444,7 @@ async def list_messages(
 async def create_import(
     request: Request,
     body: ImportRequest,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(_db_session),
 ) -> ImportReport:
     """Create a new Telegram Desktop import job."""
     if not _verify_hmac(request):
@@ -1512,7 +1518,7 @@ async def presign_upload(
 async def get_import(
     request: Request,
     job_id: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(_db_session),
 ) -> ImportReport:
     """Get import job status and report."""
     if not _verify_hmac(request):
@@ -1552,7 +1558,7 @@ class DeadLetterReplayResponse(BaseModel):
 async def replay_dead_letter(
     request: Request,
     body: DeadLetterReplayRequest,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(_db_session),
 ) -> DeadLetterReplayResponse:
     """Reset dead-lettered outbox items back to pending for re-delivery.
 

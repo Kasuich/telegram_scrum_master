@@ -90,6 +90,13 @@ def _user() -> TelegramUser:
 
 
 class TestIngestValidation:
+    def test_db_session_dependency_is_async_generator(self) -> None:
+        import inspect
+
+        from platform_api.telegram_bridge import _db_session
+
+        assert inspect.isasyncgenfunction(_db_session)
+
     def test_get_installation_returns_none_for_unknown(self) -> None:
         from platform_api.telegram_bridge import _get_installation
         import inspect
@@ -284,4 +291,3 @@ class TestMessageQueryAPI:
         kind, value = _message_payload_kind(payload)
         assert kind == "business_message"
         assert value["message_id"] == 42
-
