@@ -95,6 +95,7 @@ class OrchestratorService:
         if not self._db_enabled or self._team_id is None:
             return
         try:
+            from core.daily_digest import ensure_daily_digest_scheduled_job
             from core.db import create_all_tables, get_session
             from core.seed import ensure_agent_instances, ensure_default_team
 
@@ -102,6 +103,7 @@ class OrchestratorService:
             async with get_session() as session:
                 await ensure_default_team(session, self._team_id)
                 await ensure_agent_instances(session, self._team_id, list(self._runners))
+                await ensure_daily_digest_scheduled_job(session, self._team_id)
             logger.info("Schema ensured and default team seeded")
         except Exception as exc:
             logger.warning("DB init failed, falling back to in-memory: %s", exc)
