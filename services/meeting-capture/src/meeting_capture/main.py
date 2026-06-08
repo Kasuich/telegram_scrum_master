@@ -91,6 +91,7 @@ async def create_meeting(request: CreateMeetingRequest) -> CreateMeetingResponse
         language=request.language,
         consent_ack=request.consent_ack,
         initial_status=status,
+        target_chat_id=request.target_chat_id,
     )
     _dispatcher().schedule(meeting.id, request.starts_at)
     return CreateMeetingResponse(meeting_id=str(meeting.id), status=status)  # type: ignore[arg-type]
