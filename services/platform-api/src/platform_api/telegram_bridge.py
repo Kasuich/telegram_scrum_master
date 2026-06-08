@@ -9,6 +9,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 
 from core.db import get_session
@@ -34,6 +35,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from platform_api import rpc_client
 
 router = APIRouter(prefix="/internal/telegram/v1", tags=["telegram-bridge"])
+
+# A bare Telemost link is an unambiguous "send the recording bot here" signal —
+# detect it deterministically and short-circuit to meeting-capture, bypassing
+# the LLM agent (whose stage whitelist would otherwise hide schedule_meeting_bot).
+_TELEMOST_RE = re.compile(r"https?://telemost\.yandex\.[a-z]+/\S+", re.IGNORECASE)
+
+
+def _extract_telemost_url(text: str) -> str | None:
+    match = _TELEMOST_RE.search(text or "")
+    return match.group(0).rstrip(".,);]") if match else None
+
+
+async def _schedule_meeting_capture(telemost_url: str, target_chat_id: str | None) -> str:
+    """POST the meeting to meeting-capture; return a human-readable reply."""
+    import httpx
+
+    base = os.getenv("MEETING_CAPTURE_URL", "http://meeting-capture:8003").rstrip("/")
+    payload = {
+        "telemost_url": telemost_url,
+        "consent_ack": True,
+        "language": "ru-RU",
+        "target_chat_id": target_chat_id,
+    }
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.post(f"{base}/meetings", json=payload)
+        response.raise_for_status()
+        data = response.json()
+    return f"🤖 Иду на встречу и включаю запись. Итоги пришлю сюда. (id: {data.get('meeting_id')})"
+
 
 _SEEN_NONCES: dict[str, float] = {}
 _DEFAULT_NONCE_TTL = 300
@@ -514,13 +544,23 @@ async def _route_inbound_message(
         message_payload,
     )
     body = context.raw_text_without_mention or _message_text(message_payload)
-    agent_message = format_actor_prefixed_message(body, context)
-    result = await rpc_client.invoke(
-        "pm_agent",
-        agent_message,
-        _telegram_session_id(installation, message),
-        context=context,
-    )
+
+    # Short-circuit: a Telemost link goes straight to the recording bot.
+    telemost_url = _extract_telemost_url(body)
+    if telemost_url is not None:
+        try:
+            reply = await _schedule_meeting_capture(telemost_url, chat.external_chat_id)
+        except Exception as exc:  # noqa: BLE001 — surface failure to the user, never 500
+            reply = f"Не удалось отправить бота на встречу: {exc}"
+        result = SimpleNamespace(reply=reply, pending_confirm=None)
+    else:
+        agent_message = format_actor_prefixed_message(body, context)
+        result = await rpc_client.invoke(
+            "pm_agent",
+            agent_message,
+            _telegram_session_id(installation, message),
+            context=context,
+        )
     outbox = await _enqueue_agent_result(
         session,
         installation=installation,
