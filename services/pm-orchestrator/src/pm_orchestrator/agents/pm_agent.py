@@ -139,5 +139,5 @@ class PMAgent(BaseAgent):
         "get_meeting_transcript",
     ]
     llm_configs = [
-        LLMSettings(model="gpt-oss-20b", temperature=0.1),
+        LLMSettings(model="gpt-oss-120b", temperature=0.1),
     ]
