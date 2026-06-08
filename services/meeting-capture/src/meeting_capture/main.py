@@ -47,7 +47,14 @@ def _initial_status(starts_at) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    import logging
+
     settings = get_settings()
+    logging.getLogger(__name__).info(
+        "Meeting capture storage: %s (bucket=%s)",
+        "s3" if settings.s3_enabled else "local",
+        settings.s3_bucket or "-",
+    )
     await create_all_tables()
     async with get_session() as session:
         await ensure_default_team(session, str(_default_team_id()))
@@ -128,8 +135,13 @@ async def get_transcript(meeting_id: str) -> TranscriptDTO:
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, str | bool]:
+    settings = get_settings()
+    return {
+        "status": "ok",
+        "s3_enabled": settings.s3_enabled,
+        "speechkit_configured": bool(settings.effective_speechkit_api_key),
+    }
 
 
 def _parse_uuid(value: str) -> uuid.UUID:

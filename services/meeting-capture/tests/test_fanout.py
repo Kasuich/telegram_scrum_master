@@ -94,9 +94,7 @@ async def test_fanout_delivers_to_telegram_and_pm_agent(tmp_path: Path, monkeypa
         enqueued.append(kwargs)
         return uuid.uuid4()
 
-    monkeypatch.setattr(
-        "meeting_capture.telegram_outbox.enqueue_telegram_message", _fake_enqueue
-    )
+    monkeypatch.setattr("meeting_capture.telegram_outbox.enqueue_telegram_message", _fake_enqueue)
 
     await disp._summarize_and_fanout(meeting_id, transcription, target_chat_id="-100123")
 
@@ -118,7 +116,7 @@ async def test_empty_transcript_sends_notice_to_telegram(tmp_path: Path, monkeyp
     disp, repo = _dispatcher(tmp_path)
     meeting_id = uuid.uuid4()
     transcription = TranscriptionResult(
-        source="speechkit_missing_audio_uri",
+        source="speechkit_s3_not_configured",
         segments=[],
     )
 
@@ -128,9 +126,7 @@ async def test_empty_transcript_sends_notice_to_telegram(tmp_path: Path, monkeyp
         enqueued.append(kwargs)
         return uuid.uuid4()
 
-    monkeypatch.setattr(
-        "meeting_capture.telegram_outbox.enqueue_telegram_message", _fake_enqueue
-    )
+    monkeypatch.setattr("meeting_capture.telegram_outbox.enqueue_telegram_message", _fake_enqueue)
 
     await disp._deliver_empty_transcription_notice(
         meeting_id, transcription.source, target_chat_id="-100123"
@@ -138,7 +134,7 @@ async def test_empty_transcript_sends_notice_to_telegram(tmp_path: Path, monkeyp
 
     assert len(enqueued) == 1
     assert enqueued[0]["target_chat_id"] == "-100123"
-    assert "Object Storage" in enqueued[0]["text"]
+    assert "S3 не подключён" in enqueued[0]["text"]
     assert enqueued[0]["team_id"] == repo.team_id
 
 
@@ -147,10 +143,20 @@ def test_format_transcript_prefers_name_over_label(tmp_path: Path) -> None:
     transcription = TranscriptionResult(
         source="speechkit",
         segments=[
-            {"start_ms": 0, "end_ms": 1000, "speaker_label": "SPEAKER_00",
-             "speaker_name": "Алиса", "text": "привет"},
-            {"start_ms": 65000, "end_ms": 66000, "speaker_label": "SPEAKER_01",
-             "speaker_name": None, "text": "ага"},
+            {
+                "start_ms": 0,
+                "end_ms": 1000,
+                "speaker_label": "SPEAKER_00",
+                "speaker_name": "Алиса",
+                "text": "привет",
+            },
+            {
+                "start_ms": 65000,
+                "end_ms": 66000,
+                "speaker_label": "SPEAKER_01",
+                "speaker_name": None,
+                "text": "ага",
+            },
         ],
     )
     text = disp._format_transcript(transcription)

@@ -137,10 +137,21 @@ def empty_transcription_user_message(source: str) -> str:
             "Встреча записана, но транскрибация не настроена. "
             "Задайте SPEECHKIT_API_KEY или YC_API_KEY с ролью SpeechKit."
         )
+    if source == "speechkit_s3_not_configured":
+        return (
+            "Встреча записана локально, но S3 не подключён в meeting-capture. "
+            "Добавьте S3_* в .env и пересоздайте контейнер "
+            "(docker compose ... --env-file .env.test up -d --force-recreate meeting-capture)."
+        )
+    if source == "speechkit_missing_audio_file":
+        return (
+            "Встреча завершена, но аудиофайл не записался (ffmpeg/PulseAudio). "
+            "Проверьте логи meeting-capture."
+        )
     if source == "speechkit_missing_audio_uri":
         return (
-            "Встреча записана, но транскрибация недоступна: аудио не загружено в Object Storage. "
-            "Проверьте S3_BUCKET, S3_ACCESS_KEY и S3_SECRET_KEY."
+            "Встреча записана, но аудио не попало в Object Storage. "
+            "Проверьте S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY и права на бакет."
         )
     if source == "speechkit":
         return (
