@@ -37,7 +37,7 @@ from core.invocation import (
     reset_current_invocation_context,
     set_current_invocation_context,
 )
-from core.llm import Message
+from core.llm import LLMClient, Message
 from core.stage_graph import StageId, get_stage
 from core.stage_router import detect_stage
 from core.tools import get_registry
@@ -58,6 +58,32 @@ from core.turn_plan import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_ITERATIONS = 12
+_SESSION_MESSAGE_WINDOW = 10
+_SESSION_CONTEXT_FALLBACK_LINES = 24
+_SESSION_CONTEXT_SYSTEM = (
+    "Ты обновляешь долговременную рабочую память PM-агента по истории чата. "
+    "Твоя задача не пересказать диалог, а собрать профессиональный operational context, "
+    "который поможет агенту принимать следующие решения без повторного чтения всей истории.\n\n"
+    "Сформируй сжатый контекст на русском языке объёмом 20-30 предложений. "
+    "Пиши плотно, фактически и без воды. Не используй вступления вроде "
+    "«в обсуждении говорилось» и не описывай процесс сжатия.\n\n"
+    "Приоритет содержания, от более важного к менее важному:\n"
+    "1. Кто входит в команду, какие у людей роли, зоны ответственности, логины, алиасы, "
+    "устойчивые связи между именами и задачами.\n"
+    "2. Над какими проектами, эпиками, сервисами, интеграциями и направлениями команда реально работает.\n"
+    "3. Какие договорённости и рабочие правила уже приняты: naming, очереди, маршруты, "
+    "workflow, транспорт, ограничения по прод/тесту, способы деплоя и эксплуатации.\n"
+    "4. Какие незавершённые хвосты, риски, блокеры, технические долги и спорные решения сейчас открыты.\n"
+    "5. Какие артефакты и объекты нужно помнить дальше: issue keys, service names, server roles, "
+    "env vars, chat ids, важные URL, feature flags, branch names.\n"
+    "6. Какие недавние действия уже были выполнены и что не нужно предлагать повторно.\n\n"
+    "Строго исключай:\n"
+    "- болтовню, эмоции, шутки и одноразовые фразы;\n"
+    "- дословный пересказ каждой реплики;\n"
+    "- предположения, которых нет в сообщениях;\n"
+    "- устаревшие детали, если новые сообщения им противоречат.\n\n"
+    "Если данных мало, верни короткий, но всё равно полезный рабочий контекст только из подтверждённых фактов."
+)
 
 # Stable namespace for deriving a UUID from an arbitrary session string
 # (e.g. a Telegram chat id) so it can be stored in Trace.session_id.
@@ -145,6 +171,52 @@ def _now() -> str:
 
 def _step(kind: str, **kwargs: Any) -> dict[str, Any]:
     return {"kind": kind, "ts": _now(), **kwargs}
+
+
+def _session_context_message(summary: str) -> dict[str, str]:
+    return {
+        "role": "system",
+        "content": (
+            "Session context summary. Use it as durable memory, "
+            "but prefer newer messages when they conflict.\n\n"
+            f"{summary}"
+        ),
+    }
+
+
+def _render_messages_for_summary(messages: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for item in messages:
+        role = str(item.get("role", "user")).upper()
+        content = str(item.get("content", "")).strip()
+        if not content:
+            continue
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def _fallback_session_context(
+    existing_summary: str | None,
+    older_messages: list[dict[str, Any]],
+) -> str:
+    lines: list[str] = []
+    if existing_summary:
+        lines.extend(
+            sentence.strip()
+            for sentence in existing_summary.splitlines()
+            if sentence.strip()
+        )
+
+    for item in older_messages:
+        content = str(item.get("content", "")).strip()
+        if not content:
+            continue
+        role = "Пользователь" if item.get("role") == "user" else "Ассистент"
+        lines.append(f"{role}: {content}")
+        if len(lines) >= _SESSION_CONTEXT_FALLBACK_LINES:
+            break
+
+    return "\n".join(lines[:_SESSION_CONTEXT_FALLBACK_LINES])
 
 
 def _tool_result_message(tool_name: str, result: Any, *, action_only: bool = False) -> str:
@@ -556,6 +628,7 @@ class ReActRunner:
         state["messages"].append({"role": "user", "content": message})
         state["_turn_user_message"] = message
         state["_action_only_nudges"] = 0
+        await self._compact_session_history(state)
         from core.backlog_context import set_pending_backlog_plan
 
         set_pending_backlog_plan(None)
@@ -607,12 +680,16 @@ class ReActRunner:
         stage = get_stage(StageId.DIALOG)
         addendum = stage.prompt_addendum if stage else ""
         llm_messages = self._llm_messages(
-            ctx, state["messages"], stage_addendum=addendum
+            ctx,
+            state["messages"],
+            stage_addendum=addendum,
+            session_summary=state.get("summary_context", ""),
         )
         llm_response, _ = await self.agent._call_with_fallback(llm_messages, [])
         reply = (llm_response.content or "").strip()
         state["steps"].append(_step("final", content=reply, reason="dialog"))
         state["messages"].append({"role": "assistant", "content": reply})
+        await self._compact_session_history(state)
         await self._save_session(ctx, session_id, state)
         turn_steps = state["steps"][steps_before:]
         return AgentResult(reply=reply or None, session_id=session_id, steps=list(turn_steps))
@@ -824,6 +901,7 @@ class ReActRunner:
         scenario_steps_before = len(state["steps"])
         state["steps"].append(_step("final", content=reply, reason="multi_scenario"))
         state["messages"].append({"role": "assistant", "content": reply})
+        await self._compact_session_history(state)
         await self._save_session(ctx, session_id, state)
         turn_steps = state["steps"][scenario_steps_before:]
         state.pop("_plan", None)
@@ -948,6 +1026,7 @@ class ReActRunner:
 
         # Feed tool result back as user message so LLM can summarise for the user
         state["messages"].append({"role": "user", "content": feedback})
+        await self._compact_session_history(state)
 
         await self._resolve_confirm(ctx, confirm_id, approved)
 
@@ -1003,6 +1082,7 @@ class ReActRunner:
         *,
         prompt_vars: dict[str, Any] | None = None,
         stage_addendum: str = "",
+        session_summary: str = "",
     ) -> list[Message]:
         """Build LLM input: effective DB prompt overrides class prompt when set.
 
@@ -1017,12 +1097,18 @@ class ReActRunner:
         else:
             system_msg = None
         if system_msg is None:
-            return [Message(role=m["role"], content=m["content"]) for m in messages]
+            out: list[Message] = []
+            if session_summary.strip():
+                out.append(Message(**_session_context_message(session_summary.strip())))
+            out.extend(Message(role=m["role"], content=m["content"]) for m in messages)
+            return out
         if stage_addendum:
             system_msg = Message(
                 role="system", content=f"{system_msg.content}\n\n{stage_addendum}"
             )
         out: list[Message] = [system_msg]
+        if session_summary.strip():
+            out.append(Message(**_session_context_message(session_summary.strip())))
         for m in messages:
             if m.get("role") == "system":
                 continue
@@ -1079,6 +1165,7 @@ class ReActRunner:
                 messages,
                 prompt_vars=state.get("prompt_vars"),
                 stage_addendum=state.get("stage_addendum", ""),
+                session_summary=state.get("summary_context", ""),
             )
             llm_response, _ = await self.agent._call_with_fallback(llm_messages, tool_schemas)
 
@@ -1111,6 +1198,7 @@ class ReActRunner:
                             ),
                         }
                     )
+                    await self._compact_session_history(state)
                     continue
 
                 if action_only:
@@ -1138,6 +1226,7 @@ class ReActRunner:
                 messages.append({"role": "assistant", "content": reply})
                 state["messages"] = messages
                 state["steps"] = steps
+                await self._compact_session_history(state)
                 await self._save_session(ctx, session_id, state)
                 turn_steps = steps[steps_before_turn:]
                 return ScenarioOutcome(
@@ -1162,6 +1251,7 @@ class ReActRunner:
                 messages.append(
                     {"role": "user", "content": f"Ошибка: {err}. Сообщи об этом пользователю."}
                 )
+                await self._compact_session_history(state)
                 continue
 
             if action_only and stage is not None:
@@ -1201,6 +1291,7 @@ class ReActRunner:
                             ),
                         }
                     )
+                    await self._compact_session_history(state)
                     if created_issue_keys_in_turn(steps, steps_before_turn):
                         last_create: dict[str, Any] | None = None
                         for s in reversed(steps):
@@ -1219,6 +1310,7 @@ class ReActRunner:
                             messages.append({"role": "assistant", "content": reply})
                             state["messages"] = messages
                             state["steps"] = steps
+                            await self._compact_session_history(state)
                             await self._save_session(ctx, session_id, state)
                             return ScenarioOutcome(
                                 kind="done",
@@ -1298,6 +1390,7 @@ class ReActRunner:
                         ),
                     }
                 )
+                await self._compact_session_history(state)
                 if self._turn_is_done(stage, steps[steps_before_turn:]):
                     turn_steps = steps[steps_before_turn:]
                     if state.get("_plan"):
@@ -1307,6 +1400,7 @@ class ReActRunner:
                     messages.append({"role": "assistant", "content": reply})
                     state["messages"] = messages
                     state["steps"] = steps
+                    await self._compact_session_history(state)
                     await self._save_session(ctx, session_id, state)
                     return ScenarioOutcome(
                         kind="done",
@@ -1386,6 +1480,7 @@ class ReActRunner:
                 feedback = _tool_error_message(tool_call.name, err_msg, action_only=action_only)
 
             messages.append({"role": "user", "content": feedback})
+            await self._compact_session_history(state)
 
             if action_only and self._turn_is_done(stage, steps[steps_before_turn:]):
                 turn_steps = steps[steps_before_turn:]
@@ -1397,6 +1492,7 @@ class ReActRunner:
                 messages.append({"role": "assistant", "content": reply})
                 state["messages"] = messages
                 state["steps"] = steps
+                await self._compact_session_history(state)
                 await self._save_session(ctx, session_id, state)
                 return ScenarioOutcome(
                     kind="done",
@@ -1437,6 +1533,7 @@ class ReActRunner:
         steps.append(_step("final", content=reply, reason="max_iterations"))
         state["messages"] = messages
         state["steps"] = steps
+        await self._compact_session_history(state)
         await self._save_session(ctx, session_id, state)
         turn_steps = steps[steps_before_turn:]
         return ScenarioOutcome(
@@ -1587,6 +1684,63 @@ class ReActRunner:
         finally:
             reset_current_invocation_context(token)
 
+    async def _compact_session_history(self, state: dict[str, Any]) -> None:
+        messages = state.get("messages")
+        if not isinstance(messages, list) or len(messages) <= _SESSION_MESSAGE_WINDOW:
+            return
+
+        older_messages = list(messages[:-_SESSION_MESSAGE_WINDOW])
+        recent_messages = list(messages[-_SESSION_MESSAGE_WINDOW:])
+        summary = await self._summarize_session_context(
+            state.get("summary_context"),
+            older_messages,
+        )
+        state["summary_context"] = summary
+        state["messages"] = recent_messages
+
+    async def _summarize_session_context(
+        self,
+        existing_summary: str | None,
+        older_messages: list[dict[str, Any]],
+    ) -> str:
+        existing = (existing_summary or "").strip()
+        rendered_messages = _render_messages_for_summary(older_messages)
+        if not rendered_messages:
+            return existing
+
+        user_parts: list[str] = []
+        if existing:
+            user_parts.append(f"Текущий summary:\n{existing}")
+        user_parts.append(f"Новые сообщения для сжатия:\n{rendered_messages}")
+        user_parts.append(
+            "Обнови summary. Держи его коротким, полезным для следующих действий агента, "
+            "без выдумок и без избыточного пересказа."
+        )
+        prompt = "\n\n".join(user_parts)
+
+        client = LLMClient(
+            model="yandexgpt-lite",
+            temperature=0.0,
+            max_tokens=1200,
+            max_retries=0,
+        )
+        try:
+            response = await client.complete(
+                [
+                    Message(role="system", content=_SESSION_CONTEXT_SYSTEM),
+                    Message(role="user", content=prompt[:12000]),
+                ]
+            )
+            summary = (response.content or "").strip()
+            if summary:
+                return summary
+        except Exception as exc:  # noqa: BLE001 - compaction must never break the turn
+            logger.warning("session context compaction failed, using fallback: %s", exc)
+        finally:
+            await client.close()
+
+        return _fallback_session_context(existing, older_messages)
+
     # ------------------------------------------------------------------
     # Session state (DB or in-memory)
     # ------------------------------------------------------------------
@@ -1598,6 +1752,7 @@ class ReActRunner:
         "_stage",
         "stage_addendum",
         "_turn_user_message",
+        "summary_context",
     )
 
     def _session_meta_slice(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -1609,6 +1764,8 @@ class ReActRunner:
         state = dict(self._mem_sessions.get(session_id, {"messages": [], "steps": []}))
         if "context" in state:
             state["context"] = dict(state["context"])
+        if "summary_context" in state:
+            state["summary_context"] = str(state["summary_context"])
         return state
 
     async def _save_session(self, ctx: _RunCtx, session_id: str, state: dict[str, Any]) -> None:
