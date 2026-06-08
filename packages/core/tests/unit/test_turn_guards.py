@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from core.stage_graph import StageId
 from core.turn_guards import (
     check_turn_tool_guard,
+    clarification_needed,
     message_has_backlog_intent,
     message_has_close_intent,
     message_has_create_intent,
@@ -200,3 +202,33 @@ async def test_backlog_allows_apply_after_plan():
         queue_key="TEST",
     )
     assert err is None
+
+
+def test_clarification_not_for_query():
+    assert clarification_needed(StageId.QUERY, [], "что на доске", reason="max_iter") is None
+
+
+def test_clarification_empty_find_status():
+    steps = [
+        {
+            "kind": "tool_result",
+            "tool_name": "tracker_find_issues",
+            "result": {"not_found": True, "count": 0},
+        }
+    ]
+    q = clarification_needed(StageId.STATUS, steps, "Коля: апдейт", reason="max_iter")
+    assert q is not None
+    assert "Не нашёл задачу" in q
+
+
+def test_clarification_ambiguous_find():
+    steps = [
+        {
+            "kind": "tool_result",
+            "tool_name": "tracker_find_issues",
+            "result": {"count": 3, "issues": [{"key": "A"}, {"key": "B"}, {"key": "C"}]},
+        }
+    ]
+    q = clarification_needed(StageId.TRANSITION, steps, "закрой задачу Коли", reason="max_iter")
+    assert q is not None
+    assert "Несколько" in q or "несколько" in q.lower()

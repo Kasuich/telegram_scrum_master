@@ -48,6 +48,7 @@ class StageId(str, Enum):
     REORG = "REORG"
     PROACTIVE = "PROACTIVE"
     HYGIENE = "HYGIENE"
+    DIALOG = "DIALOG"
 
 
 @dataclass(frozen=True)
@@ -421,6 +422,11 @@ _HYGIENE_ADDENDUM = (
     "Активная стадия: HYGIENE. board_snapshot → найди карточки без оценки/владельца/"
     "дедлайна, несогласованные приоритеты, дубли → patch/comment. Итог — отчёт о наведении порядка."
 )
+_DIALOG_ADDENDUM = (
+    "Активная стадия: DIALOG. Обычный разговор или вопрос о боте. "
+    "Ответь естественно, дружелюбно, по-русски. Никаких инструментов. "
+    "Можно задать встречный вопрос."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -531,8 +537,16 @@ HYGIENE = Stage(
     prompt_addendum=_HYGIENE_ADDENDUM,
 )
 
+DIALOG = Stage(
+    id=StageId.DIALOG,
+    allowed_tools=frozenset(),
+    terminal=lambda steps: True,
+    prompt_addendum=_DIALOG_ADDENDUM,
+)
+
 STAGES: dict[StageId, Stage] = {
-    s.id: s for s in (INTAKE, STATUS, BOARD, TRANSITION, QUERY, REORG, PROACTIVE, HYGIENE)
+    s.id: s
+    for s in (INTAKE, STATUS, BOARD, TRANSITION, QUERY, REORG, PROACTIVE, HYGIENE, DIALOG)
 }
 
 

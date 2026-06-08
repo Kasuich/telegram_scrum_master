@@ -73,6 +73,22 @@ def _clean_registry():
     ToolRegistry().clear()
 
 
+@pytest.fixture(autouse=True)
+def _rules_only_turn_plan():
+    """Avoid decompose LLM call in stage integration tests (R1)."""
+
+    async def _fake_plan(message: str, *, use_llm: bool = True):
+        from core.stage_graph import StageId
+        from core.stage_router import detect_stage_rules
+        from core.turn_plan import TurnPlan
+
+        sid = detect_stage_rules(message) or StageId.QUERY
+        return TurnPlan.single(sid, message)
+
+    with patch("core.react.plan_turn", side_effect=_fake_plan):
+        yield
+
+
 def _register_fake_tracker_tools():
     """Register stand-ins for the real tracker tools the stages whitelist."""
 
@@ -97,7 +113,9 @@ def _register_fake_tracker_tools():
         return {"created_count": 6, "epic_key": "DARKHORSE-10"}
 
     @platform_tool(name="tracker_create_issue", risk="medium", scopes=["tracker:write"])
-    async def tracker_create_issue(summary: str = "", assignee: str = "", priority: str = "") -> dict:
+    async def tracker_create_issue(
+        summary: str = "", assignee: str = "", priority: str = ""
+    ) -> dict:
         "create"
         return {"key": "DARKHORSE-7", "summary": summary, "assignee": assignee or "Коля",
                 "priority": priority or "normal", "deadline": "2026-06-14"}
@@ -266,3 +284,140 @@ class TestIntakeStage:
             result = await runner.invoke("Коля: длинный апдейт по задаче", "f1")
         errors = [s for s in result.steps if s.get("kind") == "tool_error"]
         assert any("backlog_plan" in (s.get("error") or "") for s in errors)
+
+
+# ---------------------------------------------------------------------------
+# DIALOG: prose reply, no tool steps
+# ---------------------------------------------------------------------------
+
+
+class TestDialogStage:
+    @patch.dict("os.environ", ENV)
+    async def test_dialog_returns_prose_without_tools(self):
+        from core.turn_plan import TurnPlan
+
+        _register_fake_tracker_tools()
+        runner = _runner(_pm_agent())
+
+        async def _dialog_plan(message: str, *, use_llm: bool = True):
+            return TurnPlan.dialog(message)
+
+        dialog_reply = "Привет! Я PM-бот, помогаю с Трекером."
+        post = AsyncMock(return_value=_http_ok(_text_response(dialog_reply)))
+        with patch("core.react.plan_turn", side_effect=_dialog_plan):
+            with patch("httpx.AsyncClient.post", post):
+                result = await runner.invoke("привет, кто ты?", "dlg1")
+
+        assert "PM" in (result.reply or "")
+        assert post.await_count == 1
+        tool_steps = [s for s in result.steps if s.get("kind") == "tool_call"]
+        assert not tool_steps
+
+
+# ---------------------------------------------------------------------------
+# Clarification on hard blocker (ambiguous find)
+# ---------------------------------------------------------------------------
+
+
+class TestClarification:
+    @patch.dict("os.environ", ENV)
+    async def test_status_ambiguous_find_returns_question(self):
+        from core.turn_plan import TurnPlan
+
+        _register_fake_tracker_tools()
+        runner = _runner(_pm_agent())
+
+        async def _fake_execute(tool_name: str, tool_args: dict):
+            if tool_name == "tracker_find_issues":
+                return {
+                    "count": 3,
+                    "issues": [
+                        {"key": "DARKHORSE-1"},
+                        {"key": "DARKHORSE-2"},
+                        {"key": "DARKHORSE-3"},
+                    ],
+                }
+            tool = ToolRegistry().get(tool_name)
+            validated = tool.validate_arguments(tool_args)
+            result = tool.execute(**validated)
+            if hasattr(result, "__await__"):
+                return await result
+            return result
+
+        async def _status_plan(message: str, *, use_llm: bool = True):
+            from core.stage_graph import StageId
+
+            return TurnPlan.single(StageId.STATUS, message)
+
+        post = AsyncMock(
+            side_effect=[
+                _http_ok(_tool_call_response("tracker_find_issues", {"assignee": "Коля"})),
+                _http_ok(_text_response("уточните ключ")),
+            ]
+        )
+        with patch("core.react.plan_turn", side_effect=_status_plan):
+            with patch.object(runner, "_execute_tool", side_effect=_fake_execute):
+                with patch("httpx.AsyncClient.post", post):
+                    result = await runner.invoke("Коля: сделал релиз", "clar1")
+
+        assert result.clarification is not None
+        assert "Уточни" in (result.reply or "")
+        assert any(s.get("kind") == "clarification" for s in result.steps)
+
+
+# ---------------------------------------------------------------------------
+# Multi-scenario turn plan
+# ---------------------------------------------------------------------------
+
+
+class TestMultiScenario:
+    @patch.dict("os.environ", ENV)
+    async def test_three_intents_run_three_scenarios(self):
+        from core.stage_graph import StageId
+        from core.turn_plan import ScenarioItem, TurnPlan
+
+        _register_fake_tracker_tools()
+        runner = _runner(_pm_agent())
+
+        async def _multi_plan(message: str, *, use_llm: bool = True):
+            return TurnPlan(
+                items=[
+                    ScenarioItem(StageId.INTAKE, "создай Коле задачу MCP"),
+                    ScenarioItem(StageId.QUERY, "что на доске"),
+                    ScenarioItem(StageId.STATUS, "Коля: релиз готов"),
+                ]
+            )
+
+        post = AsyncMock(
+            side_effect=[
+                _http_ok(
+                    _tool_call_response(
+                        "tracker_create_issue", {"summary": "MCP", "assignee": "Коля"}
+                    )
+                ),
+                _http_ok(_tool_call_response("tracker_board_snapshot", {})),
+                _http_ok(_tool_call_response("tracker_find_issues", {"assignee": "Коля"})),
+                _http_ok(
+                    _tool_call_response(
+                        "call_agent", {"target_agent": "meeting_summarizer", "message": "m"}
+                    )
+                ),
+                _http_ok(
+                    _tool_call_response(
+                        "tracker_comment_issue",
+                        {"issue_key": "DARKHORSE-1", "text": "**Статус**"},
+                    )
+                ),
+            ]
+        )
+        with patch("core.react.plan_turn", side_effect=_multi_plan):
+            with patch("httpx.AsyncClient.post", post):
+                result = await runner.invoke(
+                    "создай Коле задачу MCP; что на доске; Коля: релиз готов",
+                    "multi1",
+                )
+
+        assert "✓" in (result.reply or "")
+        assert "INTAKE" in (result.reply or "")
+        assert "QUERY" in (result.reply or "")
+        assert "STATUS" in (result.reply or "")

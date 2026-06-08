@@ -217,3 +217,10 @@ def test_proactive_allows_comment_and_snapshot():
     stage = STAGES[StageId.PROACTIVE]
     assert stage.check_tool("tracker_board_snapshot", {}, []).allow
     assert stage.check_tool("tracker_comment_issue", {"issue_key": "T-1", "text": "x"}, []).allow
+
+
+def test_dialog_stage_has_no_tools_and_is_immediately_terminal():
+    stage = STAGES[StageId.DIALOG]
+    assert stage.allowed_tools == frozenset()
+    assert stage.is_terminal([])
+    assert "DIALOG" in stage.prompt_addendum
