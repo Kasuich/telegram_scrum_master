@@ -5,7 +5,10 @@ from __future__ import annotations
 import re
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-TELEMOST_HOST_RE = re.compile(r"(^|\.)telemost\.yandex\.(ru|com|com\.tr)$", re.IGNORECASE)
+TELEMOST_HOST_RE = re.compile(
+    r"(^|\.)telemost(?:\.360)?\.yandex\.(ru|com|com\.tr)$",
+    re.IGNORECASE,
+)
 TELEMOST_PATH_RE = re.compile(r"^/(j|live)/[A-Za-z0-9_-]+/?$")
 
 

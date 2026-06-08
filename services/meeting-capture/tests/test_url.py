@@ -18,6 +18,13 @@ def test_normalize_telemost_live_url() -> None:
     )
 
 
+def test_normalize_telemost_360_join_url() -> None:
+    assert (
+        normalize_telemost_url("https://telemost.360.yandex.ru/j/2548640103")
+        == "https://telemost.360.yandex.ru/j/2548640103"
+    )
+
+
 @pytest.mark.parametrize(
     "url",
     [
