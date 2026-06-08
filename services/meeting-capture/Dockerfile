@@ -2,13 +2,17 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
+ENV UV_HTTP_TIMEOUT=120 \
+    UV_HTTP_RETRIES=10
+
 RUN pip install uv
 
 COPY pyproject.toml uv.lock ./
 COPY packages/core ./packages/core
 COPY services/meeting-capture ./services/meeting-capture
 
-RUN uv sync --frozen --no-dev --no-editable --package meeting-capture
+RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv,sharing=locked \
+    uv sync --frozen --no-dev --no-editable --package meeting-capture
 
 FROM python:3.12-slim
 
