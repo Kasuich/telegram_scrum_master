@@ -4,11 +4,14 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from core.invocation import format_actor_prefixed_message
 from core.models import TelegramChat, TelegramInstallation, TelegramMessage, TelegramUser
 from core.react import AgentResult, PendingConfirm
 from platform_api.telegram_bridge import (
+    _build_invocation_context,
     _route_inbound_message,
     _should_route_message,
+    _strip_bot_mention,
 )
 
 
@@ -190,6 +193,56 @@ def test_should_route_mentions_and_replies_to_bot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_strip_bot_mention_removes_username_entity() -> None:
+    installation = _installation()
+    payload = {
+        "text": "@pm_bot создай задачу urok",
+        "entities": [{"type": "mention", "offset": 0, "length": 7}],
+    }
+    assert _strip_bot_mention(installation, payload) == "создай задачу urok"
+
+
+def test_format_actor_prefixed_message_for_group_mention() -> None:
+    installation = _installation()
+    chat = _chat()
+    message = _message()
+    user = _telegram_user(first_name="Roman", last_name="Shinkarenko", username="romansh")
+    payload = {
+        "text": "@pm_bot создай задачу urok",
+        "entities": [{"type": "mention", "offset": 0, "length": 7}],
+    }
+    ctx = _build_invocation_context(installation, chat, message, user, payload)
+    assert format_actor_prefixed_message(ctx.raw_text_without_mention or "", ctx) == (
+        "Roman Shinkarenko: создай задачу urok"
+    )
+
+
+def test_build_invocation_context_fills_telegram_fields() -> None:
+    installation = _installation()
+    chat = _chat()
+    message = _message()
+    user = _telegram_user(first_name="Roman", last_name="Shinkarenko", username="romansh")
+    payload = {
+        "text": "@pm_bot создай задачу",
+        "entities": [{"type": "mention", "offset": 0, "length": 7}],
+        "from": {
+            "id": 991,
+            "first_name": "Roman",
+            "last_name": "Shinkarenko",
+            "username": "romansh",
+        },
+    }
+    ctx = _build_invocation_context(installation, chat, message, user, payload)
+    assert ctx.channel == "telegram"
+    assert ctx.actor_display_name == "Roman Shinkarenko"
+    assert ctx.actor_username == "romansh"
+    assert ctx.raw_text_without_mention == "создай задачу"
+    assert ctx.is_bot_mentioned is True
+    assert ctx.chat_title == "Team"
+    assert ctx.metadata["chat_type"] == "group"
+
+
+@pytest.mark.asyncio
 async def test_route_inbound_message_creates_agent_reply_outbox() -> None:
     session = _FakeSession()
     installation = _installation()
@@ -216,7 +269,8 @@ async def test_route_inbound_message_creates_agent_reply_outbox() -> None:
     assert routing["pending_confirm_id"] is None
     invoke.assert_awaited_once()
     assert invoke.await_args.args[0] == "pm_agent"
-    assert invoke.await_args.args[1] == "/status"
+    assert invoke.await_args.args[1] == "Ivan Petrov: /status"
+    assert invoke.await_args.kwargs["context"].actor_display_name == "Ivan Petrov"
     assert invoke.await_args.args[2].startswith(f"telegram:{installation.id}:")
     context = invoke.await_args.kwargs["context"]
     assert context.chat_id == "-100123"

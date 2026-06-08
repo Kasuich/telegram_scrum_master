@@ -27,7 +27,10 @@ import pytest
 from core.agent import BaseAgent, LLMSettings
 from core.config import RuntimeConfig
 from core.exceptions import AgentError
-from core.invocation import InvocationContext, get_current_invocation_context
+from core.invocation import (
+    InvocationContext,
+    get_current_invocation_context,
+)
 from core.react import AgentResult, PendingConfirm, ReActRunner
 from core.tools import ToolRegistry, platform_tool
 
@@ -306,6 +309,27 @@ class TestAutoExecute:
         assert tool_result["result"]["actor_display_name"] == "Ivan"
         assert tool_result["result"]["agent_name"] == "ctx_agent"
         assert tool_result["result"]["session_id"] == "telegram:s1"
+
+    @patch.dict("os.environ", ENV)
+    async def test_llm_system_prompt_includes_transport_context(self, agent_no_tools):
+        runner = _runner(agent_no_tools)
+        context = InvocationContext(
+            channel="telegram",
+            actor_display_name="Roman Shinkarenko",
+            metadata={"chat_type": "private"},
+        )
+        captured: list[dict[str, Any]] = []
+
+        async def _post_spy(*args, **kwargs):
+            captured.append(kwargs.get("json", {}))
+            return _http_ok(_text_response("ok"))
+
+        with patch("httpx.AsyncClient.post", _post_spy):
+            await runner.invoke("создай задачу", "tg-1", invocation_context=context)
+
+        instructions = captured[0].get("instructions", "")
+        assert "Transport context:" in instructions
+        assert "message_author: Roman Shinkarenko" in instructions
 
 
 # ---------------------------------------------------------------------------
