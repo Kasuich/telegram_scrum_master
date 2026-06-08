@@ -121,7 +121,7 @@ class LLMConfig(BaseSettings):
     """LLM (Language Model) configuration."""
 
     yandexgpt_model: str = Field(
-        default="yandexgpt",
+        default="gpt-oss-120b",
         description="Default model name (served via Yandex OpenAI-compatible Responses API)",
         examples=["yandexgpt", "yandexgpt-lite", "gpt-oss-120b", "gpt-oss-20b"],
     )
@@ -263,6 +263,54 @@ class BacklogConfig(BaseSettings):
         return date.today()
 
 
+class DailyDigestConfig(BaseSettings):
+    """Daily Tracker digest sent through Telegram outbox."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="daily_digest_",
+        extra="ignore",
+    )
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable the team daily Telegram digest scheduled job",
+    )
+
+    cron_expr: str = Field(
+        default="0 * * * *",
+        description="UTC cron expression for the digest",
+    )
+
+    timezone: str = Field(
+        default="Europe/Moscow",
+        description="Timezone used for the digest day window",
+    )
+
+    telegram_chat_id: str = Field(
+        default="",
+        description="Optional target Telegram chat id for the digest",
+    )
+
+    in_progress_statuses: str = Field(
+        default="In Progress,\u0412 \u0440\u0430\u0431\u043e\u0442\u0435",
+        description="Comma-separated Tracker statuses treated as in-progress",
+    )
+
+    max_issues_per_section: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum issues shown per member section",
+    )
+
+    def in_progress_status_list(self) -> list[str]:
+        return [
+            part.strip()
+            for part in self.in_progress_statuses.replace(";", ",").split(",")
+            if part.strip()
+        ]
+
+
 class RuntimeConfig(BaseSettings):
     """Runtime configuration that can be overridden per team."""
 
@@ -341,6 +389,7 @@ class Config(BaseSettings):
     app: AppConfig = Field(default_factory=AppConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     backlog: BacklogConfig = Field(default_factory=BacklogConfig)
+    daily_digest: DailyDigestConfig = Field(default_factory=DailyDigestConfig)
 
     # Database URL shortcut (delegates to database.database_url)
     @property
@@ -469,6 +518,7 @@ __all__ = [
     "LLMConfig",
     "AppConfig",
     "RuntimeConfig",
+    "DailyDigestConfig",
     "get_config",
     "reload_config",
     "set_config",

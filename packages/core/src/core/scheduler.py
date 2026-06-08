@@ -122,14 +122,30 @@ class SchedulerDaemon:
     async def _fire(self, session: Any, job: Any) -> None:
         """Execute one job and update its state."""
 
-        agent_name: str = job.payload.get("agent", "pm_agent")
-        message: str = job.payload.get("message", "")
-        # Derive a stable session_id from the job so history accumulates.
-        session_id = str(uuid.uuid5(uuid.UUID("d1a2b3c4-e5f6-7890-abcd-ef1234567890"), str(job.id)))
+        payload = job.payload or {}
+        job_type = payload.get("type")
 
         try:
-            await self._svc.invoke(agent_name, message, session_id)
-            logger.info("Scheduler fired job %s (agent=%s)", job.id, agent_name)
+            if job_type == "team_daily_digest":
+                from core.daily_digest import send_team_daily_digest
+
+                team_id = payload.get("team_id") or getattr(self._svc, "_team_id", None)
+                if not team_id:
+                    raise RuntimeError("team_daily_digest job requires team_id")
+                await send_team_daily_digest(session, team_id=str(team_id))
+                logger.info("Scheduler fired daily digest job %s (team_id=%s)", job.id, team_id)
+            else:
+                agent_name: str = payload.get("agent", "pm_agent")
+                message: str = payload.get("message", "")
+                # Derive a stable session_id from the job so history accumulates.
+                session_id = str(
+                    uuid.uuid5(
+                        uuid.UUID("d1a2b3c4-e5f6-7890-abcd-ef1234567890"),
+                        str(job.id),
+                    )
+                )
+                await self._svc.invoke(agent_name, message, session_id)
+                logger.info("Scheduler fired job %s (agent=%s)", job.id, agent_name)
         except Exception:
             logger.exception("Scheduler: job %s failed", job.id)
 

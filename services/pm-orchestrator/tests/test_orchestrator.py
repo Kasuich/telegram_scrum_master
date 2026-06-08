@@ -186,6 +186,29 @@ class TestOrchestratorService:
             with pytest.raises(AgentError, match="disabled"):
                 await svc.invoke("alpha", "hi", "s1")
 
+    async def test_startup_seeds_daily_digest_job(self):
+        svc = self._svc(_make_agent("pm_agent"))
+        svc._db_enabled = True
+        svc._team_id = "00000000-0000-0000-0000-000000000001"
+
+        class FakeSession:
+            pass
+
+        @asynccontextmanager
+        async def fake_get_session():
+            yield FakeSession()
+
+        with (
+            patch("core.db.create_all_tables", AsyncMock()),
+            patch("core.db.get_session", fake_get_session),
+            patch("core.seed.ensure_default_team", AsyncMock()),
+            patch("core.seed.ensure_agent_instances", AsyncMock()),
+            patch("core.daily_digest.ensure_daily_digest_scheduled_job", AsyncMock()) as ensure_job,
+        ):
+            await svc.ensure_schema_and_seed()
+
+        ensure_job.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # JSON-RPC endpoint

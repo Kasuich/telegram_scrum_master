@@ -125,6 +125,20 @@ class TestSchedulerDaemonFire:
         assert call_args[0] == "meeting_summarizer"
         assert call_args[1] == "summarise"
 
+    async def test_daily_digest_payload_bypasses_agent_invoke(self) -> None:
+        svc = _make_svc()
+        daemon = SchedulerDaemon(svc)
+        team_id = "00000000-0000-0000-0000-000000000001"
+        job = _make_job(payload={"type": "team_daily_digest", "team_id": team_id})
+        session = MagicMock()
+        session.flush = AsyncMock()
+
+        with patch("core.daily_digest.send_team_daily_digest", AsyncMock()) as send_digest:
+            await daemon._fire(session, job)
+
+        send_digest.assert_awaited_once_with(session, team_id=team_id)
+        svc.invoke.assert_not_awaited()
+
     async def test_run_count_incremented(self) -> None:
         svc = _make_svc()
         daemon = SchedulerDaemon(svc)

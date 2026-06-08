@@ -43,7 +43,7 @@ ConfirmStatus = Literal["pending", "approved", "rejected"]
 ConsoleRole = Literal["dev", "admin", "user"]
 
 SESSION_COOKIE = "console_session"
-DEFAULT_MODEL = "yandexgpt"
+DEFAULT_MODEL = "gpt-oss-120b"
 DEFAULT_TEAM_ID = "00000000-0000-0000-0000-000000000001"
 
 

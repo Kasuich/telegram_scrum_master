@@ -207,7 +207,7 @@ class AgentSpec(Base):
         default=uuid.uuid4,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    model: Mapped[str] = mapped_column(String(100), nullable=False, default="yandexgpt")
+    model: Mapped[str] = mapped_column(String(100), nullable=False, default="gpt-oss-120b")
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
     tools: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     autonomy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
@@ -1006,7 +1006,11 @@ class TelegramImportJob(Base):
         ForeignKey("telegram_chats.id", ondelete="CASCADE"),
         nullable=False,
     )
-    import_source: Mapped[str] = mapped_column(String(64), nullable=False, default="telegram_desktop")
+    import_source: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="telegram_desktop",
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     total_messages: Mapped[int] = mapped_column(default=0)
     processed_messages: Mapped[int] = mapped_column(default=0)
