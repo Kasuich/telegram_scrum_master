@@ -189,6 +189,11 @@ class LLMClient:
         latency_ms = int((time.monotonic() - start_time) * 1000)
 
         content, tool_calls, finish_reason = self._parse_output(data)
+        if not tool_calls and content and tools:
+            emulated_call = self._parse_emulated_tool_call(content, tools)
+            if emulated_call is not None:
+                content = None
+                tool_calls = [emulated_call]
         usage = self._parse_usage(data)
 
         llm_requests_total.labels(model=self.model, status="success").inc()
@@ -265,6 +270,35 @@ class LLMClient:
 
         finish_reason = data.get("status", "completed")
         return content, (tool_calls or None), finish_reason
+
+    @staticmethod
+    def _parse_emulated_tool_call(
+        content: str,
+        tools: list[dict[str, Any]],
+    ) -> ToolCall | None:
+        """Parse a model-emitted JSON tool call when native function calling is skipped."""
+        raw = content.strip()
+        if raw.startswith("```") and raw.endswith("```"):
+            lines = raw.splitlines()
+            if len(lines) < 3 or lines[0].strip() not in ("```", "```json"):
+                return None
+            raw = "\n".join(lines[1:-1]).strip()
+
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+        if not isinstance(payload, dict) or not set(payload).issubset({"tool", "arguments"}):
+            return None
+        tool_name = payload.get("tool")
+        arguments = payload.get("arguments", {})
+        allowed_tools = {tool.get("name") for tool in tools}
+        if not isinstance(tool_name, str) or tool_name not in allowed_tools:
+            return None
+        if not isinstance(arguments, dict):
+            return None
+        return ToolCall(name=tool_name, arguments=arguments)
 
     @staticmethod
     def _parse_usage(data: dict[str, Any]) -> TokenUsage:

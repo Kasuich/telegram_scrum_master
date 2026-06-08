@@ -319,6 +319,83 @@ class TestLLMClientComplete:
             assert tc.arguments == {"queue": "TEST", "summary": "Fix bug"}
 
     @pytest.mark.asyncio
+    async def test_emulated_json_tool_call_response(self) -> None:
+        """complete() converts an exact JSON tool envelope into a native tool call."""
+        with patch.dict("os.environ", ENV):
+            from core.config import set_config
+
+            set_config(None)
+            client = LLMClient(max_retries=0)
+            data = {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    {
+                                        "tool": "tracker_find_issues",
+                                        "arguments": {
+                                            "assignee": "Roman Shinkarenko",
+                                            "summary_hint": "",
+                                        },
+                                    }
+                                ),
+                            }
+                        ],
+                    }
+                ],
+                "status": "completed",
+            }
+            client._client = AsyncMock()
+            client._client.post = AsyncMock(return_value=_make_httpx_response(data))
+
+            result = await client.complete(
+                [Message(role="user", content="найди мои задачи")],
+                tools=[{"name": "tracker_find_issues", "parameters": {"type": "object"}}],
+            )
+
+            assert result.content is None
+            assert result.tool_calls == [
+                ToolCall(
+                    name="tracker_find_issues",
+                    arguments={"assignee": "Roman Shinkarenko", "summary_hint": ""},
+                )
+            ]
+
+    @pytest.mark.asyncio
+    async def test_unknown_emulated_tool_stays_text(self) -> None:
+        """JSON must not execute unless its tool is present in the supplied schema list."""
+        with patch.dict("os.environ", ENV):
+            from core.config import set_config
+
+            set_config(None)
+            client = LLMClient(max_retries=0)
+            text = '{"tool":"delete_everything","arguments":{}}'
+            data = {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": text}],
+                    }
+                ],
+                "status": "completed",
+            }
+            client._client = AsyncMock()
+            client._client.post = AsyncMock(return_value=_make_httpx_response(data))
+
+            result = await client.complete(
+                [Message(role="user", content="hello")],
+                tools=[{"name": "tracker_find_issues", "parameters": {"type": "object"}}],
+            )
+
+            assert result.content == text
+            assert result.tool_calls is None
+
+    @pytest.mark.asyncio
     async def test_retry_on_500_error(self) -> None:
         """complete() retries on 5xx server errors up to max_retries times."""
         with patch.dict("os.environ", ENV):
