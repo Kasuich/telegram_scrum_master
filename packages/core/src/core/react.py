@@ -43,8 +43,16 @@ from core.stage_router import detect_stage
 from core.tools import get_registry
 from core.turn_guards import (
     check_create_assignee,
+    clarification_needed,
     created_issue_keys_in_turn,
     message_has_create_sprint_intent,
+)
+from core.turn_plan import (
+    ScenarioItem,
+    TurnPlan,
+    deserialize_plan,
+    plan_turn,
+    serialize_plan,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,9 +117,21 @@ class AgentResult(BaseModel):
     """Outcome of a single invoke() or resume() call."""
 
     reply: str | None = None
+    clarification: str | None = None
     pending_confirm: PendingConfirm | None = None
     session_id: str
     steps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@dataclass
+class ScenarioOutcome:
+    """Internal result of executing one scenario in the turn plan."""
+
+    kind: Literal["done", "needs_confirm", "clarification", "max_iter"]
+    turn_steps: list[dict[str, Any]] | None = None
+    agent_result: AgentResult | None = None
+    clarification: str | None = None
+    reply: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -536,12 +556,26 @@ class ReActRunner:
         state["messages"].append({"role": "user", "content": message})
         state["_turn_user_message"] = message
         state["_action_only_nudges"] = 0
-        if getattr(self.agent, "action_only", False):
-            await self._set_turn_stage(state, message)
         from core.backlog_context import set_pending_backlog_plan
 
         set_pending_backlog_plan(None)
-        return await self._run_loop(ctx, session_id, state)
+
+        if not getattr(self.agent, "action_only", False):
+            scenario_steps_before = len(state["steps"])
+            outcome = await self._run_scenario(ctx, session_id, state, scenario_steps_before)
+            return self._scenario_outcome_to_agent_result(
+                ctx, session_id, state, outcome, scenario_steps_before
+            )
+
+        turn_plan = await plan_turn(message, use_llm=True)
+        state["_plan"] = serialize_plan(turn_plan)
+        state["_plan_cursor"] = 0
+        state["_scenario_retries"] = {}
+
+        if turn_plan.is_dialog:
+            return await self._run_dialog(ctx, session_id, state)
+
+        return await self._execute_turn_plan(ctx, session_id, state, turn_plan, start_index=0)
 
     async def _set_turn_stage(
         self, state: dict[str, Any], message: str, *, use_llm: bool = True
@@ -556,6 +590,284 @@ class ReActRunner:
         state["_stage"] = stage_id.value
         stage = get_stage(stage_id)
         state["stage_addendum"] = stage.prompt_addendum if stage else ""
+
+    def _freeze_scenario_stage(self, state: dict[str, Any], item: ScenarioItem) -> None:
+        """Freeze stage and payload for one scenario in a multi-scenario turn."""
+        state["_stage"] = item.stage.value
+        stage = get_stage(item.stage)
+        state["stage_addendum"] = stage.prompt_addendum if stage else ""
+        state["_turn_user_message"] = item.payload
+        state["_action_only_nudges"] = 0
+
+    async def _run_dialog(
+        self, ctx: _RunCtx, session_id: str, state: dict[str, Any]
+    ) -> AgentResult:
+        """Single LLM call for DIALOG — no tools, no action_only report."""
+        steps_before = len(state["steps"])
+        stage = get_stage(StageId.DIALOG)
+        addendum = stage.prompt_addendum if stage else ""
+        llm_messages = self._llm_messages(
+            ctx, state["messages"], stage_addendum=addendum
+        )
+        llm_response, _ = await self.agent._call_with_fallback(llm_messages, [])
+        reply = (llm_response.content or "").strip()
+        state["steps"].append(_step("final", content=reply, reason="dialog"))
+        state["messages"].append({"role": "assistant", "content": reply})
+        await self._save_session(ctx, session_id, state)
+        turn_steps = state["steps"][steps_before:]
+        return AgentResult(reply=reply or None, session_id=session_id, steps=list(turn_steps))
+
+    def _clarification_result(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        question: str,
+        scenario_steps_before: int,
+    ) -> AgentResult:
+        steps = state["steps"]
+        steps.append(_step("clarification", question=question))
+        state["messages"].append({"role": "assistant", "content": question})
+        turn_steps = steps[scenario_steps_before:]
+        return AgentResult(
+            reply=question,
+            clarification=question,
+            session_id=session_id,
+            steps=list(turn_steps),
+        )
+
+    def _scenario_outcome_to_agent_result(
+        self,
+        ctx: _RunCtx,
+        session_id: str,
+        state: dict[str, Any],
+        outcome: ScenarioOutcome,
+        scenario_steps_before: int,
+    ) -> AgentResult:
+        if outcome.kind == "needs_confirm" and outcome.agent_result is not None:
+            return outcome.agent_result
+        if outcome.kind == "clarification" and outcome.clarification:
+            return self._clarification_result(
+                session_id, state, outcome.clarification, scenario_steps_before
+            )
+        if outcome.agent_result is not None:
+            return outcome.agent_result
+        turn_steps = outcome.turn_steps or []
+        reply = outcome.reply
+        if reply is None and getattr(self.agent, "action_only", False):
+            reply = _build_action_report(turn_steps) or "Действие выполнено."
+        return AgentResult(
+            reply=reply,
+            session_id=session_id,
+            steps=list(turn_steps),
+        )
+
+    async def _execute_turn_plan(
+        self,
+        ctx: _RunCtx,
+        session_id: str,
+        state: dict[str, Any],
+        turn_plan: TurnPlan,
+        *,
+        start_index: int,
+    ) -> AgentResult:
+        outcomes: list[ScenarioOutcome] = []
+        for idx in range(start_index, len(turn_plan.items)):
+            item = turn_plan.items[idx]
+            state["_plan_cursor"] = idx
+            self._freeze_scenario_stage(state, item)
+            scenario_steps_before = len(state["steps"])
+            outcome = await self._run_scenario(ctx, session_id, state, scenario_steps_before)
+            outcomes.append(outcome)
+            if outcome.kind == "needs_confirm" and outcome.agent_result is not None:
+                await self._save_session(ctx, session_id, state)
+                return outcome.agent_result
+            if outcome.kind == "clarification" and outcome.clarification:
+                await self._save_session(ctx, session_id, state)
+                return self._clarification_result(
+                    session_id, state, outcome.clarification, scenario_steps_before
+                )
+        return await self._reflect_and_finalize(
+            ctx, session_id, state, turn_plan, outcomes, start_index=start_index
+        )
+
+    def _build_multi_scenario_report(
+        self,
+        turn_plan: TurnPlan,
+        outcomes: list[ScenarioOutcome],
+    ) -> str:
+        if len(turn_plan.items) == 1 and outcomes:
+            outcome = outcomes[0]
+            if outcome.kind == "done" and outcome.turn_steps is not None:
+                single = _build_action_report(outcome.turn_steps)
+                if single:
+                    return single
+        lines: list[str] = []
+        for item, outcome in zip(turn_plan.items, outcomes):
+            label = item.stage.value
+            if outcome.kind == "done":
+                report = _build_action_report(outcome.turn_steps or [])
+                if report:
+                    lines.append(f"✓ {label}: {report}")
+                else:
+                    lines.append(f"✓ {label}: выполнено")
+            elif outcome.kind == "clarification":
+                lines.append(f"? {label}: {outcome.clarification or 'нужно уточнение'}")
+            else:
+                reason = outcome.clarification or "не удалось"
+                lines.append(f"❗ {label}: {reason}")
+        return "\n".join(lines) if lines else "Действия не выполнены."
+
+    async def _reflect_and_finalize(
+        self,
+        ctx: _RunCtx,
+        session_id: str,
+        state: dict[str, Any],
+        turn_plan: TurnPlan,
+        outcomes: list[ScenarioOutcome],
+        *,
+        start_index: int = 0,
+    ) -> AgentResult:
+        """Hybrid reflection: deterministic checks; LLM only for multi/failure."""
+        from core.stage_graph import get_stage as _get_stage
+
+        plan_slice = turn_plan.items[start_index:]
+        if len(plan_slice) == 1 and outcomes:
+            outcome = outcomes[0]
+            turn_steps = list(outcome.turn_steps or [])
+            stage = _get_stage(plan_slice[0].stage)
+            if outcome.kind == "done":
+                if stage is not None and stage.is_terminal(turn_steps):
+                    reply = _build_action_report(turn_steps) or "Действие выполнено."
+                elif outcome.reply:
+                    reply = outcome.reply
+                else:
+                    reply = _build_action_report(turn_steps) or "Действие выполнено."
+                if not any(s.get("kind") == "final" for s in turn_steps):
+                    steps_offset = len(state["steps"]) - len(turn_steps)
+                    state["steps"].append(_step("final", content=reply, reason="stage_terminal"))
+                    state["messages"].append({"role": "assistant", "content": reply})
+                    turn_steps = state["steps"][steps_offset:]
+                    await self._save_session(ctx, session_id, state)
+                state.pop("_plan", None)
+                state.pop("_plan_cursor", None)
+                return AgentResult(reply=reply, session_id=session_id, steps=turn_steps)
+
+        final_outcomes = list(outcomes)
+        retries: dict[str, int] = state.setdefault("_scenario_retries", {})
+
+        for offset, (item, outcome) in enumerate(zip(plan_slice, outcomes)):
+            idx = start_index + offset
+            stage = _get_stage(item.stage)
+            turn_steps = outcome.turn_steps or []
+            complete = (
+                outcome.kind == "done"
+                and stage is not None
+                and stage.is_terminal(turn_steps)
+            )
+            if complete:
+                continue
+            retry_key = str(idx)
+            if retries.get(retry_key, 0) < 1 and outcome.kind in ("done", "max_iter"):
+                retries[retry_key] = retries.get(retry_key, 0) + 1
+                state["_plan_cursor"] = idx
+                self._freeze_scenario_stage(state, item)
+                scenario_steps_before = len(state["steps"])
+                retry_outcome = await self._run_scenario(
+                    ctx, session_id, state, scenario_steps_before
+                )
+                final_outcomes[offset] = retry_outcome
+                turn_steps = retry_outcome.turn_steps or []
+                if retry_outcome.kind == "clarification":
+                    await self._save_session(ctx, session_id, state)
+                    return self._clarification_result(
+                        session_id,
+                        state,
+                        retry_outcome.clarification or "",
+                        scenario_steps_before,
+                    )
+                if (
+                    retry_outcome.kind == "done"
+                    and stage is not None
+                    and stage.is_terminal(turn_steps)
+                ):
+                    continue
+            question = clarification_needed(
+                item.stage,
+                turn_steps,
+                item.payload,
+                reason="max_iter" if outcome.kind == "max_iter" else "blocked",
+            )
+            if question:
+                final_outcomes[offset] = ScenarioOutcome(
+                    kind="clarification",
+                    turn_steps=turn_steps,
+                    clarification=question,
+                )
+
+        needs_llm = len(plan_slice) > 1 or any(
+            o.kind != "done"
+            or (
+                _get_stage(plan_slice[i].stage) is not None
+                and not _get_stage(plan_slice[i].stage).is_terminal(o.turn_steps or [])
+            )
+            for i, o in enumerate(final_outcomes)
+        )
+
+        reply = self._build_multi_scenario_report(
+            TurnPlan(items=plan_slice), final_outcomes
+        )
+        if needs_llm and len(plan_slice) > 1:
+            llm_reply = await self._reflection_llm_check(reply, plan_slice, final_outcomes)
+            if llm_reply:
+                reply = llm_reply
+
+        scenario_steps_before = len(state["steps"])
+        state["steps"].append(_step("final", content=reply, reason="multi_scenario"))
+        state["messages"].append({"role": "assistant", "content": reply})
+        await self._save_session(ctx, session_id, state)
+        turn_steps = state["steps"][scenario_steps_before:]
+        state.pop("_plan", None)
+        state.pop("_plan_cursor", None)
+        return AgentResult(reply=reply, session_id=session_id, steps=list(turn_steps))
+
+    async def _reflection_llm_check(
+        self,
+        report: str,
+        items: list[ScenarioItem],
+        outcomes: list[ScenarioOutcome],
+    ) -> str | None:
+        """Optional LLM pass to sanity-check a multi-scenario report."""
+        from core.llm import LLMClient, Message
+
+        scenarios_text = "\n".join(
+            f"- {item.stage.value}: {item.payload[:200]}" for item in items
+        )
+        client = LLMClient(model="yandexgpt", temperature=0.0, max_tokens=256, max_retries=0)
+        try:
+            resp = await client.complete(
+                [
+                    Message(
+                        role="system",
+                        content=(
+                            "Проверь, честно ли отчёт PM-агента отражает выполненные сценарии. "
+                            "Если всё верно — верни отчёт без изменений. "
+                            "Если что-то не выполнено — добавь строку ❗ с причиной. "
+                            "Только текст отчёта, без пояснений."
+                        ),
+                    ),
+                    Message(
+                        role="user",
+                        content=f"Сценарии:\n{scenarios_text}\n\nОтчёт:\n{report}",
+                    ),
+                ]
+            )
+            text = (resp.content or "").strip()
+            return text or None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("reflection LLM failed, keeping deterministic report: %s", exc)
+            return None
+        finally:
+            await client.close()
 
     async def resume(
         self,
@@ -611,8 +923,7 @@ class ReActRunner:
         self._active_invocation_context = ctx.invocation_context
         # Include resume-time steps (tool_result / confirm_rejected) in this turn's output.
         state["_steps_before_turn"] = len(state["steps"])
-        # Re-hydrate the frozen stage (Trace persists only messages+steps).
-        # Rules-only (no LLM): the confirmed tool already passed the gate.
+        # Re-hydrate the frozen stage when plan metadata was not persisted.
         if getattr(self.agent, "action_only", False) and not state.get("_stage"):
             await self._set_turn_stage(
                 state, state.get("_turn_user_message", ""), use_llm=False
@@ -639,7 +950,47 @@ class ReActRunner:
         state["messages"].append({"role": "user", "content": feedback})
 
         await self._resolve_confirm(ctx, confirm_id, approved)
-        return await self._run_loop(ctx, session_id, state)
+
+        if not action_only:
+            outcome = await self._run_scenario(
+                ctx, session_id, state, state.get("_steps_before_turn", len(state["steps"]))
+            )
+            return self._scenario_outcome_to_agent_result(
+                ctx,
+                session_id,
+                state,
+                outcome,
+                state.get("_steps_before_turn", len(state["steps"])),
+            )
+
+        existing_plan = deserialize_plan(state.get("_plan"))
+        if existing_plan and existing_plan.items:
+            cursor = int(state.get("_plan_cursor", 0))
+            if not state.get("_stage") and cursor < len(existing_plan.items):
+                self._freeze_scenario_stage(state, existing_plan.items[cursor])
+            return await self._execute_turn_plan(
+                ctx, session_id, state, existing_plan, start_index=cursor
+            )
+
+        outcome = await self._run_scenario(
+            ctx, session_id, state, state.get("_steps_before_turn", len(state["steps"]))
+        )
+        if outcome.kind == "needs_confirm" and outcome.agent_result is not None:
+            return outcome.agent_result
+        if outcome.kind == "clarification" and outcome.clarification:
+            return self._clarification_result(
+                session_id,
+                state,
+                outcome.clarification,
+                state.get("_steps_before_turn", len(state["steps"])),
+            )
+        return self._scenario_outcome_to_agent_result(
+            ctx,
+            session_id,
+            state,
+            outcome,
+            state.get("_steps_before_turn", len(state["steps"])),
+        )
 
     # ------------------------------------------------------------------
     # Core loop
@@ -678,7 +1029,13 @@ class ReActRunner:
             out.append(Message(role=m["role"], content=m["content"]))
         return out
 
-    async def _run_loop(self, ctx: _RunCtx, session_id: str, state: dict[str, Any]) -> AgentResult:
+    async def _run_scenario(
+        self,
+        ctx: _RunCtx,
+        session_id: str,
+        state: dict[str, Any],
+        scenario_steps_before: int,
+    ) -> ScenarioOutcome:
         messages: list[dict[str, Any]] = state["messages"]
         steps: list[dict[str, Any]] = state["steps"]
         if ctx.invocation_context is None:
@@ -696,7 +1053,7 @@ class ReActRunner:
         tool_schemas = self.agent._resolve_tool_schemas()
         registry = get_registry()
         action_only = getattr(self.agent, "action_only", False)
-        steps_before_turn = state.pop("_steps_before_turn", len(steps))
+        steps_before_turn = state.pop("_steps_before_turn", scenario_steps_before)
         # Active stage (frozen for the turn). None for non-action_only agents or
         # when no stage was set — then all legacy behaviour is preserved.
         stage = get_stage(state.get("_stage")) if action_only else None
@@ -757,17 +1114,39 @@ class ReActRunner:
                     continue
 
                 if action_only:
+                    question = clarification_needed(
+                        state.get("_stage"),
+                        turn_steps,
+                        state.get("_turn_user_message", ""),
+                        reason="blocked",
+                    )
+                    if question:
+                        return ScenarioOutcome(
+                            kind="clarification",
+                            turn_steps=list(turn_steps),
+                            clarification=question,
+                        )
                     reply = _action_only_final_reply(turn_steps, llm_text, had_tool)
                 else:
                     reply = llm_text
+                if action_only and state.get("_plan"):
+                    turn_steps = steps[steps_before_turn:]
+                    return ScenarioOutcome(
+                        kind="done", turn_steps=list(turn_steps), reply=reply
+                    )
                 steps.append(_step("final", content=reply))
                 messages.append({"role": "assistant", "content": reply})
                 state["messages"] = messages
                 state["steps"] = steps
                 await self._save_session(ctx, session_id, state)
                 turn_steps = steps[steps_before_turn:]
-                return AgentResult(
-                    reply=reply or None, session_id=session_id, steps=list(turn_steps)
+                return ScenarioOutcome(
+                    kind="done",
+                    turn_steps=list(turn_steps),
+                    reply=reply,
+                    agent_result=AgentResult(
+                        reply=reply or None, session_id=session_id, steps=list(turn_steps)
+                    ),
                 )
 
             # --- Tool call ---
@@ -801,8 +1180,8 @@ class ReActRunner:
                     if message_has_create_sprint_intent(state.get("_turn_user_message", "")):
                         guard_err = (
                             "Пользователь просит создать спринт. Используй "
-                            "tracker_create_sprint(name, start_date, end_date, board_id или board_name), "
-                            "а не tracker_create_issue."
+                            "tracker_create_sprint(name, start_date, end_date, "
+                            "board_id или board_name), а не tracker_create_issue."
                         )
                     else:
                         # Async assignee-mismatch correction lives outside the pure
@@ -832,17 +1211,23 @@ class ReActRunner:
                                 last_create = s.get("result")
                                 break
                         if last_create:
+                            turn_steps = steps[steps_before_turn:]
+                            if state.get("_plan"):
+                                return ScenarioOutcome(kind="done", turn_steps=list(turn_steps))
                             reply = _format_action_tool_line("tracker_create_issue", last_create)
                             steps.append(_step("final", content=reply))
                             messages.append({"role": "assistant", "content": reply})
                             state["messages"] = messages
                             state["steps"] = steps
                             await self._save_session(ctx, session_id, state)
-                            turn_steps = steps[steps_before_turn:]
-                            return AgentResult(
-                                reply=reply,
-                                session_id=session_id,
-                                steps=list(turn_steps),
+                            return ScenarioOutcome(
+                                kind="done",
+                                turn_steps=list(turn_steps),
+                                agent_result=AgentResult(
+                                    reply=reply,
+                                    session_id=session_id,
+                                    steps=list(turn_steps),
+                                ),
                             )
                     continue
 
@@ -884,8 +1269,14 @@ class ReActRunner:
                     status="pending",
                 )
                 turn_steps = steps[steps_before_turn:]
-                return AgentResult(
-                    pending_confirm=pending, session_id=session_id, steps=list(turn_steps)
+                return ScenarioOutcome(
+                    kind="needs_confirm",
+                    turn_steps=list(turn_steps),
+                    agent_result=AgentResult(
+                        pending_confirm=pending,
+                        session_id=session_id,
+                        steps=list(turn_steps),
+                    ),
                 )
 
             turn_slice = steps[steps_before_turn:]
@@ -908,16 +1299,21 @@ class ReActRunner:
                     }
                 )
                 if self._turn_is_done(stage, steps[steps_before_turn:]):
-                    reply = _build_action_report(steps[steps_before_turn:]) or (
-                        "Действие выполнено."
-                    )
+                    turn_steps = steps[steps_before_turn:]
+                    if state.get("_plan"):
+                        return ScenarioOutcome(kind="done", turn_steps=list(turn_steps))
+                    reply = _build_action_report(turn_steps) or ("Действие выполнено.")
                     steps.append(_step("final", content=reply, reason="stage_terminal"))
                     messages.append({"role": "assistant", "content": reply})
                     state["messages"] = messages
                     state["steps"] = steps
                     await self._save_session(ctx, session_id, state)
-                    return AgentResult(
-                        reply=reply, session_id=session_id, steps=list(steps[steps_before_turn:])
+                    return ScenarioOutcome(
+                        kind="done",
+                        turn_steps=list(turn_steps),
+                        agent_result=AgentResult(
+                            reply=reply, session_id=session_id, steps=list(turn_steps)
+                        ),
                     )
                 continue
 
@@ -992,15 +1388,22 @@ class ReActRunner:
             messages.append({"role": "user", "content": feedback})
 
             if action_only and self._turn_is_done(stage, steps[steps_before_turn:]):
-                reply = _build_action_report(steps[steps_before_turn:]) or ("Действие выполнено.")
+                turn_steps = steps[steps_before_turn:]
+                if state.get("_plan"):
+                    return ScenarioOutcome(kind="done", turn_steps=list(turn_steps))
+                reply = _build_action_report(turn_steps) or ("Действие выполнено.")
                 reason = "stage_terminal" if stage is not None else "auto_finalize"
                 steps.append(_step("final", content=reply, reason=reason))
                 messages.append({"role": "assistant", "content": reply})
                 state["messages"] = messages
                 state["steps"] = steps
                 await self._save_session(ctx, session_id, state)
-                return AgentResult(
-                    reply=reply, session_id=session_id, steps=list(steps[steps_before_turn:])
+                return ScenarioOutcome(
+                    kind="done",
+                    turn_steps=list(turn_steps),
+                    agent_result=AgentResult(
+                        reply=reply, session_id=session_id, steps=list(turn_steps)
+                    ),
                 )
 
         # Max iterations reached (safety cap)
@@ -1011,14 +1414,38 @@ class ReActRunner:
             state.get("_stage"),
         )
         turn_steps = steps[steps_before_turn:]
+        question = clarification_needed(
+            state.get("_stage"),
+            turn_steps,
+            state.get("_turn_user_message", ""),
+            reason="max_iter",
+        )
+        if question:
+            return ScenarioOutcome(
+                kind="clarification",
+                turn_steps=list(turn_steps),
+                clarification=question,
+            )
         report = _build_action_report(turn_steps)
         reply = report or "Достигнут лимит итераций. Пожалуйста, переформулируйте запрос."
+        if state.get("_plan"):
+            return ScenarioOutcome(
+                kind="max_iter",
+                turn_steps=list(turn_steps),
+                clarification=reply,
+            )
         steps.append(_step("final", content=reply, reason="max_iterations"))
         state["messages"] = messages
         state["steps"] = steps
         await self._save_session(ctx, session_id, state)
         turn_steps = steps[steps_before_turn:]
-        return AgentResult(reply=reply, session_id=session_id, steps=list(turn_steps))
+        return ScenarioOutcome(
+            kind="max_iter",
+            turn_steps=list(turn_steps),
+            agent_result=AgentResult(
+                reply=reply, session_id=session_id, steps=list(turn_steps)
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Stage graph helpers
@@ -1164,6 +1591,18 @@ class ReActRunner:
     # Session state (DB or in-memory)
     # ------------------------------------------------------------------
 
+    _PERSISTED_META_KEYS = (
+        "_plan",
+        "_plan_cursor",
+        "_scenario_retries",
+        "_stage",
+        "stage_addendum",
+        "_turn_user_message",
+    )
+
+    def _session_meta_slice(self, state: dict[str, Any]) -> dict[str, Any]:
+        return {k: state[k] for k in self._PERSISTED_META_KEYS if k in state}
+
     async def _load_session(self, ctx: _RunCtx, session_id: str) -> dict[str, Any]:
         if ctx.db_session is not None:
             return await self._db_load_session(ctx, session_id)
@@ -1176,12 +1615,14 @@ class ReActRunner:
         if ctx.db_session is not None:
             await self._db_save_session(ctx, session_id, state)
         else:
-            self._mem_sessions[session_id] = {
+            payload: dict[str, Any] = {
                 "messages": list(state["messages"]),
                 "steps": list(state["steps"]),
             }
             if state.get("context") is not None:
-                self._mem_sessions[session_id]["context"] = dict(state["context"])
+                payload["context"] = dict(state["context"])
+            payload.update(self._session_meta_slice(state))
+            self._mem_sessions[session_id] = payload
 
     async def _load_confirm(self, ctx: _RunCtx, confirm_id: str) -> dict[str, Any] | None:
         if ctx.db_session is not None:
@@ -1274,6 +1715,9 @@ class ReActRunner:
         }
         if meta.get("context") is not None:
             state["context"] = dict(meta["context"])
+        for key in self._PERSISTED_META_KEYS:
+            if key in meta:
+                state[key] = meta[key]
         return state
 
     async def _db_save_session(self, ctx: _RunCtx, session_id: str, state: dict[str, Any]) -> None:
@@ -1293,6 +1737,7 @@ class ReActRunner:
             }
             if state.get("context") is not None:
                 metadata["context"] = dict(state["context"])
+            metadata.update(self._session_meta_slice(state))
             row.metadata_json = metadata
             await ctx.db_session.flush()
 
