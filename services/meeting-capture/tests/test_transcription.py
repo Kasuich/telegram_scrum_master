@@ -7,7 +7,13 @@ from meeting_capture.transcription import (
 )
 
 
-def test_empty_transcription_user_message_for_missing_s3() -> None:
+def test_empty_transcription_user_message_for_s3_not_configured() -> None:
+    message = empty_transcription_user_message("speechkit_s3_not_configured")
+    assert "S3 не подключён" in message
+    assert "force-recreate" in message
+
+
+def test_empty_transcription_user_message_for_missing_s3_upload() -> None:
     message = empty_transcription_user_message("speechkit_missing_audio_uri")
     assert "Object Storage" in message
     assert "S3_" in message

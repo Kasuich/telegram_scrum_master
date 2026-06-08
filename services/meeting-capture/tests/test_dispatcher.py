@@ -10,7 +10,7 @@ from meeting_capture.bot import JoinResult, TelemostBot
 from meeting_capture.config import CaptureSettings
 from meeting_capture.dispatcher import MeetingDispatcher
 from meeting_capture.recorder import Recorder, RecordingFiles
-from meeting_capture.storage import LocalObjectStore
+from meeting_capture.storage import LocalObjectStore, UploadedObject
 from meeting_capture.transcription import Transcriber, TranscriptionResult
 
 
@@ -108,6 +108,19 @@ class FakeRecorder(Recorder):
         return RecordingFiles(recording, audio)
 
 
+class FakeObjectStore(LocalObjectStore):
+    """Local store that also exposes a public URI (simulates S3 for tests)."""
+
+    async def upload_file(self, source: Path, *, key: str, content_type: str) -> UploadedObject:
+        obj = await super().upload_file(source, key=key, content_type=content_type)
+        return UploadedObject(
+            key=obj.key,
+            size_bytes=obj.size_bytes,
+            content_type=obj.content_type,
+            uri=f"https://storage.test/bucket/{key}",
+        )
+
+
 class FakeTranscriber(Transcriber):
     async def transcribe(
         self,
@@ -118,7 +131,7 @@ class FakeTranscriber(Transcriber):
         participants_observed: list[dict[str, Any]],
     ) -> TranscriptionResult:
         assert audio_path.name == "audio.ogg"
-        assert audio_uri is None
+        assert audio_uri is not None
         assert language == "ru-RU"
         return TranscriptionResult(
             source="speechkit",
@@ -156,7 +169,7 @@ async def test_dispatcher_records_uploads_transcribes_and_marks_ready(tmp_path: 
     dispatcher = MeetingDispatcher(
         repository=repo,  # type: ignore[arg-type]
         settings=settings,
-        object_store=LocalObjectStore(settings.object_storage_dir),
+        object_store=FakeObjectStore(settings.object_storage_dir),
         transcriber=FakeTranscriber(),
         bot_factory=lambda: bot,
         recorder_factory=lambda work_dir: FakeRecorder(work_dir),
@@ -182,7 +195,7 @@ async def test_dispatcher_maps_speaker_names_from_timeline(tmp_path: Path) -> No
     dispatcher = MeetingDispatcher(
         repository=repo,  # type: ignore[arg-type]
         settings=settings,
-        object_store=LocalObjectStore(settings.object_storage_dir),
+        object_store=FakeObjectStore(settings.object_storage_dir),
         transcriber=FakeTranscriber(),
         bot_factory=lambda: bot,
         recorder_factory=lambda work_dir: FakeRecorder(work_dir),

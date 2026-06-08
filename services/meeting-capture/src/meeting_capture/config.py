@@ -76,9 +76,7 @@ class CaptureSettings(BaseSettings):
 
     @property
     def s3_enabled(self) -> bool:
-        return bool(
-            self.s3_bucket and self.s3_access_key and self.s3_secret_key
-        )
+        return bool(self.s3_bucket and self.s3_access_key and self.s3_secret_key)
 
     @property
     def effective_speechkit_api_key(self) -> str:

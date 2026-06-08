@@ -161,18 +161,26 @@ class MeetingDispatcher:
             )
 
             uploaded = await self._upload_recording_files(meeting_id, files)
-            audio_uri = uploaded.get("audio").uri if uploaded.get("audio") else None
-            # Hard timeout so a hung SpeechKit poll cannot wedge the meeting in
-            # "transcribing" forever — fall through to the failed branch instead.
-            transcription = await asyncio.wait_for(
-                self.transcriber.transcribe(
-                    files.audio_path,
-                    audio_uri=audio_uri,
-                    language=meeting.language,
+            audio_obj = uploaded.get("audio")
+            audio_uri = audio_obj.uri if audio_obj else None
+            if audio_uri:
+                # Hard timeout so a hung SpeechKit poll cannot wedge the meeting in
+                # "transcribing" forever — fall through to the failed branch instead.
+                transcription = await asyncio.wait_for(
+                    self.transcriber.transcribe(
+                        files.audio_path,
+                        audio_uri=audio_uri,
+                        language=meeting.language,
+                        participants_observed=join_result.participants_observed,
+                    ),
+                    timeout=self.settings.transcribe_timeout_sec,
+                )
+            else:
+                transcription = self._empty_audio_transcription_result(
+                    files,
+                    uploaded,
                     participants_observed=join_result.participants_observed,
-                ),
-                timeout=self.settings.transcribe_timeout_sec,
-            )
+                )
             from meeting_capture.transcription import map_speakers_to_names
 
             named_segments = map_speakers_to_names(transcription.segments, speaker_timeline)
@@ -228,6 +236,30 @@ class MeetingDispatcher:
         except Exception:
             logger.exception("Active-speaker polling failed; using labels only")
             return []
+
+    def _empty_audio_transcription_result(
+        self,
+        files: RecordingFiles,
+        uploaded: dict[str, UploadedObject],
+        *,
+        participants_observed: list[dict[str, Any]],
+    ) -> TranscriptionResult:
+        if not self.settings.s3_enabled:
+            source = "speechkit_s3_not_configured"
+        elif not files.audio_path.exists() or "audio" not in uploaded:
+            source = "speechkit_missing_audio_file"
+        else:
+            source = "speechkit_missing_audio_uri"
+        logger.warning(
+            "Meeting has no audio URI for SpeechKit (source=%s, s3_enabled=%s)",
+            source,
+            self.settings.s3_enabled,
+        )
+        return TranscriptionResult(
+            source=source,
+            segments=[],
+            participants_observed=participants_observed,
+        )
 
     async def _upload_recording_files(
         self,
