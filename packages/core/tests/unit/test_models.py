@@ -283,7 +283,7 @@ class TestAgentSpec:
 
     def test_model_default(self) -> None:
         col = _get_column(AgentSpec, "model")
-        assert col.default.arg == "gpt-oss-120b"
+        assert col.default.arg == "yandexgpt"
 
     def test_prompt_not_nullable(self) -> None:
         col = _get_column(AgentSpec, "prompt")

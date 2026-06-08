@@ -56,12 +56,22 @@ class CaptureSettings(BaseSettings):
         alias="SPEECHKIT_POLL_INTERVAL_SEC",
     )
     speechkit_timeout_sec: int = Field(default=3600, ge=30, alias="SPEECHKIT_TIMEOUT_SEC")
+    # Hard ceiling on the whole transcribe step so a hung SpeechKit poll cannot
+    # leave a meeting stuck in "transcribing". Slightly above speechkit_timeout.
+    transcribe_timeout_sec: int = Field(default=3900, ge=30, alias="CAPTURE_TRANSCRIBE_TIMEOUT_SEC")
 
     meeting_capture_url: str = Field(
         default="http://meeting-capture:8003",
         alias="MEETING_CAPTURE_URL",
     )
     orchestrator_url: str = Field(default="", alias="ORCHESTRATOR_URL")
+
+    # Fan-out of the meeting summary after transcription.
+    # Fallback Telegram chat when a meeting has no target_chat_id (e.g. it was
+    # scheduled outside Telegram). Empty -> no Telegram delivery in that case.
+    telegram_fallback_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
+    # When true, also send the summary to pm_agent for auto board/task creation.
+    summary_fanout_pm_agent: bool = Field(default=True, alias="CAPTURE_SUMMARY_TO_PM_AGENT")
 
     @property
     def s3_enabled(self) -> bool:

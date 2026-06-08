@@ -25,6 +25,8 @@ class CreateMeetingRequest(BaseModel):
     title: str | None = Field(default=None, max_length=255)
     consent_ack: bool = True
     language: str = Field(default="ru-RU", min_length=2, max_length=16)
+    # External Telegram chat id to deliver the summary back to (optional).
+    target_chat_id: str | None = Field(default=None, max_length=64)
 
     @field_validator("consent_ack")
     @classmethod

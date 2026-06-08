@@ -1,7 +1,7 @@
 """
 LLM integration via Yandex Cloud's OpenAI-compatible Responses API.
 
-Default model: gpt-oss-120b (served at ``/v1/responses``). Request/response
+Default model: yandexgpt (served at ``/v1/responses``). Request/response
 follow the OpenAI Responses schema (``instructions`` + ``input`` items,
 ``output`` items with ``function_call`` / ``message``).
 """

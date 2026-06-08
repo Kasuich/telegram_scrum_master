@@ -33,12 +33,28 @@ class TelemostBot:
     ) -> str:
         raise NotImplementedError
 
+    async def poll_active_speakers(
+        self,
+        *,
+        stop_event: asyncio.Event,
+        record_start_monotonic: float,
+    ) -> list[dict[str, Any]]:
+        """Collect an active-speaker timeline while the meeting runs.
+
+        Default: no-op (returns []). Bots that can read the DOM override this.
+        """
+        return []
+
     async def close(self) -> None:
         raise NotImplementedError
 
 
 class PlaywrightTelemostBot(TelemostBot):
     """Join Telemost as a browser guest using Playwright."""
+
+    # How long the bot must be alone (no other participants/video) before the
+    # meeting is treated as ended. Guards against a brief solo blip mid-call.
+    _ALONE_GRACE_SEC = 30
 
     def __init__(self, settings: CaptureSettings) -> None:
         self.settings = settings
@@ -126,17 +142,120 @@ class PlaywrightTelemostBot(TelemostBot):
         stop_event: asyncio.Event,
         max_duration_sec: int,
     ) -> str:
-        deadline = asyncio.get_running_loop().time() + max_duration_sec
-        while asyncio.get_running_loop().time() < deadline:
+        # The meeting ends when ANY of these fire (whichever first):
+        #   * stop requested (host pressed /stop or service shutdown)
+        #   * Telemost shows an end screen ("встреча завершена", "вы вышли", ...)
+        #   * the page/tab closed (call window gone)
+        #   * the bot is left alone — no other participants/video for ALONE_GRACE
+        #     consecutive checks (covers the common case where the host just
+        #     leaves and Telemost never renders an explicit end screen).
+        # ``max_duration_sec`` stays a hard safety ceiling, NOT the normal path.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max_duration_sec
+        poll_sec = 5
+        alone_grace_checks = max(int(self._ALONE_GRACE_SEC / poll_sec), 1)
+        alone_checks = 0
+        # We must observe the meeting populated at least once before "alone"
+        # can mean "ended" — otherwise a slow first render would end instantly.
+        saw_others = False
+        while loop.time() < deadline:
             if stop_event.is_set():
                 return "stop requested"
+            if self._page is not None and self._page.is_closed():
+                return "page closed"
             body = await self._body_text()
             if self._looks_like_end_screen(body):
                 return "meeting ended"
-            if self._page is not None and self._page.is_closed():
-                return "page closed"
-            await asyncio.sleep(5)
+            if self._looks_like_left_call_url():
+                return "left call"
+            others = await self._other_participant_signal()
+            if others:
+                saw_others = True
+                alone_checks = 0
+            elif saw_others:
+                alone_checks += 1
+                if alone_checks >= alone_grace_checks:
+                    return "alone in meeting"
+            await asyncio.sleep(poll_sec)
         return "max duration reached"
+
+    async def poll_active_speakers(
+        self,
+        *,
+        stop_event: asyncio.Event,
+        record_start_monotonic: float,
+    ) -> list[dict[str, Any]]:
+        """Sample the highlighted (speaking) participant tile periodically.
+
+        Builds a timeline of ``{start_ms, end_ms, display_name}`` windows whose
+        time base is the recording start, so it aligns with SpeechKit timecodes.
+        Best-effort: any DOM error is swallowed; an unreadable poll just skips a
+        sample. The diarization labels remain a full fallback if this is empty.
+        """
+        loop = asyncio.get_running_loop()
+        timeline: list[dict[str, Any]] = []
+        current_name: str | None = None
+        current_start_ms = 0
+        poll_sec = 1.0
+        while not stop_event.is_set():
+            if self._page is not None and self._page.is_closed():
+                break
+            now_ms = int((loop.time() - record_start_monotonic) * 1000)
+            name = await self._active_speaker_name()
+            if name != current_name:
+                if current_name is not None:
+                    timeline.append(
+                        {
+                            "start_ms": current_start_ms,
+                            "end_ms": now_ms,
+                            "display_name": current_name,
+                        }
+                    )
+                current_name = name
+                current_start_ms = now_ms
+            await asyncio.sleep(poll_sec)
+        # Close the trailing window.
+        if current_name is not None:
+            end_ms = int((loop.time() - record_start_monotonic) * 1000)
+            timeline.append(
+                {"start_ms": current_start_ms, "end_ms": end_ms, "display_name": current_name}
+            )
+        return timeline
+
+    async def _active_speaker_name(self) -> str | None:
+        """Best-effort: display name of the currently speaking participant.
+
+        Telemost marks the active tile (speaking ring / data attribute). Selectors
+        are tried in order; the first hit's accessible name is returned. Returns
+        None when nothing is detected (silence or unreadable DOM).
+        """
+        if self._page is None:
+            return None
+        selectors = [
+            "[data-speaking='true']",
+            "[class*='speaking']",
+            "[class*='active-speaker']",
+            "[aria-label*='говорит' i]",
+            "[aria-label*='speaking' i]",
+        ]
+        for selector in selectors:
+            try:
+                locator = self._page.locator(selector).first
+                if await locator.count() == 0:
+                    continue
+                name = (
+                    await locator.get_attribute("aria-label")
+                    or await locator.get_attribute("data-name")
+                    or (await locator.inner_text(timeout=1_000))
+                )
+                name = (name or "").strip()
+                name = re.sub(r"\b(говорит|speaking|микрофон|microphone)\b", "", name, flags=re.I)
+                name = name.strip()
+                if name and len(name) <= 80:
+                    return name
+            except Exception:
+                continue
+        return None
 
     async def close(self) -> None:
         for obj in (self._context, self._browser):
@@ -248,12 +367,68 @@ class PlaywrightTelemostBot(TelemostBot):
             )
         )
 
+    async def _other_participant_signal(self) -> bool:
+        """Best-effort: is anyone besides the bot still in the call?
+
+        Telemost renders a remote video/canvas tile per participant and a
+        participants counter. We treat the presence of any video/canvas tile,
+        or a participants count > 1, as "others present". All DOM reads are
+        guarded — on any failure we return True (assume populated) so a flaky
+        DOM read never ends a live meeting prematurely.
+        """
+        if self._page is None:
+            return False
+        try:
+            media = await self._page.locator("video, canvas").count()
+            if media > 0:
+                return True
+        except Exception:
+            return True  # DOM hiccup: do not treat as "alone"
+        count = await self._participant_count()
+        if count is None:
+            return True  # unknown: assume populated, rely on end-screen/url
+        return count > 1
+
+    async def _participant_count(self) -> int | None:
+        """Parse a participants counter from the UI, if present."""
+        if self._page is None:
+            return None
+        for selector in (
+            "[aria-label*='участник' i]",
+            "[aria-label*='participant' i]",
+        ):
+            try:
+                locator = self._page.locator(selector).first
+                if await locator.count() == 0:
+                    continue
+                label = await locator.get_attribute("aria-label")
+                match = re.search(r"\d+", label or "")
+                if match:
+                    return int(match.group())
+            except Exception:
+                continue
+        return None
+
+    def _looks_like_left_call_url(self) -> bool:
+        """The bot was redirected off the call (feedback/landing page)."""
+        if self._page is None:
+            return False
+        try:
+            url = self._page.url or ""
+        except Exception:
+            return False
+        pattern = r"(/feedback|/leave|/goodbye|telemost\.yandex\.[a-z]+/?$)"
+        return bool(re.search(pattern, url, re.I))
+
     @staticmethod
     def _looks_like_end_screen(body: str) -> bool:
         return bool(
             re.search(
-                r"(встреча завершена|звонок завершен|meeting.*ended|"
-                r"call.*ended|трансляция закончилась)",
+                r"(встреча (завершена|закончена|завершилась)|звонок (завершен|завершён|окончен)|"
+                r"вы вышли|вы покинули|покинули (звонок|встречу)|вы вышли из звонка|"
+                r"вернуться на главную|присоединиться снова|"
+                r"meeting.*(ended|is over)|call.*ended|you('?ve| have) left|"
+                r"rejoin|join again|трансляция закончилась)",
                 body,
                 re.I,
             )

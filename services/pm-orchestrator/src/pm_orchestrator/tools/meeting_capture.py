@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 from core.exceptions import ToolExecutionError
+from core.invocation import get_current_invocation_context
 from core.tools import platform_tool
 
 
@@ -43,12 +44,19 @@ def register_meeting_capture_tools(svc: Any) -> None:
         if not consent_ack:
             raise ToolExecutionError("schedule_meeting_bot: consent_ack must be true")
 
+        # Capture the chat the request came from so the meeting summary can be
+        # delivered back there. The pm_agent runs inside an InvocationContext
+        # whose chat_id is the external Telegram chat id (see telegram_bridge).
+        ctx = get_current_invocation_context()
+        target_chat_id = ctx.chat_id if ctx is not None else None
+
         payload: dict[str, Any] = {
             "telemost_url": url,
             "starts_at": starts_at or None,
             "title": title or None,
             "consent_ack": consent_ack,
             "language": language,
+            "target_chat_id": target_chat_id,
         }
         try:
             async with httpx.AsyncClient(timeout=20) as client:

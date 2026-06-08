@@ -37,7 +37,11 @@ class MeetingRepository:
         language: str,
         consent_ack: bool,
         initial_status: str,
+        target_chat_id: str | None = None,
     ) -> Meeting:
+        metadata: dict[str, Any] = {}
+        if target_chat_id:
+            metadata["target_chat_id"] = target_chat_id
         async with get_session() as session:
             meeting = Meeting(
                 id=uuid.uuid4(),
@@ -48,7 +52,7 @@ class MeetingRepository:
                 language=language,
                 consent_ack=consent_ack,
                 status=initial_status,
-                metadata_json={},
+                metadata_json=metadata,
             )
             session.add(meeting)
             await session.flush()

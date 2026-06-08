@@ -178,6 +178,59 @@ def parse_speechkit_segments(payload: Any) -> list[dict[str, Any]]:
     return sorted(segments, key=lambda item: (item["start_ms"], item["end_ms"]))
 
 
+def map_speakers_to_names(
+    segments: list[dict[str, Any]],
+    speaker_timeline: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach a human ``speaker_name`` to each diarized segment.
+
+    SpeechKit gives anonymous diarization labels (SPEAKER_00, ...). The bot
+    records an active-speaker timeline from the Telemost DOM as a list of
+    ``{"start_ms", "end_ms", "display_name"}`` windows (same time base as the
+    audio — both relative to recording start).
+
+    For each transcript segment we accumulate, per timeline name, how much its
+    window overlaps the segment; the name with the largest total overlap across
+    ALL segments of a given ``speaker_label`` wins (majority by duration). This
+    is robust to small misalignments and to the occasional missing window.
+
+    Returns NEW segment dicts with ``speaker_name`` added (``None`` when the
+    timeline is empty or no overlap was found — callers fall back to the label).
+    """
+    if not segments:
+        return segments
+    if not speaker_timeline:
+        return [{**seg, "speaker_name": None} for seg in segments]
+
+    # Tally overlap(label -> name -> ms) across all segments.
+    tally: dict[str, dict[str, int]] = {}
+    for seg in segments:
+        label = str(seg.get("speaker_label") or "")
+        s_start = int(seg.get("start_ms") or 0)
+        s_end = int(seg.get("end_ms") or s_start)
+        for window in speaker_timeline:
+            name = window.get("display_name")
+            if not name:
+                continue
+            w_start = int(window.get("start_ms") or 0)
+            w_end = int(window.get("end_ms") or w_start)
+            overlap = min(s_end, w_end) - max(s_start, w_start)
+            if overlap <= 0:
+                continue
+            tally.setdefault(label, {})[name] = tally.setdefault(label, {}).get(name, 0) + overlap
+
+    # Pick the dominant name per label.
+    label_to_name: dict[str, str] = {}
+    for label, names in tally.items():
+        if names:
+            label_to_name[label] = max(names.items(), key=lambda kv: kv[1])[0]
+
+    return [
+        {**seg, "speaker_name": label_to_name.get(str(seg.get("speaker_label") or ""))}
+        for seg in segments
+    ]
+
+
 def _iter_dicts(value: Any):
     if isinstance(value, dict):
         yield value
@@ -221,5 +274,6 @@ __all__ = [
     "SpeechKitTranscriber",
     "Transcriber",
     "TranscriptionResult",
+    "map_speakers_to_names",
     "parse_speechkit_segments",
 ]
