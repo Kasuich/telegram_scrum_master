@@ -33,6 +33,7 @@ from core.config import RuntimeConfig
 from core.exceptions import AgentError
 from core.invocation import (
     InvocationContext,
+    format_transport_context_for_prompt,
     normalize_invocation_context,
     reset_current_invocation_context,
     set_current_invocation_context,
@@ -1021,6 +1022,11 @@ class ReActRunner:
         if stage_addendum:
             system_msg = Message(
                 role="system", content=f"{system_msg.content}\n\n{stage_addendum}"
+            )
+        transport_block = format_transport_context_for_prompt(ctx.invocation_context)
+        if transport_block:
+            system_msg = Message(
+                role="system", content=f"{system_msg.content}\n\n{transport_block}"
             )
         out: list[Message] = [system_msg]
         for m in messages:

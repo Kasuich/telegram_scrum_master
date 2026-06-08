@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from core.db import get_session
-from core.invocation import InvocationContext
+from core.invocation import InvocationContext, format_actor_prefixed_message
 from core.models import (
     TelegramBusinessConnection,
     TelegramCallbackToken,
@@ -167,6 +168,17 @@ def _message_text(message_payload: dict[str, Any]) -> str:
     return str(value).strip()
 
 
+def _actor_username(
+    telegram_user: TelegramUser | None,
+    message_payload: dict[str, Any],
+) -> str | None:
+    if telegram_user is not None and telegram_user.username:
+        return str(telegram_user.username).lstrip("@")
+    from_payload = message_payload.get("from") or {}
+    username = from_payload.get("username")
+    return str(username).lstrip("@") if username else None
+
+
 def _actor_display_name(
     telegram_user: TelegramUser | None,
     message_payload: dict[str, Any],
@@ -242,6 +254,58 @@ def _message_mentions_bot(
     return False
 
 
+def _strip_bot_mention(
+    installation: TelegramInstallation,
+    message_payload: dict[str, Any],
+) -> str:
+    """Return message text without @bot mentions (for agent reasoning)."""
+    text = _message_text(message_payload)
+    bot_username = _bot_username(installation)
+    if not text or not bot_username:
+        return text
+
+    entities: list[dict[str, Any]] = []
+    for key in ("entities", "caption_entities"):
+        raw = message_payload.get(key) or []
+        entities.extend(item for item in raw if isinstance(item, dict))
+
+    spans: list[tuple[int, int]] = []
+    for entity in entities:
+        if entity.get("type") != "mention":
+            continue
+        try:
+            offset = int(entity.get("offset", 0))
+            length = int(entity.get("length", 0))
+        except (TypeError, ValueError):
+            continue
+        fragment = text[offset : offset + length].lstrip("@").lower()
+        if fragment == bot_username.lower():
+            spans.append((offset, offset + length))
+
+    cleaned = text
+    if spans:
+        for start, end in sorted(spans, reverse=True):
+            cleaned = cleaned[:start] + cleaned[end:]
+    else:
+        cleaned = re.sub(
+            rf"@?{re.escape(bot_username)}\b",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+    # Normalize command: /task@bot -> /task
+    if cleaned.startswith("/"):
+        cleaned = re.sub(
+            rf"^(/[a-zA-Z0-9_]+)@{re.escape(bot_username)}\b",
+            r"\1",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+    return " ".join(cleaned.split())
+
+
 def _message_replies_to_bot(
     installation: TelegramInstallation,
     message_payload: dict[str, Any],
@@ -313,19 +377,32 @@ def _build_invocation_context(
     message_payload: dict[str, Any],
 ) -> InvocationContext:
     reply_to_message = message_payload.get("reply_to_message") or {}
+    raw_text = _message_text(message_payload)
+    cleaned_text = _strip_bot_mention(installation, message_payload)
+    has_media = any(
+        message_payload.get(key)
+        for key in ("photo", "document", "video", "voice", "audio", "sticker", "animation")
+    )
     return InvocationContext(
         channel="telegram",
         team_id=str(installation.team_id),
         session_id=_telegram_session_id(installation, message),
         installation_id=str(installation.id),
         chat_id=message.external_chat_id,
+        chat_title=chat.title,
         message_id=message.external_message_id,
         thread_id=message.external_thread_id,
         actor_external_id=telegram_user.external_user_id if telegram_user is not None else None,
         actor_display_name=_actor_display_name(telegram_user, message_payload),
+        actor_username=_actor_username(telegram_user, message_payload),
         reply_to_message_id=(
             str(reply_to_message.get("message_id")) if reply_to_message.get("message_id") else None
         ),
+        is_bot_mentioned=_message_mentions_bot(installation, message_payload),
+        is_reply_to_bot=_message_replies_to_bot(installation, message_payload),
+        raw_text_without_mention=cleaned_text or None,
+        telegram_message_kind="command" if raw_text.startswith("/") else "text",
+        has_media=bool(has_media),
         metadata={
             "chat_type": chat.type,
             "ingest_mode": chat.ingest_mode,
@@ -436,9 +513,11 @@ async def _route_inbound_message(
         telegram_user,
         message_payload,
     )
+    body = context.raw_text_without_mention or _message_text(message_payload)
+    agent_message = format_actor_prefixed_message(body, context)
     result = await rpc_client.invoke(
         "pm_agent",
-        _message_text(message_payload),
+        agent_message,
         _telegram_session_id(installation, message),
         context=context,
     )
