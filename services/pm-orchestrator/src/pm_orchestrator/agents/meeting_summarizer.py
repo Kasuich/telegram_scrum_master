@@ -69,6 +69,6 @@ class MeetingSummarizerAgent(BaseAgent):
     tools = []
     action_only = False
     llm_configs = [
-        LLMSettings(model="gpt-oss-120b", temperature=0.2),
+        LLMSettings(model="yandexgpt", temperature=0.2),
         LLMSettings(model="yandexgpt-lite", temperature=0.2),
     ]
