@@ -93,20 +93,21 @@ def local_hour_key(
     return current.astimezone(tz).strftime("%Y-%m-%dT%H")
 
 
-def _tracker_datetime(value: datetime) -> str:
-    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _quote_yql(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def build_done_today_yql(queue: str, start_utc: datetime, end_utc: datetime) -> str:
+def _next_iso_date(value: str) -> str:
+    return (datetime.fromisoformat(value).date() + timedelta(days=1)).isoformat()
+
+
+def build_done_today_yql(queue: str, local_date: str) -> str:
+    next_date = _next_iso_date(local_date)
     return (
         f"Queue: {_quote_yql(queue)} "
         f"AND Resolution: !empty() "
-        f"AND Updated: >= {_quote_yql(_tracker_datetime(start_utc))} "
-        f"AND Updated: < {_quote_yql(_tracker_datetime(end_utc))}"
+        f"AND Updated: >= {_quote_yql(local_date)} "
+        f"AND Updated: < {_quote_yql(next_date)}"
     )
 
 
@@ -190,7 +191,7 @@ async def build_daily_digest_report(
     client_factory: Callable[[], TrackerClient] = TrackerClient,
 ) -> DigestReport:
     cfg = get_config().daily_digest
-    local_date, start_utc, end_utc = day_window_utc(now, timezone_name=cfg.timezone)
+    local_date, _, _ = day_window_utc(now, timezone_name=cfg.timezone)
     queue = await _load_team_queue(session, team_id)
 
     async with client_factory() as client:
@@ -201,7 +202,7 @@ async def build_daily_digest_report(
                 await client.search_issues(build_in_progress_yql(queue, status), limit=200)
             )
         done_raw = await client.search_issues(
-            build_done_today_yql(queue, start_utc, end_utc),
+            build_done_today_yql(queue, local_date),
             limit=200,
         )
 

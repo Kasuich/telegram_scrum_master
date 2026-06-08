@@ -12,6 +12,7 @@ from core.daily_digest import (
     DigestMember,
     DigestReport,
     build_daily_digest_report,
+    build_done_today_yql,
     day_window_utc,
     ensure_daily_digest_scheduled_job,
     format_daily_digest,
@@ -123,6 +124,14 @@ def test_day_window_uses_moscow_date() -> None:
     assert local_date == "2026-06-08"
     assert start_utc == datetime(2026, 6, 7, 21, 0, tzinfo=timezone.utc)
     assert end_utc == datetime(2026, 6, 8, 21, 0, tzinfo=timezone.utc)
+
+
+def test_done_today_yql_uses_tracker_date_literals() -> None:
+    yql = build_done_today_yql("DARKHORSE", "2026-06-08")
+
+    assert 'Updated: >= "2026-06-08"' in yql
+    assert 'Updated: < "2026-06-09"' in yql
+    assert "T21:00:00Z" not in yql
 
 
 async def test_build_report_groups_by_tracker_team_members() -> None:
