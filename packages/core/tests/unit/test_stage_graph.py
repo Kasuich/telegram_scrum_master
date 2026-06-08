@@ -135,6 +135,21 @@ def test_intake_terminal_on_created_key():
     assert stage.is_terminal([_result("tracker_create_issue", {"key": "T-1"})])
 
 
+def test_intake_allows_and_terminates_on_create_sprint():
+    stage = STAGES[StageId.INTAKE]
+    assert stage.check_tool(
+        "tracker_create_sprint",
+        {
+            "name": "Sprint 1",
+            "board_id": "3",
+            "start_date": "2026-06-10",
+            "end_date": "2026-06-24",
+        },
+        [],
+    ).allow
+    assert stage.is_terminal([_result("tracker_create_sprint", {"id": 44})])
+
+
 # ---------------------------------------------------------------------------
 # TRANSITION stage
 # ---------------------------------------------------------------------------
@@ -143,14 +158,18 @@ def test_intake_terminal_on_created_key():
 def test_transition_allows_transition_blocks_create():
     stage = STAGES[StageId.TRANSITION]
     assert stage.check_tool("tracker_transition_issue", {"issue_key": "T-1"}, []).allow
+    assert stage.check_tool("tracker_move_issues_to_in_progress", {"issue_keys": "T-1"}, []).allow
     assert stage.check_tool("tracker_close_issue", {"issue_key": "T-1"}, []).allow
+    assert stage.check_tool("tracker_close_issues", {"issue_keys": "T-1,T-2"}, []).allow
     assert not stage.check_tool("tracker_create_issue", {"summary": "x"}, []).allow
 
 
 def test_transition_terminal():
     stage = STAGES[StageId.TRANSITION]
     assert stage.is_terminal([_result("tracker_close_issue", {"issue_key": "T-1"})])
+    assert stage.is_terminal([_result("tracker_close_issues", {"closed_count": 2})])
     assert stage.is_terminal([_result("tracker_transition_issue", {"issue_key": "T-1"})])
+    assert stage.is_terminal([_result("tracker_move_issues_to_in_progress", {"updated_count": 1})])
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +202,15 @@ def test_open_ended_stages_never_self_terminate():
     for sid in (StageId.REORG, StageId.PROACTIVE, StageId.HYGIENE):
         stage = STAGES[sid]
         assert not stage.is_terminal([_result("tracker_patch_issue", {"key": "T-1"})])
+
+
+def test_reorg_allows_add_issues_to_sprint():
+    stage = STAGES[StageId.REORG]
+    assert stage.check_tool(
+        "tracker_add_issues_to_sprint",
+        {"issue_keys": "T-1,T-2", "sprint_name": "Sprint 1", "board_name": "Board"},
+        [],
+    ).allow
 
 
 def test_proactive_allows_comment_and_snapshot():

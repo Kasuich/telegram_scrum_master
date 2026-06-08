@@ -55,6 +55,105 @@ def _queue_from_issue_key(issue_key: str, fallback: str = "") -> str:
     return _effective_queue(fallback)
 
 
+def _norm_name(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _split_csv(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _extract_issue_key(*values: str) -> str:
+    for value in values:
+        match = re.search(r"\b([A-Z][A-Z0-9_]+-\d+)\b", value.upper())
+        if match:
+            return match.group(1)
+    return ""
+
+
+async def _resolve_board_id(
+    client: TrackerClient,
+    *,
+    board_id: str = "",
+    board_name: str = "",
+) -> tuple[str, dict[str, Any]]:
+    if board_id.strip():
+        return board_id.strip(), {}
+    target = _norm_name(board_name)
+    if not target:
+        raise TrackerError("board_id or board_name is required")
+
+    boards = await client.list_boards()
+    exact = [b for b in boards if _norm_name(str(b.get("name", ""))) == target]
+    if len(exact) == 1:
+        board = exact[0]
+        return str(board.get("id")), {"board_name": board.get("name")}
+    if len(exact) > 1:
+        raise TrackerError(
+            f"Board name {board_name!r} is ambiguous. Matches: "
+            f"{[{'id': b.get('id'), 'name': b.get('name')} for b in exact]}"
+        )
+
+    contains = [b for b in boards if target in _norm_name(str(b.get("name", "")))]
+    if len(contains) == 1:
+        board = contains[0]
+        return str(board.get("id")), {"board_name": board.get("name"), "board_match": "contains"}
+    if contains:
+        raise TrackerError(
+            f"Board name {board_name!r} is ambiguous. Matches: "
+            f"{[{'id': b.get('id'), 'name': b.get('name')} for b in contains]}"
+        )
+    raise TrackerError(f"Board {board_name!r} not found")
+
+
+async def _resolve_sprint_id(
+    client: TrackerClient,
+    *,
+    sprint_id: str = "",
+    sprint_name: str = "",
+    board_id: str = "",
+    board_name: str = "",
+) -> tuple[str, dict[str, Any]]:
+    if sprint_id.strip():
+        return sprint_id.strip(), {}
+    target = _norm_name(sprint_name)
+    if not target:
+        raise TrackerError("sprint_id or sprint_name is required")
+
+    board_meta: dict[str, Any] = {}
+    board_ids: list[str] = []
+    if board_id.strip() or board_name.strip():
+        resolved_board_id, board_meta = await _resolve_board_id(
+            client, board_id=board_id, board_name=board_name
+        )
+        board_ids = [resolved_board_id]
+    else:
+        boards = await client.list_boards()
+        board_ids = [str(b.get("id")) for b in boards if b.get("id") is not None]
+
+    matches: list[dict[str, Any]] = []
+    for bid in board_ids:
+        for sprint in await client.list_sprints(bid):
+            if _norm_name(str(sprint.get("name", ""))) == target:
+                matches.append({"board_id": bid, **sprint})
+
+    if len(matches) == 1:
+        sprint = matches[0]
+        board = sprint.get("board") or {}
+        return str(sprint.get("id")), {
+            **board_meta,
+            "sprint_name": sprint.get("name"),
+            "board_id": board.get("id") or sprint.get("board_id"),
+            "board": board.get("display") or board_meta.get("board_name"),
+        }
+    if len(matches) > 1:
+        raise TrackerError(
+            f"Sprint name {sprint_name!r} is ambiguous. Provide board_id/board_name. "
+            f"Matches: {[{'id': s.get('id'), 'name': s.get('name'), 'board_id': s.get('board_id')} for s in matches]}"
+        )
+    raise TrackerError(f"Sprint {sprint_name!r} not found")
+
+
 async def _resolve_login(
     name_or_login: str, client: TrackerClient, queue: str
 ) -> tuple[str, dict[str, Any]]:
@@ -151,6 +250,7 @@ async def tracker_find_issues(
     assignee: str = "",
     status: str = "",
     issue_key: str = "",
+    query: str = "",
     queue: str = "",
     limit: int = 15,
 ) -> dict[str, Any]:
@@ -166,7 +266,9 @@ async def tracker_find_issues(
     Returns candidates — pick the best match, do not ask the user for a key.
     """
     q = _effective_queue(queue)
-    key = issue_key.strip().upper()
+    key = _extract_issue_key(issue_key, query, summary_hint, status)
+    if query and not summary_hint and not status:
+        summary_hint = query
     async with TrackerClient() as client:
         if key:
             try:
@@ -379,6 +481,105 @@ async def tracker_create_issue(
     return out
 
 
+@platform_tool(name="tracker_create_sprint", risk="medium", scopes=["tracker:write"])
+async def tracker_create_sprint(
+    name: str,
+    start_date: str,
+    end_date: str,
+    board_id: str = "",
+    board_name: str = "",
+) -> dict[str, Any]:
+    """
+    Create a sprint on a Yandex Tracker board.
+
+    board_id: numeric board ID from Tracker Agile board URL/API.
+    board_name: board name; used when board_id is empty.
+    start_date/end_date: YYYY-MM-DD.
+    Use when the user asks to create/start planning a new sprint.
+    """
+    if not name.strip():
+        return {"error": "name is required"}
+    if not board_id.strip() and not board_name.strip():
+        return {"error": "board_id or board_name is required"}
+    if not start_date.strip() or not end_date.strip():
+        return {"error": "start_date and end_date are required in YYYY-MM-DD format"}
+
+    async with TrackerClient() as client:
+        resolved_board_id, board_meta = await _resolve_board_id(
+            client, board_id=board_id, board_name=board_name
+        )
+        sprint = await client.create_sprint(
+            name=name.strip(),
+            board_id=resolved_board_id,
+            start_date=start_date.strip(),
+            end_date=end_date.strip(),
+        )
+
+    board = sprint.get("board") or {}
+    return {
+        "id": sprint.get("id"),
+        "name": sprint.get("name"),
+        "status": sprint.get("status"),
+        "archived": sprint.get("archived"),
+        "board_id": board.get("id") or resolved_board_id,
+        "board": board.get("display") or board_meta.get("board_name"),
+        "start_date": sprint.get("startDate"),
+        "end_date": sprint.get("endDate"),
+        "url": sprint.get("self"),
+        "raw": sprint,
+    }
+
+
+@platform_tool(name="tracker_add_issues_to_sprint", risk="medium", scopes=["tracker:write"])
+async def tracker_add_issues_to_sprint(
+    issue_keys: str,
+    sprint_id: str = "",
+    sprint_name: str = "",
+    board_id: str = "",
+    board_name: str = "",
+    preserve_existing: bool = True,
+) -> dict[str, Any]:
+    """
+    Add one or more Tracker issues to a sprint.
+
+    issue_keys: comma-separated issue keys, e.g. DARKHORSE-1,DARKHORSE-2.
+    Provide sprint_id, or sprint_name with board_id/board_name when names may repeat.
+    """
+    keys = [key.upper() for key in _split_csv(issue_keys)]
+    if not keys:
+        return {"error": "issue_keys is required (comma-separated)"}
+
+    async with TrackerClient() as client:
+        resolved_sprint_id, sprint_meta = await _resolve_sprint_id(
+            client,
+            sprint_id=sprint_id,
+            sprint_name=sprint_name,
+            board_id=board_id,
+            board_name=board_name,
+        )
+        updated: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        for key in keys:
+            try:
+                issue = await client.add_issue_to_sprint(
+                    key,
+                    resolved_sprint_id,
+                    preserve_existing=preserve_existing,
+                )
+                updated.append(issue_summary(issue, detailed=True))
+            except TrackerError as exc:
+                errors.append({"issue_key": key, "error": str(exc)})
+
+    return {
+        "sprint_id": resolved_sprint_id,
+        **sprint_meta,
+        "updated_count": len(updated),
+        "error_count": len(errors),
+        "issues": updated,
+        "errors": errors,
+    }
+
+
 @platform_tool(name="tracker_patch_issue", risk="medium", scopes=["tracker:write"])
 async def tracker_patch_issue(
     issue_key: str,
@@ -512,12 +713,103 @@ async def tracker_transition_issue(
     }
 
 
+@platform_tool(name="tracker_move_issues_to_in_progress", risk="medium", scopes=["tracker:write"])
+async def tracker_move_issues_to_in_progress(
+    issue_keys: str,
+    comment: str = "",
+) -> dict[str, Any]:
+    """
+    Move one or more issues to the in-progress status ("В работе").
+
+    issue_keys: comma-separated issue keys, e.g. DARKHORSE-1,DARKHORSE-2.
+    """
+    keys = [key.upper() for key in _split_csv(issue_keys)]
+    if not keys:
+        return {"error": "issue_keys is required (comma-separated)"}
+
+    updated: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    async with TrackerClient() as client:
+        for key in keys:
+            try:
+                result = await client.transition_issue(
+                    key,
+                    "in_progress",
+                    comment=comment or None,
+                )
+                issue = await client.get_issue(key)
+                updated.append(
+                    {
+                        "issue_key": key,
+                        "transition": result,
+                        "issue": issue_summary(issue, detailed=True),
+                    }
+                )
+            except TrackerError as exc:
+                errors.append({"issue_key": key, "error": str(exc)})
+
+    return {
+        "target_status": "in_progress",
+        "updated_count": len(updated),
+        "error_count": len(errors),
+        "issues": updated,
+        "errors": errors,
+    }
+
+
 @platform_tool(name="tracker_link_issues", risk="medium", scopes=["tracker:write"])
 async def tracker_link_issues(issue_key: str, parent_key: str) -> dict[str, Any]:
     """Set parent issue (make issue_key a subtask of parent_key)."""
     async with TrackerClient() as client:
         issue = await client.set_parent(issue_key, parent_key)
     return issue_summary(issue, detailed=True)
+
+
+@platform_tool(name="tracker_close_issues", risk="high", scopes=["tracker:write"])
+async def tracker_close_issues(
+    issue_keys: str,
+    resolution: str = "fixed",
+    comment: str = "",
+) -> dict[str, Any]:
+    """
+    Close one or more Yandex Tracker issues.
+
+    issue_keys: comma-separated issue keys, e.g. DARKHORSE-1,DARKHORSE-2.
+    resolution: fixed, wontFix, duplicate, etc.
+    """
+    keys = [key.upper() for key in _split_csv(issue_keys)]
+    if not keys:
+        return {"error": "issue_keys is required (comma-separated)"}
+
+    closed: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    async with TrackerClient() as client:
+        for key in keys:
+            try:
+                result = await client.transition_issue(
+                    key,
+                    "closed",
+                    resolution=resolution or None,
+                    comment=comment or None,
+                )
+                issue = await client.get_issue(key)
+                closed.append(
+                    {
+                        "issue_key": key,
+                        "transition": result,
+                        "issue": issue_summary(issue, detailed=True),
+                    }
+                )
+            except TrackerError as exc:
+                errors.append({"issue_key": key, "error": str(exc)})
+
+    return {
+        "target_status": "closed",
+        "closed_count": len(closed),
+        "error_count": len(errors),
+        "issues": closed,
+        "errors": errors,
+    }
 
 
 @platform_tool(name="tracker_comment_issue", risk="low", scopes=["tracker:write"])
@@ -686,11 +978,15 @@ __all__ = [
     "tracker_board_snapshot",
     "tracker_read_comments",
     "tracker_create_issue",
+    "tracker_create_sprint",
+    "tracker_add_issues_to_sprint",
     "tracker_patch_issue",
     "tracker_update_issue",
     "tracker_update_followers",
     "tracker_transition_issue",
+    "tracker_move_issues_to_in_progress",
     "tracker_link_issues",
+    "tracker_close_issues",
     "tracker_comment_issue",
     "tracker_close_issue",
 ]

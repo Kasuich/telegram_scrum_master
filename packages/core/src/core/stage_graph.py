@@ -114,9 +114,24 @@ def apply_backlog_succeeded(turn_steps: TurnSteps) -> bool:
     return False
 
 
+def create_sprint_succeeded(turn_steps: TurnSteps) -> bool:
+    for s in _tool_results(turn_steps):
+        if s.get("tool_name") != "tracker_create_sprint":
+            continue
+        res = s.get("result") or {}
+        if isinstance(res, dict) and not res.get("error") and res.get("id"):
+            return True
+    return False
+
+
 def transition_or_close_succeeded(turn_steps: TurnSteps) -> bool:
     for s in _tool_results(turn_steps):
-        if s.get("tool_name") not in ("tracker_transition_issue", "tracker_close_issue"):
+        if s.get("tool_name") not in (
+            "tracker_transition_issue",
+            "tracker_move_issues_to_in_progress",
+            "tracker_close_issue",
+            "tracker_close_issues",
+        ):
             continue
         res = s.get("result") or {}
         if isinstance(res, dict) and not res.get("error"):
@@ -367,7 +382,9 @@ _STAGE_BLOCK_DEFAULT: dict[StageId, str] = {
 
 _INTAKE_ADDENDUM = (
     "Активная стадия: INTAKE (создание задачи). Разрешено: resolve_assignee → "
-    "create_issue. Перед созданием проверь полноту карточки (summary одной строкой, "
+    "create_issue. Если пользователь просит создать спринт, используй tracker_create_sprint "
+    "(name, start_date, end_date, board_id или board_name), а не tracker_create_issue. "
+    "Перед созданием проверь полноту карточки (summary одной строкой, "
     "исполнитель, приоритет, оценка, дедлайн, родительский эпик) и ЗАПОЛНИ пропуски "
     "сам из контекста — не спрашивай. В отчёте перечисли, что предположил."
 )
@@ -412,8 +429,10 @@ _HYGIENE_ADDENDUM = (
 
 INTAKE = Stage(
     id=StageId.INTAKE,
-    allowed_tools=_READ_TOOLS | {"tracker_create_issue", "tracker_link_issues"},
-    terminal=lambda steps: bool(created_issue_keys_in_turn(steps, 0)),
+    allowed_tools=_READ_TOOLS
+    | {"tracker_create_issue", "tracker_create_sprint", "tracker_link_issues"},
+    terminal=lambda steps: bool(created_issue_keys_in_turn(steps, 0))
+    or create_sprint_succeeded(steps),
     prompt_addendum=_INTAKE_ADDENDUM,
     ordered_guards=_create_guards(),
 )
@@ -452,7 +471,13 @@ BOARD = Stage(
 
 TRANSITION = Stage(
     id=StageId.TRANSITION,
-    allowed_tools=_READ_TOOLS | {"tracker_transition_issue", "tracker_close_issue"},
+    allowed_tools=_READ_TOOLS
+    | {
+        "tracker_transition_issue",
+        "tracker_move_issues_to_in_progress",
+        "tracker_close_issue",
+        "tracker_close_issues",
+    },
     terminal=transition_or_close_succeeded,
     prompt_addendum=_TRANSITION_ADDENDUM,
 )
@@ -472,6 +497,7 @@ REORG = Stage(
         "tracker_patch_issue",
         "tracker_update_issue",
         "tracker_link_issues",
+        "tracker_add_issues_to_sprint",
         "tracker_create_issue",
         "tracker_comment_issue",
         "tracker_close_issue",
@@ -532,4 +558,5 @@ __all__ = [
     "apply_backlog_succeeded",
     "transition_or_close_succeeded",
     "any_read_answer",
+    "create_sprint_succeeded",
 ]
