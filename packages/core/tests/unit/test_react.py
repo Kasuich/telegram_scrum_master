@@ -229,6 +229,81 @@ class TestTextReply:
         assert "user" in roles
         assert "assistant" in roles
 
+    @patch.dict("os.environ", ENV)
+    async def test_history_is_compacted_into_summary_after_ten_messages(self, agent_no_tools):
+        runner = _runner(agent_no_tools)
+        calls_made: list[list[dict[str, Any]]] = []
+
+        async def _post_spy(*args, **kwargs):
+            calls_made.append(kwargs.get("json", {}).get("input", []))
+            reply_no = len(calls_made)
+            return _http_ok(_text_response(f"Reply {reply_no}"))
+
+        with (
+            patch("httpx.AsyncClient.post", _post_spy),
+            patch.object(
+                runner,
+                "_summarize_session_context",
+                AsyncMock(return_value="Team context summary."),
+            ) as summarize,
+        ):
+            for idx in range(6):
+                await runner.invoke(f"Turn {idx + 1}", "s_compact")
+
+        assert summarize.await_count >= 1
+        session = runner._mem_sessions["s_compact"]
+        assert len(session["messages"]) == 10
+        assert session["summary_context"] == "Team context summary."
+        llm_messages = runner._llm_messages(
+            runner._make_ctx(None, None),
+            session["messages"],
+            session_summary=session["summary_context"],
+        )
+        system_texts = [m.content for m in llm_messages if m.role == "system"]
+        assert any("Team context summary." in text for text in system_texts)
+
+    @patch.dict("os.environ", ENV)
+    async def test_summary_context_is_injected_into_followup_llm_call(self, agent_no_tools):
+        runner = _runner(agent_no_tools)
+        payloads: list[dict[str, Any]] = []
+
+        async def _post_spy(*args, **kwargs):
+            payload = kwargs.get("json", {})
+            payloads.append(payload)
+            reply_no = len(payloads)
+            return _http_ok(_text_response(f"Reply {reply_no}"))
+
+        with (
+            patch("httpx.AsyncClient.post", _post_spy),
+            patch.object(
+                runner,
+                "_summarize_session_context",
+                AsyncMock(return_value="Compressed team memory."),
+            ),
+        ):
+            for idx in range(6):
+                await runner.invoke(f"Turn {idx + 1}", "s_compact_followup")
+            await runner.invoke("Turn 7", "s_compact_followup")
+
+        assert any(
+            "Compressed team memory." in str(payload.get("instructions", ""))
+            for payload in payloads
+        )
+
+    @patch.dict("os.environ", ENV)
+    async def test_compaction_falls_back_without_breaking_turn(self, agent_no_tools):
+        runner = _runner(agent_no_tools)
+        older_messages = [
+            {"role": "user", "content": "Roman ведет backend и Telegram-интеграцию."},
+            {"role": "assistant", "content": "Запомнил роли и текущий фокус команды."},
+        ]
+
+        with patch("core.react.LLMClient.complete", AsyncMock(side_effect=RuntimeError("boom"))):
+            summary = await runner._summarize_session_context("Команда ведет PM-платформу.", older_messages)
+
+        assert "Команда ведет PM-платформу." in summary
+        assert "Roman ведет backend и Telegram-интеграцию." in summary
+
 
 # ---------------------------------------------------------------------------
 # Tests: auto-execute (low risk)
