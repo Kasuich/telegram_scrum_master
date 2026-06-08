@@ -46,6 +46,7 @@ class CaptureSettings(BaseSettings):
     s3_region: str = Field(default="ru-central1", alias="S3_REGION")
 
     speechkit_api_key: str = Field(default="", alias="SPEECHKIT_API_KEY")
+    yc_api_key: str = Field(default="", alias="YC_API_KEY")
     speechkit_base_url: str = Field(
         default="https://stt.api.cloud.yandex.net",
         alias="SPEECHKIT_BASE_URL",
@@ -78,6 +79,10 @@ class CaptureSettings(BaseSettings):
         return bool(
             self.s3_bucket and self.s3_access_key and self.s3_secret_key
         )
+
+    @property
+    def effective_speechkit_api_key(self) -> str:
+        return (self.speechkit_api_key or self.yc_api_key).strip()
 
     @property
     def effective_display(self) -> str:

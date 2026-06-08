@@ -189,11 +189,18 @@ class MeetingDispatcher:
             )
             await self.repository.set_status(meeting_id, "ready")
             target_chat_id = (getattr(meeting, "metadata_json", None) or {}).get("target_chat_id")
-            await self._summarize_and_fanout(
-                meeting_id,
-                transcription,
-                target_chat_id=target_chat_id,
-            )
+            if transcription.segments:
+                await self._summarize_and_fanout(
+                    meeting_id,
+                    transcription,
+                    target_chat_id=target_chat_id,
+                )
+            else:
+                await self._deliver_empty_transcription_notice(
+                    meeting_id,
+                    transcription.source,
+                    target_chat_id=target_chat_id,
+                )
         except Exception as exc:
             logger.exception("Meeting capture failed for %s", meeting_id)
             if recorder_started:
@@ -330,11 +337,14 @@ class MeetingDispatcher:
             lines.append(f"[{_fmt_ts(s.get('start_ms', 0))}] {who}: {s.get('text', '')}")
         return "\n".join(lines)
 
-    async def _deliver_summary_to_telegram(
+    async def _enqueue_telegram_text(
         self,
         meeting_id: uuid.UUID,
-        summary: str,
+        *,
         target_chat_id: str | None,
+        text: str,
+        dedupe_key: str,
+        skip_reason: str,
     ) -> None:
         chat_id = target_chat_id or self.settings.telegram_fallback_chat_id
         if not chat_id:
@@ -344,17 +354,54 @@ class MeetingDispatcher:
 
         team_id = getattr(self.repository, "team_id", None)
         if team_id is None:
-            logger.warning("Repository has no team_id; cannot enqueue Telegram summary")
+            logger.warning("Repository has no team_id; cannot enqueue Telegram %s", skip_reason)
             return
         try:
             await enqueue_telegram_message(
                 team_id=team_id,
                 target_chat_id=str(chat_id),
-                text=f"📝 Итоги встречи:\n\n{summary}",
-                dedupe_key=f"meeting:summary:{meeting_id}",
+                text=text,
+                dedupe_key=dedupe_key,
             )
         except Exception:
-            logger.exception("Failed to enqueue Telegram summary for meeting %s", meeting_id)
+            logger.exception(
+                "Failed to enqueue Telegram %s for meeting %s",
+                skip_reason,
+                meeting_id,
+            )
+
+    async def _deliver_empty_transcription_notice(
+        self,
+        meeting_id: uuid.UUID,
+        source: str,
+        *,
+        target_chat_id: str | None,
+    ) -> None:
+        from meeting_capture.transcription import empty_transcription_user_message
+
+        message = empty_transcription_user_message(source)
+        logger.info("Meeting %s has empty transcript (%s); notifying chat", meeting_id, source)
+        await self._enqueue_telegram_text(
+            meeting_id,
+            target_chat_id=target_chat_id,
+            text=f"⚠️ {message}",
+            dedupe_key=f"meeting:transcript-empty:{meeting_id}",
+            skip_reason="empty-transcript notice",
+        )
+
+    async def _deliver_summary_to_telegram(
+        self,
+        meeting_id: uuid.UUID,
+        summary: str,
+        target_chat_id: str | None,
+    ) -> None:
+        await self._enqueue_telegram_text(
+            meeting_id,
+            target_chat_id=target_chat_id,
+            text=f"📝 Итоги встречи:\n\n{summary}",
+            dedupe_key=f"meeting:summary:{meeting_id}",
+            skip_reason="summary",
+        )
 
     async def _send_summary_to_pm_agent(
         self,
