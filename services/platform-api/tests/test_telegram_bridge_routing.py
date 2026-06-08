@@ -9,6 +9,7 @@ from core.models import TelegramChat, TelegramInstallation, TelegramMessage, Tel
 from core.react import AgentResult, PendingConfirm
 from platform_api.telegram_bridge import (
     _build_invocation_context,
+    _extract_telemost_url,
     _route_inbound_message,
     _should_route_message,
     _strip_bot_mention,
@@ -240,6 +241,53 @@ def test_build_invocation_context_fills_telegram_fields() -> None:
     assert ctx.is_bot_mentioned is True
     assert ctx.chat_title == "Team"
     assert ctx.metadata["chat_type"] == "group"
+
+
+def test_extract_telemost_url_from_plain_message() -> None:
+    url = "https://telemost.yandex.ru/j/12345678901234567"
+    assert _extract_telemost_url(url) == url
+    assert _extract_telemost_url(f"заходи {url}.") == url
+
+
+def test_extract_telemost_url_ignores_non_links() -> None:
+    assert _extract_telemost_url("создай задачу") is None
+
+
+@pytest.mark.asyncio
+async def test_route_inbound_message_short_circuits_telemost_link() -> None:
+    session = _FakeSession()
+    installation = _installation()
+    chat = _chat(type="private", ingest_mode="direct")
+    message = _message()
+    telegram_user = _telegram_user()
+    telemost_url = "https://telemost.yandex.ru/j/12345678901234567"
+    payload = {"text": telemost_url, "from": {"first_name": "Ivan"}}
+
+    with (
+        patch(
+            "platform_api.telegram_bridge.rpc_client.invoke",
+            AsyncMock(),
+        ) as invoke,
+        patch(
+            "platform_api.telegram_bridge._schedule_meeting_capture",
+            AsyncMock(return_value="🤖 Иду на встречу и включаю запись."),
+        ) as schedule,
+    ):
+        routing = await _route_inbound_message(
+            session,
+            installation=installation,
+            chat=chat,
+            message=message,
+            telegram_user=telegram_user,
+            message_payload=payload,
+        )
+
+    invoke.assert_not_awaited()
+    schedule.assert_awaited_once_with(telemost_url, chat.external_chat_id)
+    assert routing is not None
+    assert "Иду на встречу" in routing["reply"]
+    assert len(session.added) == 1
+    assert session.added[0].payload["text"] == "🤖 Иду на встречу и включаю запись."
 
 
 @pytest.mark.asyncio
