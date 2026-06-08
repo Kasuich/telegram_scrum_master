@@ -254,6 +254,23 @@ class TestLLMClientComplete:
             set_config(None)
             return LLMClient(max_retries=0)
 
+    def test_split_messages_skips_empty_history_items(self) -> None:
+        """Persisted empty assistant replies must not poison the Responses API input."""
+        instructions, input_items = LLMClient._split_messages(
+            [
+                Message(role="system", content="System"),
+                Message(role="user", content="hello"),
+                Message(role="assistant", content=""),
+                {"role": "user", "content": "  next question  "},
+            ]
+        )
+
+        assert instructions == "System"
+        assert input_items == [
+            {"role": "user", "content": "hello"},
+            {"role": "user", "content": "next question"},
+        ]
+
     @pytest.mark.asyncio
     async def test_successful_text_response(self) -> None:
         """complete() returns LLMResponse with text content."""

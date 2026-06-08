@@ -232,10 +232,11 @@ class LLMClient:
             else:
                 role = msg.get("role", "user")
                 content = msg.get("content", msg.get("text", ""))
+            content = str(content or "").strip()
             if role == "system":
                 if content:
                     instructions_parts.append(content)
-            else:
+            elif content:
                 input_items.append({"role": role, "content": content})
         return "\n\n".join(instructions_parts), input_items
 

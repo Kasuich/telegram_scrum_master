@@ -71,10 +71,12 @@ _SESSION_CONTEXT_SYSTEM = (
     "Приоритет содержания, от более важного к менее важному:\n"
     "1. Кто входит в команду, какие у людей роли, зоны ответственности, логины, алиасы, "
     "устойчивые связи между именами и задачами.\n"
-    "2. Над какими проектами, эпиками, сервисами, интеграциями и направлениями команда реально работает.\n"
+    "2. Над какими проектами, эпиками, сервисами, интеграциями и направлениями "
+    "команда реально работает.\n"
     "3. Какие договорённости и рабочие правила уже приняты: naming, очереди, маршруты, "
     "workflow, транспорт, ограничения по прод/тесту, способы деплоя и эксплуатации.\n"
-    "4. Какие незавершённые хвосты, риски, блокеры, технические долги и спорные решения сейчас открыты.\n"
+    "4. Какие незавершённые хвосты, риски, блокеры, технические долги и спорные "
+    "решения сейчас открыты.\n"
     "5. Какие артефакты и объекты нужно помнить дальше: issue keys, service names, server roles, "
     "env vars, chat ids, важные URL, feature flags, branch names.\n"
     "6. Какие недавние действия уже были выполнены и что не нужно предлагать повторно.\n\n"
@@ -83,7 +85,8 @@ _SESSION_CONTEXT_SYSTEM = (
     "- дословный пересказ каждой реплики;\n"
     "- предположения, которых нет в сообщениях;\n"
     "- устаревшие детали, если новые сообщения им противоречат.\n\n"
-    "Если данных мало, верни короткий, но всё равно полезный рабочий контекст только из подтверждённых фактов."
+    "Если данных мало, верни короткий, но всё равно полезный рабочий контекст "
+    "только из подтверждённых фактов."
 )
 
 # Stable namespace for deriving a UUID from an arbitrary session string
@@ -203,9 +206,7 @@ def _fallback_session_context(
     lines: list[str] = []
     if existing_summary:
         lines.extend(
-            sentence.strip()
-            for sentence in existing_summary.splitlines()
-            if sentence.strip()
+            sentence.strip() for sentence in existing_summary.splitlines() if sentence.strip()
         )
 
     for item in older_messages:
@@ -336,9 +337,7 @@ def _format_action_tool_line(tool_name: str, result: dict[str, Any]) -> str:
             line += f", пропущено дублей {skip_n}"
             skipped = result.get("skipped") or []
             if skipped:
-                examples = ", ".join(
-                    f"{s.get('key')}" for s in skipped[:2] if s.get("key")
-                )
+                examples = ", ".join(f"{s.get('key')}" for s in skipped[:2] if s.get("key"))
                 if examples:
                     line += f" ({examples})"
         if err_n:
@@ -687,7 +686,9 @@ class ReActRunner:
             session_summary=state.get("summary_context", ""),
         )
         llm_response, _ = await self.agent._call_with_fallback(llm_messages, [])
-        reply = (llm_response.content or "").strip()
+        reply = (llm_response.content or "").strip() or (
+            "Я на связи. Могу найти, создать или обновить задачи в Яндекс Трекере."
+        )
         state["steps"].append(_step("final", content=reply, reason="dialog"))
         state["messages"].append({"role": "assistant", "content": reply})
         await self._compact_session_history(state)
@@ -838,9 +839,7 @@ class ReActRunner:
             stage = _get_stage(item.stage)
             turn_steps = outcome.turn_steps or []
             complete = (
-                outcome.kind == "done"
-                and stage is not None
-                and stage.is_terminal(turn_steps)
+                outcome.kind == "done" and stage is not None and stage.is_terminal(turn_steps)
             )
             if complete:
                 continue
@@ -891,9 +890,7 @@ class ReActRunner:
             for i, o in enumerate(final_outcomes)
         )
 
-        reply = self._build_multi_scenario_report(
-            TurnPlan(items=plan_slice), final_outcomes
-        )
+        reply = self._build_multi_scenario_report(TurnPlan(items=plan_slice), final_outcomes)
         if needs_llm and len(plan_slice) > 1:
             llm_reply = await self._reflection_llm_check(reply, plan_slice, final_outcomes)
             if llm_reply:
@@ -918,9 +915,7 @@ class ReActRunner:
         """Optional LLM pass to sanity-check a multi-scenario report."""
         from core.llm import LLMClient, Message
 
-        scenarios_text = "\n".join(
-            f"- {item.stage.value}: {item.payload[:200]}" for item in items
-        )
+        scenarios_text = "\n".join(f"- {item.stage.value}: {item.payload[:200]}" for item in items)
         client = LLMClient(model="yandexgpt", temperature=0.0, max_tokens=256, max_retries=0)
         try:
             resp = await client.complete(
@@ -1004,9 +999,7 @@ class ReActRunner:
         state["_steps_before_turn"] = len(state["steps"])
         # Re-hydrate the frozen stage when plan metadata was not persisted.
         if getattr(self.agent, "action_only", False) and not state.get("_stage"):
-            await self._set_turn_stage(
-                state, state.get("_turn_user_message", ""), use_llm=False
-            )
+            await self._set_turn_stage(state, state.get("_turn_user_message", ""), use_llm=False)
 
         if approved:
             try:
@@ -1104,9 +1097,7 @@ class ReActRunner:
             out.extend(Message(role=m["role"], content=m["content"]) for m in messages)
             return out
         if stage_addendum:
-            system_msg = Message(
-                role="system", content=f"{system_msg.content}\n\n{stage_addendum}"
-            )
+            system_msg = Message(role="system", content=f"{system_msg.content}\n\n{stage_addendum}")
         transport_block = format_transport_context_for_prompt(ctx.invocation_context)
         if transport_block:
             system_msg = Message(
@@ -1152,9 +1143,7 @@ class ReActRunner:
         if stage is not None:
             # Constrain the LLM to this stage's allowed tools only.
             tool_schemas = [
-                s
-                for s in tool_schemas
-                if s.get("name") in stage.allowed_tools
+                s for s in tool_schemas if s.get("name") in stage.allowed_tools
             ] or tool_schemas
 
         for iteration in range(self.max_iterations):
@@ -1225,9 +1214,7 @@ class ReActRunner:
                     reply = llm_text
                 if action_only and state.get("_plan"):
                     turn_steps = steps[steps_before_turn:]
-                    return ScenarioOutcome(
-                        kind="done", turn_steps=list(turn_steps), reply=reply
-                    )
+                    return ScenarioOutcome(kind="done", turn_steps=list(turn_steps), reply=reply)
                 steps.append(_step("final", content=reply))
                 messages.append({"role": "assistant", "content": reply})
                 state["messages"] = messages
@@ -1269,10 +1256,7 @@ class ReActRunner:
                 )
                 if not decision.allow:
                     guard_err = decision.reason
-                elif (
-                    stage.id == StageId.INTAKE
-                    and tool_call.name == "tracker_create_issue"
-                ):
+                elif stage.id == StageId.INTAKE and tool_call.name == "tracker_create_issue":
                     if message_has_create_sprint_intent(state.get("_turn_user_message", "")):
                         guard_err = (
                             "Пользователь просит создать спринт. Используй "
@@ -1462,9 +1446,7 @@ class ReActRunner:
                 # Deterministic forced edges (no LLM round-trip). Generalized
                 # from the backlog_plan -> apply auto-chain.
                 if stage is not None:
-                    await self._run_forced_edges(
-                        ctx, session_id, stage, steps, steps_before_turn
-                    )
+                    await self._run_forced_edges(ctx, session_id, stage, steps, steps_before_turn)
                 else:
                     await self._run_legacy_backlog_chain(
                         ctx, session_id, state, steps, steps_before_turn, tool_call.name
@@ -1545,9 +1527,7 @@ class ReActRunner:
         return ScenarioOutcome(
             kind="max_iter",
             turn_steps=list(turn_steps),
-            agent_result=AgentResult(
-                reply=reply, session_id=session_id, steps=list(turn_steps)
-            ),
+            agent_result=AgentResult(reply=reply, session_id=session_id, steps=list(turn_steps)),
         )
 
     # ------------------------------------------------------------------
@@ -1584,9 +1564,7 @@ class ReActRunner:
             # Forced apply always passes an empty plan_json (the stashed plan is
             # injected by the tool), so no plan_json validation is needed here.
             exec_args = dict(forced.tool_args)
-            steps.append(
-                _step("tool_call", tool_name=forced.tool_name, tool_args=exec_args)
-            )
+            steps.append(_step("tool_call", tool_name=forced.tool_name, tool_args=exec_args))
             try:
                 forced_result = await self._execute_tool(forced.tool_name, exec_args)
                 steps.append(
@@ -1608,9 +1586,7 @@ class ReActRunner:
                     output=forced_result,
                 )
             except Exception as forced_exc:
-                steps.append(
-                    _step("tool_error", tool_name=forced.tool_name, error=str(forced_exc))
-                )
+                steps.append(_step("tool_error", tool_name=forced.tool_name, error=str(forced_exc)))
                 return
 
     async def _run_legacy_backlog_chain(
@@ -1638,8 +1614,7 @@ class ReActRunner:
 
         turn_msg = state.get("_turn_user_message", "")
         apply_done = any(
-            s.get("kind") == "tool_result"
-            and s.get("tool_name") == "tracker_apply_backlog_plan"
+            s.get("kind") == "tool_result" and s.get("tool_name") == "tracker_apply_backlog_plan"
             for s in steps[steps_before_turn:]
         )
         if not (message_has_backlog_intent(turn_msg) and not apply_done):

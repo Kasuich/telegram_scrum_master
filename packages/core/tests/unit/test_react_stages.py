@@ -117,8 +117,13 @@ def _register_fake_tracker_tools():
         summary: str = "", assignee: str = "", priority: str = ""
     ) -> dict:
         "create"
-        return {"key": "DARKHORSE-7", "summary": summary, "assignee": assignee or "Коля",
-                "priority": priority or "normal", "deadline": "2026-06-14"}
+        return {
+            "key": "DARKHORSE-7",
+            "summary": summary,
+            "assignee": assignee or "Коля",
+            "priority": priority or "normal",
+            "deadline": "2026-06-14",
+        }
 
     @platform_tool(name="tracker_comment_issue", risk="low", scopes=["tracker:write"])
     async def tracker_comment_issue(issue_key: str = "", text: str = "") -> dict:
@@ -312,6 +317,24 @@ class TestDialogStage:
         assert post.await_count == 1
         tool_steps = [s for s in result.steps if s.get("kind") == "tool_call"]
         assert not tool_steps
+
+    @patch.dict("os.environ", ENV)
+    async def test_dialog_never_returns_empty_reply(self):
+        from core.turn_plan import TurnPlan
+
+        _register_fake_tracker_tools()
+        runner = _runner(_pm_agent())
+
+        async def _dialog_plan(message: str, *, use_llm: bool = True):
+            return TurnPlan.dialog(message)
+
+        post = AsyncMock(return_value=_http_ok(_text_response("")))
+        with patch("core.react.plan_turn", side_effect=_dialog_plan):
+            with patch("httpx.AsyncClient.post", post):
+                result = await runner.invoke("привет", "dlg-empty")
+
+        assert result.reply
+        assert "Я на связи" in result.reply
 
 
 # ---------------------------------------------------------------------------
