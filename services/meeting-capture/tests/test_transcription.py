@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from meeting_capture.transcription import map_speakers_to_names, parse_speechkit_segments
+from meeting_capture.transcription import (
+    empty_transcription_user_message,
+    map_speakers_to_names,
+    parse_speechkit_segments,
+)
+
+
+def test_empty_transcription_user_message_for_missing_s3() -> None:
+    message = empty_transcription_user_message("speechkit_missing_audio_uri")
+    assert "Object Storage" in message
+    assert "S3_" in message
 
 
 def test_parse_speechkit_segments_from_nested_payload() -> None:

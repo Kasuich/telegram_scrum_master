@@ -47,7 +47,7 @@ class SpeechKitTranscriber(Transcriber):
         participants_observed: list[dict[str, Any]],
     ) -> TranscriptionResult:
         del audio_path
-        if not self.settings.speechkit_api_key:
+        if not self.settings.effective_speechkit_api_key:
             return TranscriptionResult(
                 source="speechkit_unconfigured",
                 segments=[],
@@ -98,7 +98,7 @@ class SpeechKitTranscriber(Transcriber):
         response = await client.post(
             url,
             json=body,
-            headers={"Authorization": f"Api-Key {self.settings.speechkit_api_key}"},
+            headers={"Authorization": f"Api-Key {self.settings.effective_speechkit_api_key}"},
         )
         response.raise_for_status()
         payload = response.json()
@@ -116,7 +116,7 @@ class SpeechKitTranscriber(Transcriber):
             response = await client.get(
                 url,
                 params={"operationId": operation_id},
-                headers={"Authorization": f"Api-Key {self.settings.speechkit_api_key}"},
+                headers={"Authorization": f"Api-Key {self.settings.effective_speechkit_api_key}"},
             )
             if response.status_code in (202, 404, 409):
                 await asyncio.sleep(self.settings.speechkit_poll_interval_sec)
@@ -128,6 +128,26 @@ class SpeechKitTranscriber(Transcriber):
                 continue
             return payload
         raise TimeoutError("SpeechKit transcription timed out")
+
+
+def empty_transcription_user_message(source: str) -> str:
+    """Human-readable Telegram notice when a meeting has no transcript segments."""
+    if source == "speechkit_unconfigured":
+        return (
+            "Встреча записана, но транскрибация не настроена. "
+            "Задайте SPEECHKIT_API_KEY или YC_API_KEY с ролью SpeechKit."
+        )
+    if source == "speechkit_missing_audio_uri":
+        return (
+            "Встреча записана, но транскрибация недоступна: аудио не загружено в Object Storage. "
+            "Проверьте S3_BUCKET, S3_ACCESS_KEY и S3_SECRET_KEY."
+        )
+    if source == "speechkit":
+        return (
+            "Встреча записана, но речь не распознана "
+            "(тишина, слишком короткая запись или ошибка SpeechKit)."
+        )
+    return f"Встреча записана, но транскрипт пуст (источник: {source})."
 
 
 def parse_speechkit_segments(payload: Any) -> list[dict[str, Any]]:
@@ -274,6 +294,7 @@ __all__ = [
     "SpeechKitTranscriber",
     "Transcriber",
     "TranscriptionResult",
+    "empty_transcription_user_message",
     "map_speakers_to_names",
     "parse_speechkit_segments",
 ]

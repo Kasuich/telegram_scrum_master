@@ -114,6 +114,34 @@ async def test_fanout_delivers_to_telegram_and_pm_agent(tmp_path: Path, monkeypa
     assert pm_calls[0]["context"]["chat_id"] == "-100123"
 
 
+async def test_empty_transcript_sends_notice_to_telegram(tmp_path: Path, monkeypatch) -> None:
+    disp, repo = _dispatcher(tmp_path)
+    meeting_id = uuid.uuid4()
+    transcription = TranscriptionResult(
+        source="speechkit_missing_audio_uri",
+        segments=[],
+    )
+
+    enqueued: list[dict[str, Any]] = []
+
+    async def _fake_enqueue(**kwargs: Any) -> uuid.UUID:
+        enqueued.append(kwargs)
+        return uuid.uuid4()
+
+    monkeypatch.setattr(
+        "meeting_capture.telegram_outbox.enqueue_telegram_message", _fake_enqueue
+    )
+
+    await disp._deliver_empty_transcription_notice(
+        meeting_id, transcription.source, target_chat_id="-100123"
+    )
+
+    assert len(enqueued) == 1
+    assert enqueued[0]["target_chat_id"] == "-100123"
+    assert "Object Storage" in enqueued[0]["text"]
+    assert enqueued[0]["team_id"] == repo.team_id
+
+
 def test_format_transcript_prefers_name_over_label(tmp_path: Path) -> None:
     disp, _ = _dispatcher(tmp_path)
     transcription = TranscriptionResult(
