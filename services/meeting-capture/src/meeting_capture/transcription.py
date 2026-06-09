@@ -228,8 +228,7 @@ def parse_speechkit_segments(payload: Any) -> list[dict[str, Any]]:
         if not isinstance(chunk, dict):
             continue
         chunk_speaker = (
-            _first_value(chunk, "speakerTag", "speaker_tag", "channelTag", "channel_tag")
-            or "SPEAKER_00"
+            _first_value(chunk, "speakerTag", "speaker_tag", "channelTag", "channel_tag") or "0"
         )
         alternatives = chunk.get("alternatives") or []
         if not isinstance(alternatives, list):
@@ -238,25 +237,34 @@ def parse_speechkit_segments(payload: Any) -> list[dict[str, Any]]:
         alternative = alternatives[0] if alternatives else None
         if not isinstance(alternative, dict):
             continue
-        text = str(alternative.get("text") or "").strip()
+        # v2 uses "transcript"; v3 uses "text".
+        text = str(alternative.get("transcript") or alternative.get("text") or "").strip()
         if not text:
             continue
-        words = alternative.get("words")
+        words = alternative.get("words") or []
         # Per-word speakerTag is authoritative when diarization is on.
         speaker = _speaker_from_words(words) or chunk_speaker
-        start_ms = _int_value(alternative, "startTimeMs", "start_time_ms")
-        end_ms = _int_value(alternative, "endTimeMs", "end_time_ms")
-        if start_ms is None and isinstance(words, list) and words:
-            start_ms = _int_value(words[0], "startTimeMs", "start_time_ms")
-        if end_ms is None and isinstance(words, list) and words:
-            end_ms = _int_value(words[-1], "endTimeMs", "end_time_ms")
+        # v2 uses "startTime"/"endTime" as "X.XXXs" strings.
+        start_ms = _time_to_ms(alternative.get("startTime")) or _int_value(
+            alternative, "startTimeMs", "start_time_ms"
+        )
+        end_ms = _time_to_ms(alternative.get("endTime")) or _int_value(
+            alternative, "endTimeMs", "end_time_ms"
+        )
+        if start_ms is None and words:
+            start_ms = _time_to_ms(words[0].get("startTime")) or _int_value(
+                words[0], "startTimeMs", "start_time_ms"
+            )
+        if end_ms is None and words:
+            end_ms = _time_to_ms(words[-1].get("endTime")) or _int_value(
+                words[-1], "endTimeMs", "end_time_ms"
+            )
+        speaker_label = f"SPEAKER_{speaker.zfill(2)}" if speaker.isdigit() else str(speaker)
         segments.append(
             {
                 "start_ms": max(start_ms or 0, 0),
                 "end_ms": max(end_ms or start_ms or 0, 0),
-                "speaker_label": f"SPEAKER_{speaker.zfill(2)}"
-                if speaker.isdigit()
-                else str(speaker),
+                "speaker_label": speaker_label,
                 "text": text,
             }
         )
@@ -341,6 +349,19 @@ def _int_value(mapping: dict[str, Any], *keys: str) -> int | None:
         return None
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _time_to_ms(value: Any) -> int | None:
+    """Convert SpeechKit v2 time string '9.480s' to milliseconds."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s.endswith("s"):
+        s = s[:-1]
+    try:
+        return int(float(s) * 1000)
     except (TypeError, ValueError):
         return None
 
