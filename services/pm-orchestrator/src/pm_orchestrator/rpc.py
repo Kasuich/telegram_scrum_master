@@ -47,9 +47,13 @@ async def lifespan(app: FastAPI):
     from pm_orchestrator.tools.meeting_capture import register_meeting_capture_tools
     from pm_orchestrator.tools.schedule_task import register_schedule_task_tool
 
+    from core.metrics import init_agent_metrics
+
     config = get_config()
     configure_logging(config.app.log_level)
     _svc.discover_agents()
+    for agent_name in _svc._runners:
+        init_agent_metrics(agent_name)
     _svc.configure_persistence()
     await _svc.ensure_schema_and_seed()
     register_call_agent_tool(_svc)
