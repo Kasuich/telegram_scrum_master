@@ -21,6 +21,7 @@ from core.models import (
     TelegramImportJob,
     TelegramInstallation,
     TelegramMessage,
+    TelegramOnboardingSession,
     TelegramOutbox,
     TelegramUpdate,
     TelegramUser,
@@ -33,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from platform_api import rpc_client
 from platform_api.telegram_auth import (
     complete_onboarding,
+    confirm_tracker_identity,
     get_confirmed_membership,
     start_onboarding,
 )
@@ -718,6 +720,88 @@ async def _consume_callback_query(
 
     if row.consumed_at is not None:
         return {"callback": _callback_token_row_to_response(row), "duplicate": True}
+
+    action = str((row.payload or {}).get("action") or "")
+    if action == "onboarding_identity":
+        onboarding_id = (row.payload or {}).get("onboarding_id")
+        telegram_user = (
+            await session.get(TelegramUser, row.telegram_user_id)
+            if row.telegram_user_id is not None
+            else None
+        )
+        onboarding = (
+            await session.get(TelegramOnboardingSession, uuid.UUID(str(onboarding_id)))
+            if onboarding_id and telegram_user is not None
+            else None
+        )
+        if onboarding is None or telegram_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Onboarding session not found",
+            )
+
+        approved = bool((row.payload or {}).get("approved"))
+        await confirm_tracker_identity(
+            session,
+            installation=installation,
+            telegram_user=telegram_user,
+            onboarding=onboarding,
+            approved=approved,
+        )
+        callback_query_id = callback_payload.get("id")
+        message_payload = callback_payload.get("message") or {}
+        chat_payload = message_payload.get("chat") or {}
+        chat_id = str(chat_payload.get("id")) if chat_payload.get("id") is not None else None
+        message_id = (
+            str(message_payload.get("message_id"))
+            if message_payload.get("message_id") is not None
+            else None
+        )
+        if callback_query_id:
+            session.add(
+                TelegramOutbox(
+                    team_id=installation.team_id,
+                    installation_id=installation.id,
+                    category="authorization",
+                    target_chat_id=chat_id,
+                    dedupe_key=f"telegram:onboarding:callback-ack:{row.id}",
+                    priority=120,
+                    status="pending",
+                    attempts=0,
+                    payload={
+                        "method": "answerCallbackQuery",
+                        "callback_query_id": str(callback_query_id),
+                        "text": "Профиль подтвержден" if approved else "Выберите другой профиль",
+                    },
+                )
+            )
+        if chat_id and message_id:
+            session.add(
+                TelegramOutbox(
+                    team_id=installation.team_id,
+                    installation_id=installation.id,
+                    category="authorization",
+                    target_chat_id=chat_id,
+                    dedupe_key=f"telegram:onboarding:callback-edit:{row.id}",
+                    priority=110,
+                    status="pending",
+                    attempts=0,
+                    payload={
+                        "method": "editMessageReplyMarkup",
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "reply_markup": {"inline_keyboard": []},
+                    },
+                )
+            )
+        row.status = "used"
+        row.consumed_at = now
+        await session.flush()
+        return {
+            "callback": _callback_token_row_to_response(row),
+            "duplicate": False,
+            "authorization": "tracker_confirmed" if approved else "tracker_rejected",
+        }
 
     approved = bool((row.payload or {}).get("approved"))
     confirm_id = str(row.confirm_id) if row.confirm_id is not None else None

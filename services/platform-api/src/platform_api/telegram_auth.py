@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -9,6 +11,7 @@ from core.assignee_resolver import TrackerUser, best_user_match, load_team_users
 from core.models import (
     Team,
     TeamMembership,
+    TelegramCallbackToken,
     TelegramInstallation,
     TelegramOnboardingSession,
     TelegramOutbox,
@@ -79,6 +82,7 @@ def _enqueue_message(
     category: str,
     dedupe_key: str,
     reply_to_message_id: str | None = None,
+    reply_markup: dict | None = None,
 ) -> TelegramOutbox:
     outbox = TelegramOutbox(
         team_id=installation.team_id,
@@ -98,6 +102,7 @@ def _enqueue_message(
                 if reply_to_message_id is not None
                 else {}
             ),
+            **({"reply_markup": reply_markup} if reply_markup is not None else {}),
         },
     )
     session.add(outbox)
@@ -202,6 +207,43 @@ def _is_no(value: str) -> bool:
     return value.strip().casefold() in {"нет", "no", "n", "не я"}
 
 
+async def confirm_tracker_identity(
+    session: AsyncSession,
+    *,
+    installation: TelegramInstallation,
+    telegram_user: TelegramUser,
+    onboarding: TelegramOnboardingSession,
+    approved: bool,
+) -> None:
+    if onboarding.status != "pending" or onboarding.step_key != "confirm_tracker":
+        return
+
+    if not approved:
+        onboarding.step_key = "tracker_login"
+        onboarding.answers_json = {}
+        _enqueue_message(
+            session,
+            installation=installation,
+            target_chat_id=telegram_user.external_user_id,
+            text="Хорошо. Отправьте другой логин, почту или имя в Tracker.",
+            category="authorization",
+            dedupe_key=f"telegram:onboarding:confirm-no:{onboarding.id}:{onboarding.attempts}",
+        )
+        await session.flush()
+        return
+
+    onboarding.step_key = "default_board"
+    _enqueue_message(
+        session,
+        installation=installation,
+        target_chat_id=telegram_user.external_user_id,
+        text="Теперь отправьте ID или точное название вашей основной доски Tracker.",
+        category="authorization",
+        dedupe_key=f"telegram:onboarding:board:{onboarding.id}",
+    )
+    await session.flush()
+
+
 def _find_board(value: str, boards: list[dict]) -> dict | None:
     normalized = value.strip().casefold()
     return next(
@@ -288,6 +330,29 @@ async def complete_onboarding(
             "tracker_display_name": tracker_user.display,
             "tracker_email": tracker_user.email,
         }
+        callback_tokens: list[tuple[str, bool]] = [
+            (secrets.token_urlsafe(32), True),
+            (secrets.token_urlsafe(32), False),
+        ]
+        for raw_token, approved in callback_tokens:
+            session.add(
+                TelegramCallbackToken(
+                    team_id=installation.team_id,
+                    installation_id=installation.id,
+                    telegram_user_id=telegram_user.id,
+                    confirm_id=None,
+                    token_hash=hashlib.sha256(raw_token.encode()).hexdigest(),
+                    target_chat_id=telegram_user.external_user_id,
+                    target_user_id=telegram_user.external_user_id,
+                    status="pending",
+                    payload={
+                        "action": "onboarding_identity",
+                        "onboarding_id": str(onboarding.id),
+                        "approved": approved,
+                    },
+                    expires_at=onboarding.expires_at,
+                )
+            )
         _enqueue_message(
             session,
             installation=installation,
@@ -301,23 +366,33 @@ async def complete_onboarding(
             ),
             category="authorization",
             dedupe_key=f"telegram:onboarding:confirm:{onboarding.id}:{onboarding.attempts}",
+            reply_markup={
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "Да, это я",
+                            "callback_data": callback_tokens[0][0],
+                        },
+                        {
+                            "text": "Нет, другой профиль",
+                            "callback_data": callback_tokens[1][0],
+                        },
+                    ]
+                ]
+            },
         )
         await session.flush()
         return None
 
     if onboarding.step_key == "confirm_tracker":
         if _is_no(answer):
-            onboarding.step_key = "tracker_login"
-            onboarding.answers_json = {}
-            _enqueue_message(
+            await confirm_tracker_identity(
                 session,
                 installation=installation,
-                target_chat_id=telegram_user.external_user_id,
-                text="Хорошо. Отправьте другой логин, почту или имя в Tracker.",
-                category="authorization",
-                dedupe_key=f"telegram:onboarding:confirm-no:{onboarding.id}:{onboarding.attempts}",
+                telegram_user=telegram_user,
+                onboarding=onboarding,
+                approved=False,
             )
-            await session.flush()
             return None
         if not _is_yes(answer):
             _enqueue_message(
@@ -333,16 +408,13 @@ async def complete_onboarding(
             await session.flush()
             return None
 
-        onboarding.step_key = "default_board"
-        _enqueue_message(
+        await confirm_tracker_identity(
             session,
             installation=installation,
-            target_chat_id=telegram_user.external_user_id,
-            text="Теперь отправьте ID или точное название вашей основной доски Tracker.",
-            category="authorization",
-            dedupe_key=f"telegram:onboarding:board:{onboarding.id}",
+            telegram_user=telegram_user,
+            onboarding=onboarding,
+            approved=True,
         )
-        await session.flush()
         return None
 
     if onboarding.step_key != "default_board":
@@ -465,6 +537,7 @@ async def complete_onboarding(
 
 __all__ = [
     "complete_onboarding",
+    "confirm_tracker_identity",
     "get_confirmed_membership",
     "start_onboarding",
 ]

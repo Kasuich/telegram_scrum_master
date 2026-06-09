@@ -75,6 +75,33 @@ def test_private_authorization_message_targets_telegram_user() -> None:
     session.add.assert_called_once_with(outbox)
 
 
+def test_authorization_message_supports_inline_buttons() -> None:
+    session = MagicMock()
+    installation = TelegramInstallation(
+        id=uuid.uuid4(),
+        team_id=uuid.uuid4(),
+        alias="pm_bot",
+        mode="workspace_bot",
+        status="active",
+        settings={},
+    )
+    reply_markup = {
+        "inline_keyboard": [[{"text": "Да, это я", "callback_data": "token"}]]
+    }
+
+    outbox = _enqueue_message(
+        session,
+        installation=installation,
+        target_chat_id="991",
+        text="Это вы?",
+        category="authorization",
+        dedupe_key="auth:buttons",
+        reply_markup=reply_markup,
+    )
+
+    assert outbox.payload["reply_markup"] == reply_markup
+
+
 def test_find_board_accepts_exact_name_or_id() -> None:
     boards = [{"id": 3, "name": "Product Development"}]
 

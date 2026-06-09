@@ -10,6 +10,7 @@ from core.models import (
     TelegramChat,
     TelegramInstallation,
     TelegramMessage,
+    TelegramOnboardingSession,
     TelegramUser,
 )
 from core.react import AgentResult, PendingConfirm
@@ -26,8 +27,13 @@ class _FakeResult:
 
 
 class _FakeSession:
-    def __init__(self, row: object | None = None) -> None:
+    def __init__(
+        self,
+        row: object | None = None,
+        get_rows: dict[type, object] | None = None,
+    ) -> None:
         self.row = row
+        self.get_rows = get_rows or {}
         self.added: list[object] = []
         self.flush_calls = 0
 
@@ -39,6 +45,9 @@ class _FakeSession:
 
     async def execute(self, _stmt: object) -> _FakeResult:
         return _FakeResult(self.row)
+
+    async def get(self, model: type, _row_id: object) -> object | None:
+        return self.get_rows.get(model)
 
 
 def _installation() -> TelegramInstallation:
@@ -209,6 +218,62 @@ async def test_consume_callback_token_resumes_once_and_creates_outbox() -> None:
     assert len(result["outbox_ids"]) == 3
     methods = [getattr(obj, "payload", {}).get("method") for obj in session.added]
     assert methods == ["answerCallbackQuery", "editMessageReplyMarkup", "sendMessage"]
+
+
+@pytest.mark.asyncio
+async def test_consume_onboarding_identity_button_advances_flow() -> None:
+    installation = _installation()
+    telegram_user = _telegram_user()
+    onboarding = TelegramOnboardingSession(
+        id=uuid.uuid4(),
+        team_id=installation.team_id,
+        installation_id=installation.id,
+        telegram_user_id=telegram_user.id,
+        status="pending",
+        step_key="confirm_tracker",
+        answers_json={"tracker_login": "ivan.petrov"},
+        attempts=1,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    row = TelegramCallbackToken(
+        id=uuid.uuid4(),
+        team_id=installation.team_id,
+        installation_id=installation.id,
+        telegram_user_id=telegram_user.id,
+        confirm_id=None,
+        token_hash="token-hash",
+        target_chat_id="991",
+        target_user_id="991",
+        status="pending",
+        payload={
+            "action": "onboarding_identity",
+            "onboarding_id": str(onboarding.id),
+            "approved": True,
+        },
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+    )
+    session = _FakeSession(
+        row=row,
+        get_rows={
+            TelegramUser: telegram_user,
+            TelegramOnboardingSession: onboarding,
+        },
+    )
+    callback_payload = {
+        "id": "cbq-auth-1",
+        "data": "token-value",
+        "from": {"id": 991},
+        "message": {"message_id": 7, "chat": {"id": 991}},
+    }
+
+    with patch("platform_api.telegram_bridge._token_hash", return_value=row.token_hash):
+        result = await _consume_callback_query(session, installation, callback_payload)
+
+    assert result["authorization"] == "tracker_confirmed"
+    assert onboarding.step_key == "default_board"
+    assert row.status == "used"
+    methods = [getattr(obj, "payload", {}).get("method") for obj in session.added]
+    assert methods == ["sendMessage", "answerCallbackQuery", "editMessageReplyMarkup"]
 
 
 @pytest.mark.asyncio
