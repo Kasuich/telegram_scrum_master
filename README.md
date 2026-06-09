@@ -70,8 +70,8 @@ TRACKER_TOKEN=ваш_oauth_token
 TRACKER_ORG_ID=ваш_org_id
 TRACKER_ORG_TYPE=cloud          # или 360 для Яндекс 360
 TRACKER_QUEUE=DARKHORSE         # ключ вашей очереди
-TRACKER_MCP_URL=https://example.containers.yandexcloud.net/mcp
-TRACKER_MCP_TOKEN=ваш_access_token
+TRACKER_MCP_URL=https://example.mcpgw.serverless.yandexcloud.net/sse
+TRACKER_MCP_TOKEN=
 TRACKER_MCP_TIMEOUT=60
 
 # БД
@@ -367,8 +367,8 @@ digital_breakthrough_2026/
 | `TRACKER_ORG_ID` | ID организации Трекера |
 | `TRACKER_ORG_TYPE` | `cloud` или `360` |
 | `TRACKER_QUEUE` | Ключ очереди, напр. `DARKHORSE` |
-| `TRACKER_MCP_URL` | Streamable HTTP URL MCP-сервера Яндекс Трекера |
-| `TRACKER_MCP_TOKEN` | Access token MCP gateway |
+| `TRACKER_MCP_URL` | Streamable HTTP или HTTP+SSE URL MCP-сервера Яндекс Трекера |
+| `TRACKER_MCP_TOKEN` | Access token приватного MCP gateway; для публичного оставьте пустым |
 | `TRACKER_MCP_TIMEOUT` | Таймаут MCP-запроса в секундах |
 | `TELEGRAM_BOT_TOKEN` | Токен Telegram бота (для алертов Alertmanager) |
 | `TELEGRAM_CHAT_ID` | ID чата для алертов |

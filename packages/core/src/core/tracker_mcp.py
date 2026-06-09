@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -54,7 +55,7 @@ _READ_TOOLS = {
 
 
 class TrackerMCPClient:
-    """Minimal stateless Streamable HTTP MCP client."""
+    """Minimal MCP client supporting Streamable HTTP and legacy HTTP+SSE."""
 
     def __init__(
         self,
@@ -74,43 +75,241 @@ class TrackerMCPClient:
         self._token = token
         self._timeout = timeout
         self._request_id = 0
+        self._session_id: str | None = None
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(
+        self,
+        *,
+        content_type: bool = True,
+        accept: str = "application/json, text/event-stream",
+    ) -> dict[str, str]:
         if not self._url:
             raise TrackerMCPError("TRACKER_MCP_URL is not configured")
-        if not self._token:
-            raise TrackerMCPError("TRACKER_MCP_TOKEN is not configured")
-        return {
-            "Authorization": self._token,
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
 
-    async def request(self, method: str, params: dict[str, Any] | None = None) -> Any:
-        self._request_id += 1
-        payload = {
-            "jsonrpc": "2.0",
-            "id": self._request_id,
-            "method": method,
-            "params": params or {},
-        }
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(
-                self._url,
-                headers=self._headers(),
-                json=payload,
-            )
+        headers = {"Accept": accept}
+        if content_type:
+            headers["Content-Type"] = "application/json"
+        # Only send Authorization when a gateway token is configured. The public
+        # Yandex serverless-container ingress validates `Authorization` as an IAM
+        # token and rejects unknown values, so an empty token must stay unset.
+        if self._token:
+            headers["Authorization"] = self._token
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+        return headers
+
+    def _new_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=self._timeout)
+
+    def _uses_legacy_sse(self) -> bool:
+        return urlsplit(self._url).path.rstrip("/").endswith("/sse")
+
+    @staticmethod
+    def _parse_response(response: httpx.Response) -> Any:
+        """Streamable HTTP replies with JSON or an SSE-framed `data:` line."""
+        if "text/event-stream" in response.headers.get("content-type", ""):
+            for line in response.text.splitlines():
+                if line.startswith("data:"):
+                    chunk = line[5:].strip()
+                    try:
+                        return json.loads(chunk)
+                    except (TypeError, json.JSONDecodeError):
+                        return None
+            return None
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            return None
+
+    async def _post(self, client: httpx.AsyncClient, payload: dict[str, Any]) -> Any:
+        response = await client.post(self._url, headers=self._headers(), json=payload)
         if response.status_code >= 400:
             raise TrackerMCPError(
                 f"Tracker MCP HTTP {response.status_code}: {response.text[:300]}"
             )
-        data = response.json()
-        if data.get("error"):
+        session_id = response.headers.get("mcp-session-id")
+        if session_id:
+            self._session_id = session_id
+        return self._parse_response(response)
+
+    async def _handshake(self, client: httpx.AsyncClient) -> None:
+        """MCP requires `initialize` + `notifications/initialized` before any call."""
+        self._request_id += 1
+        data = await self._post(
+            client,
+            {
+                "jsonrpc": "2.0",
+                "id": self._request_id,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "pm-agent", "version": "1.0"},
+                },
+            },
+        )
+        if isinstance(data, dict) and data.get("error"):
+            error = data["error"]
+            raise TrackerMCPError(
+                f"Tracker MCP initialize {error.get('code')}: {error.get('message')}"
+            )
+        # Notification: no id, no response body expected.
+        response = await client.post(
+            self._url,
+            headers=self._headers(),
+            json={"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        )
+        if response.status_code >= 400:
+            raise TrackerMCPError(
+                f"Tracker MCP initialized notification HTTP {response.status_code}: "
+                f"{response.text[:300]}"
+            )
+
+    async def _request_streamable(
+        self,
+        method: str,
+        params: dict[str, Any] | None,
+    ) -> Any:
+        self._session_id = None
+        async with self._new_client() as client:
+            await self._handshake(client)
+            self._request_id += 1
+            data = await self._post(
+                client,
+                {
+                    "jsonrpc": "2.0",
+                    "id": self._request_id,
+                    "method": method,
+                    "params": params or {},
+                },
+            )
+        return data
+
+    def _legacy_post_url(self, endpoint: str) -> str:
+        post_url = urljoin(self._url, endpoint)
+        source = urlsplit(self._url)
+        target = urlsplit(post_url)
+        if (source.scheme, source.netloc) != (target.scheme, target.netloc):
+            raise TrackerMCPError("Tracker MCP SSE endpoint points to a different origin")
+        return post_url
+
+    @staticmethod
+    async def _next_sse_data(lines: Any) -> str:
+        async for line in lines:
+            if line.startswith("data:"):
+                return line[5:].strip()
+        raise TrackerMCPError("Tracker MCP SSE stream ended unexpectedly")
+
+    async def _legacy_rpc(
+        self,
+        client: httpx.AsyncClient,
+        lines: Any,
+        post_url: str,
+        payload: dict[str, Any],
+    ) -> Any:
+        response = await client.post(
+            post_url,
+            headers=self._headers(accept="application/json"),
+            json=payload,
+        )
+        if response.status_code >= 400:
+            raise TrackerMCPError(
+                f"Tracker MCP HTTP {response.status_code}: {response.text[:300]}"
+            )
+        if "id" not in payload:
+            return None
+
+        request_id = payload["id"]
+        while True:
+            raw_data = await self._next_sse_data(lines)
+            try:
+                data = json.loads(raw_data)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict) and data.get("id") == request_id:
+                return data
+
+    async def _request_legacy_sse(
+        self,
+        method: str,
+        params: dict[str, Any] | None,
+    ) -> Any:
+        async with self._new_client() as client:
+            async with client.stream(
+                "GET",
+                self._url,
+                headers=self._headers(
+                    content_type=False,
+                    accept="text/event-stream",
+                ),
+            ) as response:
+                if response.status_code >= 400:
+                    body = (await response.aread()).decode(errors="replace")
+                    raise TrackerMCPError(
+                        f"Tracker MCP SSE HTTP {response.status_code}: {body[:300]}"
+                    )
+
+                lines = response.aiter_lines()
+                endpoint = await self._next_sse_data(lines)
+                post_url = self._legacy_post_url(endpoint)
+
+                self._request_id += 1
+                initialized = await self._legacy_rpc(
+                    client,
+                    lines,
+                    post_url,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": self._request_id,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-03-26",
+                            "capabilities": {},
+                            "clientInfo": {"name": "pm-agent", "version": "1.0"},
+                        },
+                    },
+                )
+                if isinstance(initialized, dict) and initialized.get("error"):
+                    error = initialized["error"]
+                    raise TrackerMCPError(
+                        f"Tracker MCP initialize {error.get('code')}: "
+                        f"{error.get('message')}"
+                    )
+
+                await self._legacy_rpc(
+                    client,
+                    lines,
+                    post_url,
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/initialized",
+                        "params": {},
+                    },
+                )
+                self._request_id += 1
+                return await self._legacy_rpc(
+                    client,
+                    lines,
+                    post_url,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": self._request_id,
+                        "method": method,
+                        "params": params or {},
+                    },
+                )
+
+    async def request(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        if self._uses_legacy_sse():
+            data = await self._request_legacy_sse(method, params)
+        else:
+            data = await self._request_streamable(method, params)
+        if isinstance(data, dict) and data.get("error"):
             error = data["error"]
             raise TrackerMCPError(
                 f"Tracker MCP {error.get('code')}: {error.get('message')}"
             )
-        return data.get("result")
+        return data.get("result") if isinstance(data, dict) else data
 
     async def list_tools(self) -> list[dict[str, Any]]:
         result = await self.request("tools/list")
@@ -155,10 +354,8 @@ def _content_text(result: dict[str, Any]) -> str:
 async def register_tracker_mcp_tools() -> list[str]:
     """Discover remote Tracker tools and register local proxy Tool objects."""
     cfg = get_config().tracker_mcp
-    if not cfg.tracker_mcp_url or not cfg.tracker_mcp_token:
-        logger.warning(
-            "Tracker MCP tools are disabled: set TRACKER_MCP_URL and TRACKER_MCP_TOKEN"
-        )
+    if not cfg.tracker_mcp_url:
+        logger.warning("Tracker MCP tools are disabled: set TRACKER_MCP_URL")
         return []
     client = TrackerMCPClient()
     definitions = await client.list_tools()

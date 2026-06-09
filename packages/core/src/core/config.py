@@ -122,7 +122,7 @@ class TrackerMCPConfig(BaseSettings):
 
     tracker_mcp_url: str = Field(
         default="",
-        description="Streamable HTTP endpoint of the Tracker MCP server",
+        description="Streamable HTTP or HTTP+SSE endpoint of the Tracker MCP server",
     )
     tracker_mcp_token: str = Field(
         default="",

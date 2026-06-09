@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
-
 from core.config import Config, set_config
 from core.tools import get_registry
 from core.tracker_mcp import (
@@ -62,6 +63,21 @@ async def test_register_preserves_remote_json_schema():
 
 
 @pytest.mark.asyncio
+async def test_register_allows_public_mcp_without_gateway_token():
+    cfg = Config()
+    cfg.tracker_mcp.tracker_mcp_url = "https://mcp.example.test/mcp"
+    cfg.tracker_mcp.tracker_mcp_token = ""
+    set_config(cfg)
+
+    with patch.object(
+        TrackerMCPClient,
+        "list_tools",
+        AsyncMock(return_value=[{"name": "GetIssue"}]),
+    ):
+        assert await register_tracker_mcp_tools() == ["GetIssue"]
+
+
+@pytest.mark.asyncio
 async def test_call_tool_unwraps_json_text_content():
     client = TrackerMCPClient(
         url="https://mcp.example.test/mcp",
@@ -89,6 +105,101 @@ def test_explicit_client_does_not_require_global_config():
     )
 
     assert client._headers()["Authorization"] == "secret-token"
+
+
+def test_public_client_omits_authorization_header():
+    client = TrackerMCPClient(
+        url="https://mcp.example.test/mcp",
+        token="",
+    )
+
+    assert "Authorization" not in client._headers()
+
+
+@pytest.mark.asyncio
+async def test_legacy_sse_gateway_lists_tools():
+    requests: list[httpx.Request] = []
+    events = [
+        "event: endpoint",
+        "data: /message?sessionId=session-1",
+        "",
+        "event: message",
+        "data: "
+        + json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"protocolVersion": "2025-03-26"},
+            }
+        ),
+        "",
+        "event: message",
+        "data: "
+        + json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {"tools": [{"name": "GetIssue"}]},
+            }
+        ),
+        "",
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                text="\n".join(events),
+            )
+        return httpx.Response(202)
+
+    client = TrackerMCPClient(
+        url="https://gateway.example.test/sse",
+        token="",
+    )
+    transport = httpx.MockTransport(handler)
+    with patch.object(
+        client,
+        "_new_client",
+        return_value=httpx.AsyncClient(transport=transport, timeout=5),
+    ):
+        assert await client.list_tools() == [{"name": "GetIssue"}]
+
+    assert [request.method for request in requests] == ["GET", "POST", "POST", "POST"]
+    payloads = [json.loads(request.content) for request in requests[1:]]
+    assert [payload["method"] for payload in payloads] == [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+    ]
+    assert all("authorization" not in request.headers for request in requests)
+
+
+@pytest.mark.asyncio
+async def test_legacy_sse_gateway_rejects_cross_origin_post_endpoint():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            text="event: endpoint\ndata: https://attacker.example/message\n\n",
+        )
+
+    client = TrackerMCPClient(
+        url="https://gateway.example.test/sse",
+        token="secret-token",
+    )
+    transport = httpx.MockTransport(handler)
+    with (
+        patch.object(
+            client,
+            "_new_client",
+            return_value=httpx.AsyncClient(transport=transport, timeout=5),
+        ),
+        pytest.raises(TrackerMCPError, match="different origin"),
+    ):
+        await client.list_tools()
 
 
 @pytest.mark.asyncio
