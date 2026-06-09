@@ -23,6 +23,7 @@ from core.effective_config import EffectiveAgentConfig, build_effective_config
 from core.exceptions import AgentError
 from core.invocation import InvocationContext, normalize_invocation_context
 from core.react import AgentResult, ReActRunner
+from core.telemost_shortcut import try_meeting_capture_shortcut
 
 logger = logging.getLogger(__name__)
 
@@ -217,12 +218,18 @@ class OrchestratorService:
         session_id: str,
         context: InvocationContext | dict[str, Any] | None = None,
     ) -> AgentResult:
+        invocation_context = normalize_invocation_context(context)
+        shortcut = await try_meeting_capture_shortcut(
+            message, session_id, context=invocation_context
+        )
+        if shortcut is not None:
+            return shortcut
+
         runner = self._runner(agent_name)
         await self._ensure_agent_enabled(agent_name)
         eff = await self._load_effective_config(agent_name)
         eff_prompt = eff.prompt if eff else None
         eff_rc = eff.runtime_config if eff else None
-        invocation_context = normalize_invocation_context(context)
 
         if self._db_enabled:
             from core.db import get_session
