@@ -285,6 +285,10 @@ docker logs test-platform-api-1 -f
 docker logs test-grafana-1 -f
 ```
 
+Для отладки поведения агента откройте Grafana → **PM Agent / Agent Debug**.
+Дашборд показывает маршрут `stage → tool → outcome`, статусы вызовов,
+аргументы, результаты и ошибки. Детальные события хранятся в Loki 7 дней.
+
 ---
 
 ## Структура проекта
@@ -326,7 +330,9 @@ digital_breakthrough_2026/
 │   ├── prometheus.yml
 │   ├── alerts.yml
 │   ├── alertmanager.yml
-│   └── grafana/                 # Provisioning + 3 дашборда
+│   ├── loki.yml                 # Хранилище диагностических событий
+│   ├── promtail.yml             # Сбор Docker logs
+│   └── grafana/                 # Provisioning + дашборды
 │
 ├── docs/
 │   ├── ARCHITECTURE.md          # Архитектура + диаграммы

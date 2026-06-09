@@ -114,6 +114,11 @@ from core.logging import (
 )
 from core.metrics import (
     agent_confirms_pending,
+    agent_graph_edges_total,
+    agent_stage_outcomes_total,
+    agent_stage_visits_total,
+    agent_tool_calls_total,
+    agent_tool_outputs_total,
     agent_traces_total,
     db_pool_checked_out,
     external_latency_seconds,
@@ -298,6 +303,11 @@ __all__ = [
     "db_pool_checked_out",
     "agent_traces_total",
     "agent_confirms_pending",
+    "agent_stage_visits_total",
+    "agent_stage_outcomes_total",
+    "agent_graph_edges_total",
+    "agent_tool_calls_total",
+    "agent_tool_outputs_total",
     "track_tool",
     "Tool",
     "ToolParameter",
