@@ -10,6 +10,9 @@ from platform_api.telegram_auth import (
     _enqueue_message,
     _find_board,
     _find_tracker_user,
+    _is_no,
+    _is_yes,
+    _suggest_tracker_user,
     start_onboarding,
 )
 
@@ -28,6 +31,23 @@ def test_find_tracker_user_accepts_exact_login_email_or_display() -> None:
     assert _find_tracker_user("ivan.petrov@yandex.ru", users) == users[0]
     assert _find_tracker_user("  Ivan   Petrov ", users) == users[0]
     assert _find_tracker_user("Ivan", users) is None
+
+
+def test_suggest_tracker_user_by_similarity_requires_confirmation_later() -> None:
+    users = [
+        TrackerUser(login="shinkarenkorom", display="Roman Shinkarenko"),
+        TrackerUser(login="nukolaus", display="Nikolai Alexandrov"),
+    ]
+
+    assert _suggest_tracker_user("Roman Shinkarenko", users) == users[0]
+    assert _suggest_tracker_user("Roman Shinkarenko typo", users) == users[0]
+
+
+def test_confirmation_answers() -> None:
+    assert _is_yes("Да")
+    assert _is_yes("это я")
+    assert _is_no("Нет")
+    assert not _is_yes("возможно")
 
 
 def test_private_authorization_message_targets_telegram_user() -> None:

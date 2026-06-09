@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from core.assignee_resolver import TrackerUser, load_team_users
+from core.assignee_resolver import TrackerUser, best_user_match, load_team_users
 from core.models import (
     Team,
     TeamMembership,
@@ -160,7 +160,7 @@ async def start_onboarding(
         target_chat_id=telegram_user.external_user_id,
         text=(
             "Нужно привязать ваш профиль в Yandex Tracker. "
-            "Отправьте логин Tracker одним сообщением."
+            "Отправьте логин, почту или имя в Tracker одним сообщением."
         ),
         category="authorization",
         dedupe_key=f"telegram:onboarding:private:{onboarding.id}:{message_key}",
@@ -182,6 +182,24 @@ def _find_tracker_user(login: str, users: list[TrackerUser]) -> TrackerUser | No
         ),
         None,
     )
+
+
+def _suggest_tracker_user(value: str, users: list[TrackerUser]) -> TrackerUser | None:
+    exact = _find_tracker_user(value, users)
+    if exact is not None:
+        return exact
+    match = best_user_match(value, users, threshold=0.45)
+    if match is None:
+        return None
+    return next((user for user in users if user.login == match.login), None)
+
+
+def _is_yes(value: str) -> bool:
+    return value.strip().casefold() in {"да", "yes", "y", "верно", "это я"}
+
+
+def _is_no(value: str) -> bool:
+    return value.strip().casefold() in {"нет", "no", "n", "не я"}
 
 
 def _find_board(value: str, boards: list[dict]) -> dict | None:
@@ -227,7 +245,7 @@ async def complete_onboarding(
         queue = team.tracker_queue if team is not None else ""
         async with TrackerClient() as client:
             users = await load_team_users(client, queue)
-        tracker_user = _find_tracker_user(answer, users)
+        tracker_user = _suggest_tracker_user(answer, users)
 
         if tracker_user is None:
             _enqueue_message(
@@ -235,8 +253,8 @@ async def complete_onboarding(
                 installation=installation,
                 target_chat_id=telegram_user.external_user_id,
                 text=(
-                    "Такого логина нет среди участников очереди Tracker. "
-                    "Проверьте логин и отправьте его еще раз."
+                    "Не удалось найти похожего участника очереди Tracker. "
+                    "Отправьте логин, почту или имя еще раз."
                 ),
                 category="authorization",
                 dedupe_key=f"telegram:onboarding:retry:{onboarding.id}:{onboarding.attempts}",
@@ -264,12 +282,58 @@ async def complete_onboarding(
             await session.flush()
             return None
 
-        onboarding.step_key = "default_board"
+        onboarding.step_key = "confirm_tracker"
         onboarding.answers_json = {
             "tracker_login": tracker_user.login,
             "tracker_display_name": tracker_user.display,
             "tracker_email": tracker_user.email,
         }
+        _enqueue_message(
+            session,
+            installation=installation,
+            target_chat_id=telegram_user.external_user_id,
+            text=(
+                "Нашел профиль:\n"
+                f"Имя: {tracker_user.display}\n"
+                f"Логин: {tracker_user.login}\n"
+                f"Почта: {tracker_user.email or 'не указана'}\n"
+                "Это вы? Ответьте «да» или «нет»."
+            ),
+            category="authorization",
+            dedupe_key=f"telegram:onboarding:confirm:{onboarding.id}:{onboarding.attempts}",
+        )
+        await session.flush()
+        return None
+
+    if onboarding.step_key == "confirm_tracker":
+        if _is_no(answer):
+            onboarding.step_key = "tracker_login"
+            onboarding.answers_json = {}
+            _enqueue_message(
+                session,
+                installation=installation,
+                target_chat_id=telegram_user.external_user_id,
+                text="Хорошо. Отправьте другой логин, почту или имя в Tracker.",
+                category="authorization",
+                dedupe_key=f"telegram:onboarding:confirm-no:{onboarding.id}:{onboarding.attempts}",
+            )
+            await session.flush()
+            return None
+        if not _is_yes(answer):
+            _enqueue_message(
+                session,
+                installation=installation,
+                target_chat_id=telegram_user.external_user_id,
+                text="Пожалуйста, ответьте «да» или «нет».",
+                category="authorization",
+                dedupe_key=(
+                    f"telegram:onboarding:confirm-retry:{onboarding.id}:{onboarding.attempts}"
+                ),
+            )
+            await session.flush()
+            return None
+
+        onboarding.step_key = "default_board"
         _enqueue_message(
             session,
             installation=installation,
