@@ -304,6 +304,35 @@ class TrackerClient:
         )
         return result if isinstance(result, list) else []
 
+    async def search_all_issues(
+        self,
+        query: str,
+        *,
+        queue: str | None = None,
+        page_size: int = 200,
+        max_pages: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Fetch ALL issues matching a YQL query, paginating automatically.
+        
+        Uses perPage + page to iterate. Stops when a page returns fewer
+        than page_size results or max_pages is reached.
+        """
+        yql = query
+        if queue and "Queue:" not in query and "queue:" not in query.lower():
+            yql = f'Queue: "{queue}" AND ({query})'
+        all_issues: list[dict[str, Any]] = []
+        for page_num in range(max_pages):
+            result = await self._request(
+                "POST",
+                f"/issues/_search?perPage={page_size}&page={page_num + 1}",
+                json={"query": yql},
+            )
+            page_issues = result if isinstance(result, list) else []
+            all_issues.extend(page_issues)
+            if len(page_issues) < page_size:
+                break
+        return all_issues
+
     # ------------------------------------------------------------------
     # Followers
     # ------------------------------------------------------------------

@@ -286,6 +286,35 @@ def extract_assignee_mention(message: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# First-person resolution ("мне/я/мои" → tracker_login of the speaker)
+# ---------------------------------------------------------------------------
+
+_FIRST_PERSON_RE = re.compile(
+    r"\b(мне|мной|я|мо[иёйя]|мою|моих|моя|на[мш]\s+мне|у\s+меня|ко\s+мне|за\s+мной)\b",
+    re.IGNORECASE,
+)
+
+
+def resolve_first_person(
+    message: str,
+    *,
+    tracker_login: str | None = None,
+) -> str | None:
+    """If *message* contains a 1st-person pronoun and we know the speaker's
+    Tracker login, return that login so the agent can resolve «мне/я/мои»
+    without asking.
+
+    Returns ``None`` when no 1st-person reference is found or when
+    *tracker_login* is not available.
+    """
+    if not tracker_login:
+        return None
+    if not _FIRST_PERSON_RE.search(message):
+        return None
+    return tracker_login
+
+
 __all__ = [
     "AssigneeMatch",
     "TrackerUser",
@@ -293,4 +322,5 @@ __all__ = [
     "extract_assignee_mention",
     "load_team_users",
     "resolve_assignee",
+    "resolve_first_person",
 ]

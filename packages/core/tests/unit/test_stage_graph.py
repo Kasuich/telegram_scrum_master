@@ -186,11 +186,12 @@ def test_query_allows_reads_blocks_writes():
         assert not d.allow and "QUERY" in d.reason
 
 
-def test_query_terminal_on_first_read():
+def test_query_never_self_terminates_goal_based():
+    """QUERY terminal is now goal-based (lambda steps: False) — react.py decides."""
     stage = STAGES[StageId.QUERY]
     assert not stage.is_terminal([])
-    assert stage.is_terminal([_result("tracker_board_snapshot", {"total": 10})])
-    assert stage.is_terminal([_result("tracker_find_issues", {"count": 0, "issues": []})])
+    assert not stage.is_terminal([_result("tracker_board_snapshot", {"total": 10})])
+    assert not stage.is_terminal([_result("tracker_find_issues", {"count": 0, "issues": []})])
 
 
 # ---------------------------------------------------------------------------

@@ -55,3 +55,82 @@ def test_format_transport_context_for_prompt_telegram():
     assert "message_author: Roman Shinkarenko (@romansh)" in block
     assert "chat_type: group" in block
     assert "cleaned_message:" not in block
+
+
+def test_format_transport_context_identity_fields():
+    ctx = InvocationContext(
+        channel="telegram",
+        actor_tracker_login="nukolaus",
+        actor_role="dev",
+        actor_default_board_id="board1",
+    )
+    block = format_transport_context_for_prompt(ctx)
+    assert "your_tracker_login: nukolaus" in block
+    assert "your_role: dev" in block
+    assert "your_default_board: board1" in block
+
+
+def test_format_transport_context_actor_settings():
+    ctx = InvocationContext(
+        channel="telegram",
+        actor_settings={"tone": "friendly", "lang": "ru"},
+    )
+    block = format_transport_context_for_prompt(ctx)
+    assert "preference_tone: friendly" in block
+    assert "preference_lang: ru" in block
+
+
+def test_format_transport_context_empty_settings():
+    ctx = InvocationContext(channel="telegram", actor_settings={})
+    block = format_transport_context_for_prompt(ctx)
+    assert "preference_" not in block
+
+
+def test_format_transport_context_metadata_fallback_for_tracker_login():
+    ctx = InvocationContext(
+        channel="telegram",
+        actor_tracker_login=None,
+        metadata={"tracker_login": "from_meta"},
+    )
+    block = format_transport_context_for_prompt(ctx)
+    assert "your_tracker_login: from_meta" in block
+
+
+def test_format_transport_context_metadata_fallback_for_role():
+    ctx = InvocationContext(
+        channel="telegram",
+        actor_role=None,
+        metadata={"role": "from_meta"},
+    )
+    block = format_transport_context_for_prompt(ctx)
+    assert "your_role: from_meta" in block
+
+
+def test_format_transport_context_metadata_fallback_for_board():
+    ctx = InvocationContext(
+        channel="telegram",
+        actor_default_board_id=None,
+        metadata={"default_board_id": "from_meta"},
+    )
+    block = format_transport_context_for_prompt(ctx)
+    assert "your_default_board: from_meta" in block
+
+
+def test_format_transport_context_metadata_not_used_when_explicit_set():
+    ctx = InvocationContext(
+        channel="telegram",
+        actor_tracker_login="explicit",
+        metadata={"tracker_login": "from_meta"},
+    )
+    block = format_transport_context_for_prompt(ctx)
+    assert "your_tracker_login: explicit" in block
+    assert "from_meta" not in block
+
+
+def test_format_transport_context_no_identity_fields():
+    ctx = InvocationContext(channel="telegram")
+    block = format_transport_context_for_prompt(ctx)
+    assert "your_tracker_login" not in block
+    assert "your_role" not in block
+    assert "your_default_board" not in block
+    assert "preference_" not in block

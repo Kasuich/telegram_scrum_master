@@ -75,17 +75,16 @@ def _clean_registry():
 
 @pytest.fixture(autouse=True)
 def _rules_only_turn_plan():
-    """Avoid decompose LLM call in stage integration tests (R1)."""
+    from core.goal import GoalPlan
 
     async def _fake_plan(message: str, *, use_llm: bool = True):
         from core.stage_graph import StageId
         from core.stage_router import detect_stage_rules
-        from core.turn_plan import TurnPlan
 
         sid = detect_stage_rules(message) or StageId.QUERY
-        return TurnPlan.single(sid, message)
+        return GoalPlan.single(sid, message)
 
-    with patch("core.react.plan_turn", side_effect=_fake_plan):
+    with patch("core.react.build_goal_plan", side_effect=_fake_plan):
         yield
 
 
@@ -299,17 +298,17 @@ class TestIntakeStage:
 class TestDialogStage:
     @patch.dict("os.environ", ENV)
     async def test_dialog_returns_prose_without_tools(self):
-        from core.turn_plan import TurnPlan
+        from core.goal import GoalPlan
 
         _register_fake_tracker_tools()
         runner = _runner(_pm_agent())
 
         async def _dialog_plan(message: str, *, use_llm: bool = True):
-            return TurnPlan.dialog(message)
+            return GoalPlan.dialog(message)
 
         dialog_reply = "Привет! Я PM-бот, помогаю с Трекером."
         post = AsyncMock(return_value=_http_ok(_text_response(dialog_reply)))
-        with patch("core.react.plan_turn", side_effect=_dialog_plan):
+        with patch("core.react.build_goal_plan", side_effect=_dialog_plan):
             with patch("httpx.AsyncClient.post", post):
                 result = await runner.invoke("привет, кто ты?", "dlg1")
 
@@ -320,16 +319,16 @@ class TestDialogStage:
 
     @patch.dict("os.environ", ENV)
     async def test_dialog_never_returns_empty_reply(self):
-        from core.turn_plan import TurnPlan
+        from core.goal import GoalPlan
 
         _register_fake_tracker_tools()
         runner = _runner(_pm_agent())
 
         async def _dialog_plan(message: str, *, use_llm: bool = True):
-            return TurnPlan.dialog(message)
+            return GoalPlan.dialog(message)
 
         post = AsyncMock(return_value=_http_ok(_text_response("")))
-        with patch("core.react.plan_turn", side_effect=_dialog_plan):
+        with patch("core.react.build_goal_plan", side_effect=_dialog_plan):
             with patch("httpx.AsyncClient.post", post):
                 result = await runner.invoke("привет", "dlg-empty")
 
@@ -345,7 +344,7 @@ class TestDialogStage:
 class TestClarification:
     @patch.dict("os.environ", ENV)
     async def test_status_ambiguous_find_returns_question(self):
-        from core.turn_plan import TurnPlan
+        from core.goal import GoalPlan
 
         _register_fake_tracker_tools()
         runner = _runner(_pm_agent())
@@ -370,7 +369,7 @@ class TestClarification:
         async def _status_plan(message: str, *, use_llm: bool = True):
             from core.stage_graph import StageId
 
-            return TurnPlan.single(StageId.STATUS, message)
+            return GoalPlan.single(StageId.STATUS, message)
 
         post = AsyncMock(
             side_effect=[
@@ -378,7 +377,7 @@ class TestClarification:
                 _http_ok(_text_response("уточните ключ")),
             ]
         )
-        with patch("core.react.plan_turn", side_effect=_status_plan):
+        with patch("core.react.build_goal_plan", side_effect=_status_plan):
             with patch.object(runner, "_execute_tool", side_effect=_fake_execute):
                 with patch("httpx.AsyncClient.post", post):
                     result = await runner.invoke("Коля: сделал релиз", "clar1")
@@ -397,17 +396,17 @@ class TestMultiScenario:
     @patch.dict("os.environ", ENV)
     async def test_three_intents_run_three_scenarios(self):
         from core.stage_graph import StageId
-        from core.turn_plan import ScenarioItem, TurnPlan
+        from core.goal import GoalItem, GoalPlan
 
         _register_fake_tracker_tools()
         runner = _runner(_pm_agent())
 
         async def _multi_plan(message: str, *, use_llm: bool = True):
-            return TurnPlan(
+            return GoalPlan(
                 items=[
-                    ScenarioItem(StageId.INTAKE, "создай Коле задачу MCP"),
-                    ScenarioItem(StageId.QUERY, "что на доске"),
-                    ScenarioItem(StageId.STATUS, "Коля: релиз готов"),
+                    GoalItem(StageId.INTAKE, "создай Коле задачу MCP", intent="create"),
+                    GoalItem(StageId.QUERY, "что на доске", intent="query"),
+                    GoalItem(StageId.STATUS, "Коля: релиз готов", intent="status"),
                 ]
             )
 
@@ -433,7 +432,7 @@ class TestMultiScenario:
                 ),
             ]
         )
-        with patch("core.react.plan_turn", side_effect=_multi_plan):
+        with patch("core.react.build_goal_plan", side_effect=_multi_plan):
             with patch("httpx.AsyncClient.post", post):
                 result = await runner.invoke(
                     "создай Коле задачу MCP; что на доске; Коля: релиз готов",

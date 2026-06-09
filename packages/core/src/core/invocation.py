@@ -23,6 +23,10 @@ class InvocationContext(BaseModel):
     actor_external_id: str | None = None
     actor_display_name: str | None = None
     actor_username: str | None = None
+    actor_tracker_login: str | None = None
+    actor_role: str | None = None
+    actor_default_board_id: str | None = None
+    actor_settings: dict[str, Any] = Field(default_factory=dict)
     reply_to_message_id: str | None = None
     is_bot_mentioned: bool | None = None
     is_reply_to_bot: bool | None = None
@@ -79,6 +83,36 @@ def format_transport_context_for_prompt(ctx: InvocationContext | None) -> str:
         lines.append(f"- message_author: @{ctx.actor_username.lstrip('@')}")
     if ctx.actor_external_id:
         lines.append(f"- actor_external_id: {ctx.actor_external_id}")
+    if ctx.actor_tracker_login:
+        lines.append(f"- your_tracker_login: {ctx.actor_tracker_login}")
+    if ctx.actor_role:
+        lines.append(f"- your_role: {ctx.actor_role}")
+    if ctx.actor_default_board_id:
+        lines.append(f"- your_default_board: {ctx.actor_default_board_id}")
+    if ctx.actor_settings:
+        for k, v in ctx.actor_settings.items():
+            lines.append(f"- preference_{k}: {v}")
+    _rendered_identity_keys = {
+        "tracker_login",
+        "role",
+        "default_board_id",
+    }
+    if ctx.metadata:
+        for key in ("tracker_login", "role", "default_board_id"):
+            meta_val = ctx.metadata.get(key)
+            if meta_val is not None and key in _rendered_identity_keys:
+                already = {
+                    "tracker_login": ctx.actor_tracker_login,
+                    "role": ctx.actor_role,
+                    "default_board_id": ctx.actor_default_board_id,
+                }[key]
+                if not already:
+                    label = {
+                        "tracker_login": "your_tracker_login",
+                        "role": "your_role",
+                        "default_board_id": "your_default_board",
+                    }[key]
+                    lines.append(f"- {label}: {meta_val}")
     if ctx.reply_to_message_id:
         lines.append(f"- reply_to_message_id: {ctx.reply_to_message_id}")
     if ctx.is_bot_mentioned is not None:

@@ -875,7 +875,9 @@ async def tracker_board_snapshot(
 ) -> dict[str, Any]:
     """
     One aggregate read of the whole board: counts by status and assignee, plus
-    lists of overdue / unassigned / no-estimate / no-deadline / at-risk issues.
+    lists of overdue / unassigned / no-estimate / no-deadline / at-risk issues,
+    and story point sums per assignee (`by_assignee_sp`), per status
+    (`by_status_sp`), and total (`total_sp`).
 
     Use for board digests, standup reports, proactive sweeps and hygiene checks —
     instead of many separate searches. Read-only, fully autonomous (low risk).
@@ -887,7 +889,7 @@ async def tracker_board_snapshot(
     if not include_closed:
         query += " AND Resolution: empty()"
     async with TrackerClient() as client:
-        raw_issues = await client.search_issues(query, queue=q, limit=200)
+        raw_issues = await client.search_all_issues(query, queue=q, page_size=200)
 
     today = date.today()
     risk_cutoff = today + timedelta(days=max(0, at_risk_days))
@@ -898,6 +900,9 @@ async def tracker_board_snapshot(
     no_estimate: list[dict[str, Any]] = []
     no_deadline: list[dict[str, Any]] = []
     at_risk: list[dict[str, Any]] = []
+    by_assignee_sp: dict[str, float] = {}
+    by_status_sp: dict[str, float] = {}
+    total_sp: float = 0.0
 
     for issue in raw_issues:
         summary = issue_summary(issue, detailed=False)
@@ -908,6 +913,18 @@ async def tracker_board_snapshot(
         by_status[status or "—"] = by_status.get(status or "—", 0) + 1
         who = summary.get("assignee") or "(не назначен)"
         by_assignee[who] = by_assignee.get(who, 0) + 1
+
+        sp = 0.0
+        sp_raw = summary.get("story_points")
+        if sp_raw not in (None, "", 0):
+            try:
+                sp = float(sp_raw)
+            except (ValueError, TypeError):
+                sp = 0.0
+        who_sp = summary.get("assignee") or "(не назначен)"
+        by_assignee_sp[who_sp] = by_assignee_sp.get(who_sp, 0.0) + sp
+        by_status_sp[status or "—"] = by_status_sp.get(status or "—", 0.0) + sp
+        total_sp += sp
 
         light = {
             "key": summary.get("key"),
@@ -943,6 +960,9 @@ async def tracker_board_snapshot(
         "no_estimate": no_estimate,
         "no_deadline": no_deadline,
         "at_risk": at_risk,
+        "by_assignee_sp": by_assignee_sp,
+        "by_status_sp": by_status_sp,
+        "total_sp": total_sp,
         "as_of": _today_iso(),
     }
 

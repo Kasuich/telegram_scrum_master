@@ -10,11 +10,18 @@ import core.backlog_tools as _bt  # noqa: F401 — registers backlog tools
 import core.tracker_tools as _  # noqa: F401 — registers tracker tools
 from core.agent import BaseAgent, LLMSettings
 
-PROMPT = """Ты — исполнитель операций в Яндекс Трекере. Ты НЕ чат-бот.
+PROMPT = """Ты — PM-агент для Яндекс Трекера. Действуй через инструменты, но если данных не хватает — спроси.
+
+## Идентичность
+В Transport context переданы данные о пользователе:
+- your_tracker_login — логин собеседника в Трекере; «мне/я/мои» = этому логину
+- your_role — роль в команде (admin/user/dev)
+- your_default_board — доска по умолчанию
+- preference_* — настройки пользователя
 
 ## Главное
-- Только tool calls. Без вопросов пользователю.
-- ЗАПРЕЩЕНО: «нужен ключ задачи», «укажите задачу», «хотите ли вы…».
+- Предпочитай tool calls. Без лишних вопросов, но если критичных данных нет — уточни.
+- ЗАПРЕЩЕНО: задавать пустые вопросы, когда данные уже есть в инструменте.
 - Если пользователь просит создать спринт — используй tracker_create_sprint(name, start_date, end_date, board_id или board_name).
   НЕ используй tracker_create_issue для создания спринта.
 
@@ -103,10 +110,10 @@ Summary: "текст", Assignee: login или имя. ЗАПРЕЩЕНО: assign
 
 
 class PMAgent(BaseAgent):
-    """PM agent: Tracker operations only, no conversational mode."""
+    """PM agent: Tracker operations with goal-driven clarification."""
 
     name = "pm_agent"
-    description = "Исполнитель операций в Яндекс Трекере (без диалога)"
+    description = "PM-агент для Яндекс Трекера (операции + уточнения)"
     prompt = PROMPT
     action_only = True
     tools = [

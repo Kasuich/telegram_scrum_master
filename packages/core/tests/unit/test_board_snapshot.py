@@ -33,6 +33,9 @@ class _FakeClient:
     async def search_issues(self, query, *, queue=None, limit=200):
         return self._issues
 
+    async def search_all_issues(self, query, *, queue=None, page_size=200, max_pages=50):
+        return self._issues
+
     async def list_comments(self, issue_key, *, per_page=50):
         return [
             {"createdBy": {"display": "Коля"}, "createdAt": "2026-06-01", "text": "первый"},
@@ -82,3 +85,75 @@ async def test_read_comments():
     assert out["count"] == 2
     assert out["comments"][0]["author"] == "Коля"
     assert out["comments"][-1]["text"] == "второй"
+
+
+async def test_board_snapshot_sp_by_assignee():
+    issues = [
+        _issue("D-1", assignee="Коля", sp=3),
+        _issue("D-2", assignee="Коля", sp=5),
+        _issue("D-3", assignee="Рома", sp=2),
+    ]
+    with patch("core.tracker_tools.TrackerClient", lambda: _FakeClient(issues)):
+        snap = await tracker_board_snapshot(queue="DARKHORSE")
+    assert snap["by_assignee_sp"]["Коля"] == 8
+    assert snap["by_assignee_sp"]["Рома"] == 2
+
+
+async def test_board_snapshot_sp_by_status():
+    issues = [
+        _issue("D-1", status="Открыт", sp=3),
+        _issue("D-2", status="Открыт", sp=5),
+        _issue("D-3", status="В работе", sp=2),
+    ]
+    with patch("core.tracker_tools.TrackerClient", lambda: _FakeClient(issues)):
+        snap = await tracker_board_snapshot(queue="DARKHORSE")
+    assert snap["by_status_sp"]["Открыт"] == 8
+    assert snap["by_status_sp"]["В работе"] == 2
+
+
+async def test_board_snapshot_total_sp():
+    issues = [
+        _issue("D-1", sp=3),
+        _issue("D-2", sp=5),
+        _issue("D-3", sp=2),
+    ]
+    with patch("core.tracker_tools.TrackerClient", lambda: _FakeClient(issues)):
+        snap = await tracker_board_snapshot(queue="DARKHORSE")
+    assert snap["total_sp"] == 10
+
+
+async def test_board_snapshot_sp_null_treated_as_zero():
+    issues = [_issue("D-1", sp=None)]
+    with patch("core.tracker_tools.TrackerClient", lambda: _FakeClient(issues)):
+        snap = await tracker_board_snapshot(queue="DARKHORSE")
+    assert snap["total_sp"] == 0
+    assert snap["by_assignee_sp"]["(не назначен)"] == 0
+
+
+async def test_board_snapshot_sp_no_issues():
+    with patch("core.tracker_tools.TrackerClient", lambda: _FakeClient([])):
+        snap = await tracker_board_snapshot(queue="DARKHORSE")
+    assert snap["total_sp"] == 0
+    assert snap["by_assignee_sp"] == {}
+    assert snap["by_status_sp"] == {}
+
+
+async def test_board_snapshot_sp_closed_excluded_by_default():
+    issues = [_issue("D-1", status="Закрыт", sp=5)]
+    with patch("core.tracker_tools.TrackerClient", lambda: _FakeClient(issues)):
+        snap = await tracker_board_snapshot(queue="DARKHORSE")
+    assert snap["total_sp"] == 0
+
+
+async def test_board_snapshot_sp_closed_included_when_flag():
+    issues = [_issue("D-1", status="Закрыт", sp=5)]
+    with patch("core.tracker_tools.TrackerClient", lambda: _FakeClient(issues)):
+        snap = await tracker_board_snapshot(queue="DARKHORSE", include_closed=True)
+    assert snap["total_sp"] == 5
+
+
+async def test_board_snapshot_unassigned_sp():
+    issues = [_issue("D-1", assignee=None, sp=3)]
+    with patch("core.tracker_tools.TrackerClient", lambda: _FakeClient(issues)):
+        snap = await tracker_board_snapshot(queue="DARKHORSE")
+    assert snap["by_assignee_sp"]["(не назначен)"] == 3

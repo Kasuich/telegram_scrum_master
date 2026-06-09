@@ -583,11 +583,17 @@ async def _route_inbound_message(
         message_payload,
     )
     _, membership = identity
+    context.actor_tracker_login = membership.tracker_login
+    context.actor_role = membership.role
+    context.actor_default_board_id = membership.default_board_id
+    if isinstance(membership.settings_json, dict):
+        context.actor_settings = membership.settings_json
     context.metadata.update(
         {
             "user_id": str(membership.user_id),
             "tracker_login": membership.tracker_login,
             "default_board_id": membership.default_board_id,
+            "role": membership.role,
         }
     )
     body = context.raw_text_without_mention or _message_text(message_payload)
