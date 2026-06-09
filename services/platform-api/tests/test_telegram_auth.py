@@ -14,14 +14,20 @@ from platform_api.telegram_auth import (
 )
 
 
-def test_find_tracker_user_requires_exact_login() -> None:
+def test_find_tracker_user_accepts_exact_login_email_or_display() -> None:
     users = [
-        TrackerUser(login="ivan.petrov", display="Ivan Petrov"),
+        TrackerUser(
+            login="ivan.petrov",
+            display="Ivan Petrov",
+            email="ivan.petrov@yandex.ru",
+        ),
         TrackerUser(login="petr.ivanov", display="Petr Ivanov"),
     ]
 
     assert _find_tracker_user("@IVAN.PETROV", users) == users[0]
-    assert _find_tracker_user("Ivan Petrov", users) is None
+    assert _find_tracker_user("ivan.petrov@yandex.ru", users) == users[0]
+    assert _find_tracker_user("  Ivan   Petrov ", users) == users[0]
+    assert _find_tracker_user("Ivan", users) is None
 
 
 def test_private_authorization_message_targets_telegram_user() -> None:

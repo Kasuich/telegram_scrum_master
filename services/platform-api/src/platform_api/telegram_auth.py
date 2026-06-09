@@ -170,8 +170,18 @@ async def start_onboarding(
 
 
 def _find_tracker_user(login: str, users: list[TrackerUser]) -> TrackerUser | None:
-    normalized = login.strip().lstrip("@").casefold()
-    return next((user for user in users if user.login.casefold() == normalized), None)
+    normalized = " ".join(login.strip().split()).casefold()
+    login_value = normalized.lstrip("@")
+    return next(
+        (
+            user
+            for user in users
+            if user.login.casefold() == login_value
+            or user.email.casefold() == normalized
+            or " ".join(user.display.split()).casefold() == normalized
+        ),
+        None,
+    )
 
 
 def _find_board(value: str, boards: list[dict]) -> dict | None:
