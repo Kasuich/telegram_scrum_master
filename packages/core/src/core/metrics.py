@@ -85,6 +85,36 @@ agent_confirms_pending = Gauge(
     "Number of agent actions awaiting user confirmation",
 )
 
+agent_stage_visits_total = Counter(
+    "pm_agent_stage_visits_total",
+    "Total agent stage entries",
+    ["agent_name", "stage"],
+)
+
+agent_stage_outcomes_total = Counter(
+    "pm_agent_stage_outcomes_total",
+    "Total agent stage outcomes",
+    ["agent_name", "stage", "outcome"],
+)
+
+agent_graph_edges_total = Counter(
+    "pm_agent_graph_edges_total",
+    "Total traversals of agent graph edges",
+    ["agent_name", "source", "target"],
+)
+
+agent_tool_calls_total = Counter(
+    "pm_agent_tool_calls_total",
+    "Total agent tool-call lifecycle events",
+    ["agent_name", "stage", "tool_name", "risk", "status"],
+)
+
+agent_tool_outputs_total = Counter(
+    "pm_agent_tool_outputs_total",
+    "Total agent tool outputs by bounded result kind",
+    ["agent_name", "stage", "tool_name", "result_kind"],
+)
+
 
 # ── Decorator helpers ─────────────────────────────────────────────────────────
 
@@ -147,5 +177,10 @@ __all__ = [
     "db_pool_checked_out",
     "agent_traces_total",
     "agent_confirms_pending",
+    "agent_stage_visits_total",
+    "agent_stage_outcomes_total",
+    "agent_graph_edges_total",
+    "agent_tool_calls_total",
+    "agent_tool_outputs_total",
     "track_tool",
 ]
