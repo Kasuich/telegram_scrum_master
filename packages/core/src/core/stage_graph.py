@@ -97,7 +97,7 @@ def _tool_results(turn_steps: TurnSteps) -> list[dict[str, Any]]:
 
 def comment_succeeded(turn_steps: TurnSteps) -> bool:
     for s in _tool_results(turn_steps):
-        if s.get("tool_name") != "tracker_comment_issue":
+        if s.get("tool_name") not in ("tracker_comment_issue", "CreateComment"):
             continue
         res = s.get("result") or {}
         if isinstance(res, dict) and not res.get("error"):
@@ -132,6 +132,8 @@ def transition_or_close_succeeded(turn_steps: TurnSteps) -> bool:
             "tracker_move_issues_to_in_progress",
             "tracker_close_issue",
             "tracker_close_issues",
+            "ChangeIssueStatus",
+            "BulkTransition",
         ):
             continue
         res = s.get("result") or {}
@@ -149,6 +151,13 @@ def any_read_answer(turn_steps: TurnSteps) -> bool:
         "tracker_get_issue",
         "tracker_list_team_members",
         "tracker_read_comments",
+        "GetIssue",
+        "GetIssueLinks",
+        "GetIssues",
+        "GetProject",
+        "GetPortfolio",
+        "GetGoal",
+        "SearchEntities",
     }
     for s in _tool_results(turn_steps):
         if s.get("tool_name") in read_tools:

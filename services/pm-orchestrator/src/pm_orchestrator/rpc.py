@@ -41,16 +41,17 @@ _svc = OrchestratorService()
 async def lifespan(app: FastAPI):
     from core.config import get_config
     from core.logging import configure_logging
+    from core.metrics import init_agent_metrics
     from core.scheduler import SchedulerDaemon
+    from core.tracker_mcp import register_tracker_mcp_tools
 
     from pm_orchestrator.tools.call_agent import register_call_agent_tool
     from pm_orchestrator.tools.meeting_capture import register_meeting_capture_tools
     from pm_orchestrator.tools.schedule_task import register_schedule_task_tool
 
-    from core.metrics import init_agent_metrics
-
     config = get_config()
     configure_logging(config.app.log_level)
+    await register_tracker_mcp_tools()
     _svc.discover_agents()
     for agent_name in _svc._runners:
         init_agent_metrics(agent_name)

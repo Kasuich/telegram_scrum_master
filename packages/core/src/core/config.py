@@ -117,6 +117,24 @@ class TrackerConfig(BaseSettings):
         return v
 
 
+class TrackerMCPConfig(BaseSettings):
+    """Yandex Tracker MCP gateway configuration."""
+
+    tracker_mcp_url: str = Field(
+        default="",
+        description="Streamable HTTP endpoint of the Tracker MCP server",
+    )
+    tracker_mcp_token: str = Field(
+        default="",
+        description="Access token sent in the Tracker MCP Authorization header",
+    )
+    tracker_mcp_timeout: float = Field(
+        default=60.0,
+        gt=0,
+        description="Tracker MCP request timeout in seconds",
+    )
+
+
 class LLMConfig(BaseSettings):
     """LLM (Language Model) configuration."""
 
@@ -432,6 +450,7 @@ class Config(BaseSettings):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     yandex: YandexConfig = Field(default_factory=YandexConfig)
     tracker: TrackerConfig = Field(default_factory=TrackerConfig)
+    tracker_mcp: TrackerMCPConfig = Field(default_factory=TrackerMCPConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     app: AppConfig = Field(default_factory=AppConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
@@ -563,6 +582,7 @@ __all__ = [
     "DatabaseConfig",
     "YandexConfig",
     "TrackerConfig",
+    "TrackerMCPConfig",
     "LLMConfig",
     "AppConfig",
     "RuntimeConfig",

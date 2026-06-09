@@ -109,6 +109,7 @@ class BaseAgent:
     tools: ClassVar[list[str]] = []
     llm_configs: ClassVar[list[LLMSettings]] = []
     action_only: ClassVar[bool] = False
+    freeform_tool_planning: ClassVar[bool] = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

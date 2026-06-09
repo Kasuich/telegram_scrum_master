@@ -29,6 +29,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from core.agent import BaseAgent
+from core.assignee_resolver import best_user_match, load_team_users
 from core.config import RuntimeConfig
 from core.exceptions import AgentError
 from core.goal import (
@@ -55,7 +56,6 @@ from core.turn_guards import (
     created_issue_keys_in_turn,
     message_has_create_sprint_intent,
 )
-from core.assignee_resolver import best_user_match, load_team_users
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +73,16 @@ _TOOL_LABELS = {
     "tracker_link_issues": "Связывание задач",
     "tracker_create_sprint": "Создание спринта",
     "tracker_apply_backlog_plan": "Создание задач из плана",
-    "schedule_task": "Планирование cron-задачи",
     "tracker_add_issues_to_sprint": "Добавление задач в спринт",
+    "CreateIssue": "Создание задачи в Трекере",
+    "UpdateIssue": "Изменение задачи",
+    "ChangeIssueStatus": "Смена статуса задачи",
+    "CreateComment": "Комментарий к задаче",
+    "BulkUpdate": "Массовое изменение задач",
+    "BulkTransition": "Массовая смена статуса",
+    "BulkMove": "Массовый перенос задач",
+    "DeleteGoal": "Удаление цели",
+    "schedule_task": "Планирование cron-задачи",
 }
 _SESSION_MESSAGE_WINDOW = 10
 _SESSION_CONTEXT_FALLBACK_LINES = 24
@@ -273,7 +281,64 @@ def _tool_error_message(tool_name: str, error: str, *, action_only: bool = False
     return f"Инструмент «{tool_name}» завершился с ошибкой: {error}. Сообщи об ошибке пользователю."
 
 
+def _progress_checkpoint(
+    goal_item: GoalItem | None,
+    turn_steps: list[dict[str, Any]],
+    *,
+    iterations_left: int,
+) -> str:
+    """Build a compact plan/observe/reflect checkpoint for the next LLM pass."""
+    calls: list[str] = []
+    errors: list[str] = []
+    for step in turn_steps:
+        kind = step.get("kind")
+        name = str(step.get("tool_name") or "")
+        if kind == "tool_result" and name:
+            calls.append(name)
+        elif kind == "tool_error" and name:
+            errors.append(f"{name}: {str(step.get('error') or '')[:160]}")
+
+    intent = (goal_item.intent if goal_item else "") or (
+        goal_item.payload if goal_item else ""
+    )
+    success = goal_item.success_criteria if goal_item else ""
+    return (
+        "\n\nREFLECTION CHECKPOINT\n"
+        f"Цель: {intent or 'выполнить запрос пользователя'}\n"
+        f"Критерий успеха: {success or 'запрос выполнен и результат проверен'}\n"
+        f"Успешные вызовы: {', '.join(calls[-6:]) or 'нет'}\n"
+        f"Ошибки: {'; '.join(errors[-3:]) or 'нет'}\n"
+        f"Осталось итераций: {iterations_left}\n"
+        "Переоцени план по наблюдениям. Если цель достигнута, заверши ответом без tool call. "
+        "Если нет, выбери один лучший следующий tool call. Не повторяй уже успешный вызов "
+        "с теми же аргументами. Проверяй результат записи чтением только когда это полезно."
+    )
+
+
 def _format_action_tool_line(tool_name: str, result: dict[str, Any]) -> str:
+    if tool_name == "CreateIssue":
+        key = result.get("key") or result.get("issue_key", "")
+        return f"Создана {key} «{result.get('summary', '')}»"
+    if tool_name == "UpdateIssue":
+        key = result.get("key") or result.get("issue_key", "")
+        return f"Обновлена {key}"
+    if tool_name == "ChangeIssueStatus":
+        key = result.get("key") or result.get("issue_key", "")
+        return f"Статус изменён: {key}"
+    if tool_name == "CreateComment":
+        key = result.get("issue_key") or result.get("key", "")
+        return f"Добавлен комментарий к {key}"
+    if tool_name == "GetIssue":
+        key = result.get("key", "")
+        summary = result.get("summary", "")
+        return f"{key} «{summary}»".strip()
+    if tool_name == "GetIssues":
+        issues = result.get("issues")
+        if isinstance(issues, list):
+            return f"Найдено задач: {len(issues)}"
+    if tool_name in {"BulkUpdate", "BulkTransition", "BulkMove"}:
+        bulk_id = result.get("bulkchange_id") or result.get("id", "")
+        return f"{tool_name}: запущена операция {bulk_id}".strip()
     if tool_name == "tracker_close_issue":
         issue = result.get("issue") or {}
         key = issue.get("key") or result.get("issue_key", "?")
@@ -865,8 +930,20 @@ class ReActRunner:
     def _freeze_scenario_stage(self, state: dict[str, Any], item: GoalItem) -> None:
         state["_stage"] = item.stage.value
         state["_current_goal_item"] = item
-        stage = get_stage(item.stage)
-        state["stage_addendum"] = stage.prompt_addendum if stage else ""
+        if getattr(self.agent, "freeform_tool_planning", False):
+            state["stage_addendum"] = (
+                f"Рабочая категория: {item.stage.value}. "
+                "Это подсказка, не ограничение инструментов.\n"
+                f"Текущая цель: {item.intent or item.payload}\n"
+                "Критерий успеха: "
+                f"{item.success_criteria or 'выполнить запрос и проверить результат'}\n"
+                "Самостоятельно спланируй последовательность вызовов. После каждого результата "
+                "переоцени остаток плана; не следуй фиксированному сценарию, "
+                "если данные требуют другого пути."
+            )
+        else:
+            stage = get_stage(item.stage)
+            state["stage_addendum"] = stage.prompt_addendum if stage else ""
         state["_turn_user_message"] = item.payload
         state["steps"].append(_step("stage", stage=item.stage.value))
 
@@ -1352,14 +1429,15 @@ class ReActRunner:
         tool_schemas = self.agent._resolve_tool_schemas()
         registry = get_registry()
         action_only = getattr(self.agent, "action_only", False)
+        freeform = bool(getattr(self.agent, "freeform_tool_planning", False))
         steps_before_turn = state.pop("_steps_before_turn", scenario_steps_before)
-        # Active stage (frozen for the turn). None for non-action_only agents or
-        # when no stage was set — then all legacy behaviour is preserved.
+        # The stage is a prompt hint only. The agent plans its own tool cascade.
         stage = get_stage(state.get("_stage")) if action_only else None
-        if stage is not None:
-            # Constrain the LLM to this stage's allowed tools only.
+        if stage is not None and not freeform:
             tool_schemas = [
-                s for s in tool_schemas if s.get("name") in stage.allowed_tools
+                schema
+                for schema in tool_schemas
+                if schema.get("name") in stage.allowed_tools
             ] or tool_schemas
 
         for iteration in range(self.max_iterations):
@@ -1389,19 +1467,27 @@ class ReActRunner:
                 )
 
                 if action_only:
-                    question = clarification_needed(
-                        state.get("_stage"),
-                        turn_steps,
-                        state.get("_turn_user_message", ""),
-                        reason="blocked",
-                    )
-                    if question:
-                        return ScenarioOutcome(
-                            kind="clarification",
-                            turn_steps=list(turn_steps),
-                            clarification=question,
+                    if not freeform:
+                        question = clarification_needed(
+                            state.get("_stage"),
+                            turn_steps,
+                            state.get("_turn_user_message", ""),
+                            reason="blocked",
                         )
-                    reply = _action_only_final_reply(turn_steps, llm_text, had_tool, stage_id=StageId(state.get("_stage")) if state.get("_stage") else None)
+                        if question:
+                            return ScenarioOutcome(
+                                kind="clarification",
+                                turn_steps=list(turn_steps),
+                                clarification=question,
+                            )
+                    reply = _action_only_final_reply(
+                        turn_steps,
+                        llm_text,
+                        had_tool,
+                        stage_id=(
+                            StageId(state["_stage"]) if state.get("_stage") else None
+                        ),
+                    )
                 else:
                     reply = llm_text
                 if action_only and state.get("_plan"):
@@ -1446,7 +1532,7 @@ class ReActRunner:
                 await self._compact_session_history(state)
                 continue
 
-            if action_only and stage is not None:
+            if action_only and stage is not None and not freeform:
                 from core.config import get_config
 
                 guard_err: str | None = None
@@ -1463,8 +1549,6 @@ class ReActRunner:
                             "board_id или board_name), а не tracker_create_issue."
                         )
                     else:
-                        # Async assignee-mismatch correction lives outside the pure
-                        # sync graph; only INTAKE creates need it.
                         guard_err = await check_create_assignee(
                             tool_args=tool_call.arguments,
                             turn_user_message=state.get("_turn_user_message", ""),
@@ -1488,35 +1572,6 @@ class ReActRunner:
                         }
                     )
                     await self._compact_session_history(state)
-                    if created_issue_keys_in_turn(steps, steps_before_turn):
-                        last_create: dict[str, Any] | None = None
-                        for s in reversed(steps):
-                            if (
-                                s.get("kind") == "tool_result"
-                                and s.get("tool_name") == "tracker_create_issue"
-                            ):
-                                last_create = s.get("result")
-                                break
-                        if last_create:
-                            turn_steps = steps[steps_before_turn:]
-                            if state.get("_plan"):
-                                return ScenarioOutcome(kind="done", turn_steps=list(turn_steps))
-                            reply = _format_action_tool_line("tracker_create_issue", last_create)
-                            steps.append(_step("final", content=reply))
-                            messages.append({"role": "assistant", "content": reply})
-                            state["messages"] = messages
-                            state["steps"] = steps
-                            await self._compact_session_history(state)
-                            await self._save_session(ctx, session_id, state)
-                            return ScenarioOutcome(
-                                kind="done",
-                                turn_steps=list(turn_steps),
-                                agent_result=AgentResult(
-                                    reply=reply,
-                                    session_id=session_id,
-                                    steps=list(turn_steps),
-                                ),
-                            )
                     continue
 
             tool = registry.get(tool_call.name)
@@ -1590,34 +1645,38 @@ class ReActRunner:
                     }
                 )
                 await self._compact_session_history(state)
-                if self._turn_is_done(stage, steps[steps_before_turn:], goal_item=state.get("_current_goal_item")):
+                if not freeform and self._turn_is_done(
+                    stage,
+                    steps[steps_before_turn:],
+                    goal_item=state.get("_current_goal_item"),
+                ):
                     turn_steps = steps[steps_before_turn:]
                     if state.get("_plan"):
                         return ScenarioOutcome(kind="done", turn_steps=list(turn_steps))
-                    reply = _build_action_report(turn_steps) or ("Действие выполнено.")
+                    reply = _build_action_report(turn_steps) or "Действие выполнено."
                     steps.append(_step("final", content=reply, reason="stage_terminal"))
                     messages.append({"role": "assistant", "content": reply})
                     state["messages"] = messages
                     state["steps"] = steps
-                    await self._compact_session_history(state)
                     await self._save_session(ctx, session_id, state)
                     return ScenarioOutcome(
                         kind="done",
                         turn_steps=list(turn_steps),
                         agent_result=AgentResult(
-                            reply=reply, session_id=session_id, steps=list(turn_steps)
+                            reply=reply,
+                            session_id=session_id,
+                            steps=list(turn_steps),
                         ),
                     )
                 continue
 
             # --- Auto-execute ---
             exec_args = dict(tool_call.arguments)
-            if tool_call.name == "tracker_apply_backlog_plan":
+            if not freeform and tool_call.name == "tracker_apply_backlog_plan":
                 from core.backlog_tools import plan_json_looks_invalid
 
                 if plan_json_looks_invalid(str(exec_args.get("plan_json", ""))):
                     exec_args["plan_json"] = ""
-
             try:
                 result = await self._execute_tool(tool_call.name, exec_args)
                 steps.append(
@@ -1639,27 +1698,34 @@ class ReActRunner:
                     output=result,
                 )
 
-                # Stash a successful backlog plan so a forced apply (empty
-                # plan_json) can inject it.
-                if (
+                if not freeform and (
                     tool_call.name == "backlog_plan"
                     and isinstance(result, dict)
                     and result.get("plan")
                     and not result.get("error")
-                    and (result.get("tasks_count", 0) > 0 or result.get("stories_count", 0) > 0)
+                    and (
+                        result.get("tasks_count", 0) > 0
+                        or result.get("stories_count", 0) > 0
+                    )
                 ):
                     from core.backlog_context import set_pending_backlog_plan
 
                     set_pending_backlog_plan(result["plan"])
 
-                # Deterministic forced edges (no LLM round-trip). Generalized
-                # from the backlog_plan -> apply auto-chain.
-                if stage is not None:
-                    await self._run_forced_edges(ctx, session_id, stage, steps, steps_before_turn)
-                else:
-                    await self._run_legacy_backlog_chain(
-                        ctx, session_id, state, steps, steps_before_turn, tool_call.name
-                    )
+                if not freeform:
+                    if stage is not None:
+                        await self._run_forced_edges(
+                            ctx, session_id, stage, steps, steps_before_turn
+                        )
+                    else:
+                        await self._run_legacy_backlog_chain(
+                            ctx,
+                            session_id,
+                            state,
+                            steps,
+                            steps_before_turn,
+                            tool_call.name,
+                        )
 
                 feedback = _tool_result_message(tool_call.name, result, action_only=action_only)
             except Exception as exc:
@@ -1676,36 +1742,43 @@ class ReActRunner:
                 )
                 feedback = _tool_error_message(tool_call.name, err_msg, action_only=action_only)
 
+            if freeform:
+                feedback += _progress_checkpoint(
+                    state.get("_current_goal_item"),
+                    steps[steps_before_turn:],
+                    iterations_left=self.max_iterations - iteration - 1,
+                )
             messages.append({"role": "user", "content": feedback})
             await self._compact_session_history(state)
 
-            if action_only and self._turn_is_done(stage, steps[steps_before_turn:]):
+            if not freeform and action_only and self._turn_is_done(
+                stage, steps[steps_before_turn:]
+            ):
                 turn_steps = steps[steps_before_turn:]
                 if state.get("_plan"):
-                    # QUERY: tool data ready; need one more LLM pass to verbalize in words
                     if stage is not None and stage.id == StageId.QUERY:
-                        _verbalize_msg = (
+                        verbalize = (
                             "Данные получены. Ответь на вопрос пользователя своими словами, "
                             "без tool calls."
                         )
-                        if not messages or messages[-1].get("content") != _verbalize_msg:
-                            messages.append({"role": "user", "content": _verbalize_msg})
+                        if not messages or messages[-1].get("content") != verbalize:
+                            messages.append({"role": "user", "content": verbalize})
                             await self._compact_session_history(state)
                             continue
                     return ScenarioOutcome(kind="done", turn_steps=list(turn_steps))
-                reply = _build_action_report(turn_steps) or ("Действие выполнено.")
-                reason = "stage_terminal" if stage is not None else "auto_finalize"
-                steps.append(_step("final", content=reply, reason=reason))
+                reply = _build_action_report(turn_steps) or "Действие выполнено."
+                steps.append(_step("final", content=reply, reason="stage_terminal"))
                 messages.append({"role": "assistant", "content": reply})
                 state["messages"] = messages
                 state["steps"] = steps
-                await self._compact_session_history(state)
                 await self._save_session(ctx, session_id, state)
                 return ScenarioOutcome(
                     kind="done",
                     turn_steps=list(turn_steps),
                     agent_result=AgentResult(
-                        reply=reply, session_id=session_id, steps=list(turn_steps)
+                        reply=reply,
+                        session_id=session_id,
+                        steps=list(turn_steps),
                     ),
                 )
 
@@ -1717,18 +1790,19 @@ class ReActRunner:
             state.get("_stage"),
         )
         turn_steps = steps[steps_before_turn:]
-        question = clarification_needed(
-            state.get("_stage"),
-            turn_steps,
-            state.get("_turn_user_message", ""),
-            reason="max_iter",
-        )
-        if question:
-            return ScenarioOutcome(
-                kind="clarification",
-                turn_steps=list(turn_steps),
-                clarification=question,
+        if not freeform:
+            question = clarification_needed(
+                state.get("_stage"),
+                turn_steps,
+                state.get("_turn_user_message", ""),
+                reason="max_iter",
             )
+            if question:
+                return ScenarioOutcome(
+                    kind="clarification",
+                    turn_steps=list(turn_steps),
+                    clarification=question,
+                )
         report = _build_action_report(turn_steps)
         reply = report or "Достигнут лимит итераций. Пожалуйста, переформулируйте запрос."
         if state.get("_plan"):
@@ -1753,7 +1827,13 @@ class ReActRunner:
     # Stage graph helpers
     # ------------------------------------------------------------------
 
-    def _turn_is_done(self, stage: Any, turn_steps: list[dict[str, Any]], *, goal_item: GoalItem | None = None) -> bool:
+    def _turn_is_done(
+        self,
+        stage: Any,
+        turn_steps: list[dict[str, Any]],
+        *,
+        goal_item: GoalItem | None = None,
+    ) -> bool:
         if stage is not None:
             return _goal_terminal_for_stage(stage, goal_item, turn_steps)
         return _should_auto_finalize_turn(turn_steps)
