@@ -616,6 +616,8 @@ async def tracker_patch_issue(
         components=components,
         custom_fields=custom_fields,
     )
+    if not issue_key or not issue_key.strip():
+        return {"error": "issue_key is required (e.g. DARKHORSE-195)"}
     if "error" in fields:
         return fields
     if not fields:
@@ -818,6 +820,8 @@ async def tracker_comment_issue(issue_key: str, text: str) -> dict[str, Any]:
     Add a comment to an issue — for new context from chat (blockers, problems, notes).
     Use when the user message contains info beyond field updates (VPN, bugs, «Имя: …»).
     """
+    if not issue_key or not issue_key.strip():
+        return {"error": "issue_key is required (e.g. DARKHORSE-195)"}
     async with TrackerClient() as client:
         comment = await client.comment_issue(issue_key, text)
     return {
@@ -838,6 +842,8 @@ async def tracker_close_issue(
     resolution: required in many queues (default 'fixed'). Keys: fixed, wontFix, duplicate, etc.
     High-risk tool (close transition + resolution).
     """
+    if not issue_key or not issue_key.strip():
+        return {"error": "issue_key is required (e.g. DARKHORSE-195)"}
     async with TrackerClient() as client:
         result = await client.transition_issue(
             issue_key,
