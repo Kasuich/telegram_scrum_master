@@ -112,6 +112,39 @@ def test_parse_standup_response() -> None:
     assert actions[2].text == "подготовить демо"
 
 
+def test_parse_multiple_task_markers_in_one_line() -> None:
+    actions = parse_standup_response(
+        "задача 5 закрыта задача 11 нужно больше информации"
+    )
+
+    assert [(action.kind, action.issue_number) for action in actions] == [
+        ("close", 5),
+        ("comment", 11),
+    ]
+    assert actions[1].text == "задача 11 нужно больше информации"
+
+
+def test_parse_numbered_list_cancel_and_dash_new_task() -> None:
+    text = (
+        "1) Транскрибация тестируется, нужен 1 день. "
+        "4) Телеграм проверен, можно закрывать "
+        "5) Отмени задачу "
+        "6) Отмени задачу "
+        "Новая задача - поспать"
+    )
+
+    actions = parse_standup_response(text)
+
+    assert [(action.kind, action.issue_number) for action in actions] == [
+        ("comment", 1),
+        ("close", 4),
+        ("cancel", 5),
+        ("cancel", 6),
+        ("create", None),
+    ]
+    assert actions[-1].text == "поспать"
+
+
 class _Result:
     def __init__(self, value):
         self.value = value
