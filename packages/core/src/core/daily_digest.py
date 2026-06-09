@@ -200,6 +200,44 @@ def _poll_issue_map(poll: TelegramStandupPoll) -> dict[str, dict[str, Any]]:
     return mapped
 
 
+def _poll_result_rows(poll: TelegramStandupPoll) -> list[dict[str, Any]]:
+    applied = poll.applied_json if isinstance(poll.applied_json, dict) else {}
+    rows = applied.get("results")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+
+    history = applied.get("responses")
+    if not isinstance(history, list):
+        return []
+
+    result_rows: list[dict[str, Any]] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        results = item.get("results")
+        if isinstance(results, list):
+            result_rows.extend(row for row in results if isinstance(row, dict))
+    return result_rows
+
+
+def _poll_response_text(poll: TelegramStandupPoll) -> str:
+    applied = poll.applied_json if isinstance(poll.applied_json, dict) else {}
+    history = applied.get("responses")
+    if not isinstance(history, list):
+        return str(poll.response_text or "")
+
+    texts: list[str] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if text:
+            texts.append(text)
+    if texts:
+        return "\n\n".join(texts)
+    return str(poll.response_text or "")
+
+
 def _poll_item_to_digest_issue(
     item: dict[str, Any],
     *,
@@ -217,6 +255,26 @@ def _poll_item_to_digest_issue(
         assignee_login=assignee_login,
         assignee_display=assignee_display,
         url=str(item.get("url") or f"https://tracker.yandex.ru/{key}"),
+    )
+
+
+def _poll_row_to_digest_issue(
+    row: dict[str, Any],
+    issue_map: dict[str, dict[str, Any]],
+    *,
+    poll: TelegramStandupPoll,
+    display: str,
+    status: str,
+) -> DigestIssue | None:
+    key = str(row.get("issue_key") or "").strip()
+    if not key and row.get("kind") == "create":
+        key = "new-task"
+    item = issue_map.get(key, {"key": key, "summary": row.get("summary") or ""})
+    return _poll_item_to_digest_issue(
+        item,
+        assignee_login=poll.tracker_login,
+        assignee_display=display,
+        status=status,
     )
 
 
@@ -239,24 +297,20 @@ def _is_terminal_status(status: str) -> bool:
 
 def _poll_done_issues(poll: TelegramStandupPoll, *, display: str) -> list[DigestIssue]:
     issue_map = _poll_issue_map(poll)
-    rows = (poll.applied_json or {}).get("results", [])
-    if not isinstance(rows, list):
-        return []
     issues: list[DigestIssue] = []
-    for row in rows:
-        if not isinstance(row, dict) or not row.get("ok"):
+    for row in _poll_result_rows(poll):
+        if not row.get("ok"):
             continue
         if row.get("kind") not in {"close", "cancel"}:
             continue
         if row.get("kind") == "cancel" and not row.get("transitioned"):
             continue
-        key = str(row.get("issue_key") or "").strip()
-        item = issue_map.get(key, {"key": key})
         status = "Отменена" if row.get("kind") == "cancel" else "Закрыта"
-        issue = _poll_item_to_digest_issue(
-            item,
-            assignee_login=poll.tracker_login,
-            assignee_display=display,
+        issue = _poll_row_to_digest_issue(
+            row,
+            issue_map,
+            poll=poll,
+            display=display,
             status=status,
         )
         if issue is not None:
@@ -264,24 +318,36 @@ def _poll_done_issues(poll: TelegramStandupPoll, *, display: str) -> list[Digest
     return issues
 
 
-def _poll_open_issues(
+def _poll_work_issues(
     poll: TelegramStandupPoll,
     *,
     display: str,
     done_keys: set[str],
 ) -> list[DigestIssue]:
+    issue_map = _poll_issue_map(poll)
     issues: list[DigestIssue] = []
-    for item in poll.issues_json or []:
-        if not isinstance(item, dict):
+    work_kinds = {"blocked", "comment", "create", "in_progress"}
+    status_by_kind = {
+        "blocked": "Задерживается",
+        "comment": "Обновлено",
+        "create": "Создана",
+        "in_progress": "В работе",
+    }
+    for row in _poll_result_rows(poll):
+        if not row.get("ok"):
             continue
-        key = str(item.get("key") or "").strip()
-        status = str(item.get("status") or "").strip()
-        if not key or key in done_keys or _is_terminal_status(status):
+        kind = str(row.get("kind") or "")
+        if kind not in work_kinds:
             continue
-        issue = _poll_item_to_digest_issue(
-            item,
-            assignee_login=poll.tracker_login,
-            assignee_display=display,
+        key = str(row.get("issue_key") or "").strip()
+        if key and key in done_keys:
+            continue
+        issue = _poll_row_to_digest_issue(
+            row,
+            issue_map,
+            poll=poll,
+            display=display,
+            status=status_by_kind.get(kind, "Обновлено"),
         )
         if issue is not None:
             issues.append(issue)
@@ -301,15 +367,17 @@ def _merge_issue_lists(*groups: list[DigestIssue]) -> list[DigestIssue]:
 
 
 def _poll_applied_items(poll: TelegramStandupPoll) -> list[str]:
-    applied = poll.applied_json or {}
-    rows = applied.get("results") if isinstance(applied, dict) else []
-    if not isinstance(rows, list):
-        return []
     items: list[str] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
+    for row in _poll_result_rows(poll):
         issue_key = str(row.get("issue_key") or "").strip()
+        if not row.get("ok"):
+            issue_number = row.get("issue_number")
+            if row.get("error") == "unknown_issue_number":
+                items.append(f"задача {issue_number}: номер не найден")
+            else:
+                key = issue_key or issue_number or row.get("kind") or "действие"
+                items.append(f"{key}: не применено")
+            continue
         if row.get("kind") == "create":
             key = issue_key or "новая задача"
             items.append(f"создана {key}: {row.get('summary') or ''}".strip())
@@ -359,6 +427,22 @@ async def _load_team_queue(session: Any, team_id: uuid.UUID) -> str:
     return get_config().tracker.tracker_queue
 
 
+async def _mark_standup_polls_reported(
+    session: Any,
+    *,
+    team_id: uuid.UUID,
+    local_hour: str,
+) -> None:
+    stmt = select(TelegramStandupPoll).where(
+        TelegramStandupPoll.team_id == team_id,
+        TelegramStandupPoll.local_hour == local_hour,
+        TelegramStandupPoll.status.in_(("pending", "answered", "ambiguous")),
+    )
+    polls = (await session.execute(stmt)).scalars().all()
+    for poll in polls:
+        poll.status = "reported"
+
+
 async def build_daily_digest_report(
     session: Any,
     *,
@@ -370,26 +454,7 @@ async def build_daily_digest_report(
     local_date, _, _ = day_window_utc(now, timezone_name=cfg.timezone)
     local_hour = local_hour_key(now, timezone_name=cfg.timezone)
     queue = await _load_team_queue(session, team_id)
-
-    async with client_factory() as client:
-        in_progress_raw: list[dict[str, Any]] = []
-        for status in cfg.in_progress_status_list():
-            in_progress_raw.extend(
-                await client.search_issues(build_in_progress_yql(queue, status), limit=200)
-            )
-        done_raw = await client.search_issues(
-            build_done_today_yql(queue, local_date),
-            limit=200,
-        )
-
-    in_progress = _dedupe_issues(
-        [issue for raw in in_progress_raw if (issue := _to_digest_issue(raw)) is not None]
-    )
-    done_today = _dedupe_issues(
-        [issue for raw in done_raw if (issue := _to_digest_issue(raw)) is not None]
-    )
-    in_progress_by_assignee = _group_by_assignee(in_progress)
-    done_by_assignee = _group_by_assignee(done_today)
+    del client_factory
     members = await load_registered_participants(session, team_id=team_id)
     polls_by_login = await _load_standup_polls_by_login(
         session,
@@ -401,25 +466,25 @@ async def build_daily_digest_report(
     for member in members:
         login_key = member.tracker_login.casefold()
         poll = polls_by_login.get(login_key)
-        member_done = done_by_assignee.get(login_key, [])
-        member_in_progress = in_progress_by_assignee.get(login_key, [])
+        member_done: list[DigestIssue] = []
+        member_in_progress: list[DigestIssue] = []
         if poll is not None:
             poll_done = _poll_done_issues(poll, display=member.display)
-            done_keys = {issue.key for issue in _merge_issue_lists(member_done, poll_done)}
-            poll_open = _poll_open_issues(
+            done_keys = {issue.key for issue in poll_done}
+            poll_work = _poll_work_issues(
                 poll,
                 display=member.display,
                 done_keys=done_keys,
             )
-            member_done = _merge_issue_lists(member_done, poll_done)
-            member_in_progress = _merge_issue_lists(member_in_progress, poll_open)
+            member_done = _merge_issue_lists(poll_done)
+            member_in_progress = _merge_issue_lists(poll_work)
         digest_members.append(
             DigestMember(
                 login=member.tracker_login,
                 display=member.display,
                 in_progress=member_in_progress,
                 done_today=member_done,
-                standup_response=str(poll.response_text or "") if poll is not None else "",
+                standup_response=_poll_response_text(poll) if poll is not None else "",
                 applied_items=_poll_applied_items(poll) if poll is not None else [],
             )
         )
@@ -623,6 +688,11 @@ async def send_team_daily_digest(
         dedupe_slot=report.local_hour,
         local_date=report.local_date,
         text=text,
+    )
+    await _mark_standup_polls_reported(
+        session,
+        team_id=team_uuid,
+        local_hour=report.local_hour,
     )
     logger.info(
         "Daily digest enqueued for team %s chat %s (%d message parts)",

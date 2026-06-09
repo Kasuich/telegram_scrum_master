@@ -540,7 +540,7 @@ async def find_pending_poll_for_response(
         .where(
             TelegramStandupPoll.team_id == team_id,
             TelegramStandupPoll.telegram_user_id == telegram_user_id,
-            TelegramStandupPoll.status == "pending",
+            TelegramStandupPoll.status.in_(("pending", "answered", "ambiguous")),
         )
         .order_by(TelegramStandupPoll.created_at.desc())
         .limit(1)
@@ -720,6 +720,70 @@ def _format_apply_report(results: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _as_dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _poll_response_history(poll: TelegramStandupPoll) -> list[dict[str, Any]]:
+    applied = poll.applied_json if isinstance(poll.applied_json, dict) else {}
+    history = _as_dict_list(applied.get("responses"))
+    if history:
+        return history
+
+    actions = _as_dict_list(applied.get("actions"))
+    results = _as_dict_list(applied.get("results"))
+    if poll.response_text or actions or results:
+        responded_at = poll.responded_at
+        return [
+            {
+                "text": poll.response_text or "",
+                "actions": actions,
+                "results": results,
+                "responded_at": responded_at.isoformat() if responded_at is not None else None,
+            }
+        ]
+    return []
+
+
+def _append_poll_response(
+    poll: TelegramStandupPoll,
+    *,
+    text: str,
+    actions: list[ParsedAction],
+    results: list[dict[str, Any]],
+    responded_at: datetime,
+) -> None:
+    history = _poll_response_history(poll)
+    action_rows = [action.__dict__ for action in actions]
+    history.append(
+        {
+            "text": text,
+            "actions": action_rows,
+            "results": results,
+            "responded_at": responded_at.isoformat(),
+        }
+    )
+
+    all_actions: list[dict[str, Any]] = []
+    all_results: list[dict[str, Any]] = []
+    response_texts: list[str] = []
+    for item in history:
+        response_text = str(item.get("text") or "").strip()
+        if response_text:
+            response_texts.append(response_text)
+        all_actions.extend(_as_dict_list(item.get("actions")))
+        all_results.extend(_as_dict_list(item.get("results")))
+
+    poll.response_text = "\n\n".join(response_texts)
+    poll.applied_json = {
+        "responses": history,
+        "actions": all_actions,
+        "results": all_results,
+    }
+
+
 async def handle_standup_response(
     session: Any,
     *,
@@ -767,10 +831,16 @@ async def handle_standup_response(
                         }
                     )
 
-    poll.response_text = text
-    poll.applied_json = {"actions": [action.__dict__ for action in actions], "results": results}
+    responded_at = datetime.now(timezone.utc)
+    _append_poll_response(
+        poll,
+        text=text,
+        actions=actions,
+        results=results,
+        responded_at=responded_at,
+    )
     poll.status = "answered" if actions else "ambiguous"
-    poll.responded_at = datetime.now(timezone.utc)
+    poll.responded_at = responded_at
     await session.flush()
     return _format_apply_report(results)
 
