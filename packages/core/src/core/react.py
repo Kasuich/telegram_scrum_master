@@ -761,6 +761,43 @@ class ReActRunner:
         for item in goal_plan.items:
             all_missing.extend(item.missing_info)
 
+        # Strip non-blocking optional fields — deadline/SP/priority never stop execution
+        _OPTIONAL_MISSING = (
+            "дата", "дедлайн", "deadline", "срок", "завершен",
+            "story point", " sp", "приоритет", "priority",
+            "описани", "description", "спринт", "sprint",
+        )
+        all_missing = [
+            m for m in all_missing
+            if not any(kw in m.lower() for kw in _OPTIONAL_MISSING)
+        ]
+        for item in goal_plan.items:
+            item.missing_info = [
+                m for m in item.missing_info
+                if not any(kw in m.lower() for kw in _OPTIONAL_MISSING)
+            ]
+
+        # Resolve "which task" from recent session history before asking user
+        _TASK_MISSING_KW = ("задач", "ключ", "issue", "какую", "задан")
+        recent_user_msgs = [
+            m["content"] for m in state["messages"][-6:]
+            if m.get("role") == "user" and m.get("content") != message
+        ]
+        import re as _re
+        _key_re = _re.compile(r"[A-Z]+-\d+")
+        _hint_re = _re.compile(r"задач[уаеи]?\s+по\s+(\w+)|задач[уаеи]?\s+[«\"']?(\w[\w\s]*?)[»\"']?(?:\s|,|$)", _re.IGNORECASE)
+        history_task_mentions: list[str] = []
+        for msg in recent_user_msgs:
+            history_task_mentions += _key_re.findall(msg)
+            history_task_mentions += [m for g in _hint_re.findall(msg) for m in g if m]
+        if history_task_mentions:
+            for item in goal_plan.items:
+                item.missing_info = [
+                    m for m in item.missing_info
+                    if not any(kw in m.lower() for kw in _TASK_MISSING_KW)
+                ]
+            all_missing = [m for item in goal_plan.items for m in item.missing_info]
+
         # Resolve 1st-person ("мне/я/мои") from invocation context
         actor_login = (ctx.invocation_context or self._active_invocation_context or InvocationContext()).actor_tracker_login
         user_msg = message
