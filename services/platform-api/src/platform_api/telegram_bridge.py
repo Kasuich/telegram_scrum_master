@@ -26,6 +26,7 @@ from core.models import (
     TelegramUpdate,
     TelegramUser,
 )
+from core.standup_poll import handle_standup_response
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import Select, or_, select
@@ -591,6 +592,31 @@ async def _route_inbound_message(
         }
     )
     body = context.raw_text_without_mention or _message_text(message_payload)
+
+    if chat.type == "private" and (chat.ingest_mode or "").strip().lower() == "direct":
+        standup_reply = await handle_standup_response(
+            session,
+            team_id=installation.team_id,
+            telegram_user_id=telegram_user.id,
+            text=body,
+        )
+        if standup_reply is not None:
+            result = SimpleNamespace(reply=standup_reply, pending_confirm=None)
+            outbox = await _enqueue_agent_result(
+                session,
+                installation=installation,
+                chat=chat,
+                message=message,
+                telegram_user=telegram_user,
+                result=result,
+            )
+            return {
+                "session_id": context.session_id,
+                "outbox_id": str(outbox.id) if outbox is not None else None,
+                "reply": result.reply,
+                "pending_confirm_id": None,
+                "standup_poll": "handled",
+            }
 
     # Short-circuit: a Telemost link goes straight to the recording bot.
     telemost_url = _extract_telemost_url(body)

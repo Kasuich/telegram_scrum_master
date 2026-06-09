@@ -4,16 +4,27 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 
-from core.assignee_resolver import load_team_users
 from core.config import get_config
-from core.models import ScheduledJob, Team, TelegramChat, TelegramInstallation, TelegramOutbox
+from core.models import (
+    ScheduledJob,
+    Team,
+    TelegramChat,
+    TelegramInstallation,
+    TelegramOutbox,
+    TelegramStandupPoll,
+)
+from core.standup_poll import (
+    STANDUP_POLL_JOB_NAME,
+    STANDUP_POLL_PAYLOAD_TYPE,
+    load_registered_participants,
+)
 from core.tracker import TrackerClient
 
 logger = logging.getLogger(__name__)
@@ -40,6 +51,8 @@ class DigestMember:
     display: str
     in_progress: list[DigestIssue]
     done_today: list[DigestIssue]
+    standup_response: str = ""
+    applied_items: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -176,6 +189,49 @@ def _group_by_assignee(issues: list[DigestIssue]) -> dict[str, list[DigestIssue]
     return grouped
 
 
+def _poll_applied_items(poll: TelegramStandupPoll) -> list[str]:
+    applied = poll.applied_json or {}
+    rows = applied.get("results") if isinstance(applied, dict) else []
+    if not isinstance(rows, list):
+        return []
+    items: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        issue_key = str(row.get("issue_key") or "").strip()
+        if row.get("kind") == "create":
+            key = issue_key or "новая задача"
+            items.append(f"создана {key}: {row.get('summary') or ''}".strip())
+        elif row.get("kind") == "close" and issue_key:
+            items.append(f"{issue_key}: закрыта")
+        elif row.get("kind") == "in_progress" and issue_key:
+            items.append(f"{issue_key}: в работе")
+        elif row.get("kind") == "blocked" and issue_key:
+            suffix = (
+                "статус обновлен"
+                if row.get("transitioned")
+                else "добавлен комментарий"
+            )
+            items.append(f"{issue_key}: задержка, {suffix}")
+        elif issue_key:
+            items.append(f"{issue_key}: добавлен комментарий")
+    return items
+
+
+async def _load_standup_polls_by_login(
+    session: Any,
+    *,
+    team_id: uuid.UUID,
+    local_hour: str,
+) -> dict[str, TelegramStandupPoll]:
+    stmt = select(TelegramStandupPoll).where(
+        TelegramStandupPoll.team_id == team_id,
+        TelegramStandupPoll.local_hour == local_hour,
+    )
+    polls = (await session.execute(stmt)).scalars().all()
+    return {poll.tracker_login.casefold(): poll for poll in polls}
+
+
 async def _load_team_queue(session: Any, team_id: uuid.UUID) -> str:
     team = await session.get(Team, team_id)
     if team is not None and team.tracker_queue:
@@ -192,10 +248,10 @@ async def build_daily_digest_report(
 ) -> DigestReport:
     cfg = get_config().daily_digest
     local_date, _, _ = day_window_utc(now, timezone_name=cfg.timezone)
+    local_hour = local_hour_key(now, timezone_name=cfg.timezone)
     queue = await _load_team_queue(session, team_id)
 
     async with client_factory() as client:
-        members = await load_team_users(client, queue)
         in_progress_raw: list[dict[str, Any]] = []
         for status in cfg.in_progress_status_list():
             in_progress_raw.extend(
@@ -214,16 +270,25 @@ async def build_daily_digest_report(
     )
     in_progress_by_assignee = _group_by_assignee(in_progress)
     done_by_assignee = _group_by_assignee(done_today)
+    members = await load_registered_participants(session, team_id=team_id)
+    polls_by_login = await _load_standup_polls_by_login(
+        session,
+        team_id=team_id,
+        local_hour=local_hour,
+    )
 
     digest_members: list[DigestMember] = []
     for member in members:
-        login_key = member.login.casefold()
+        login_key = member.tracker_login.casefold()
+        poll = polls_by_login.get(login_key)
         digest_members.append(
             DigestMember(
-                login=member.login,
+                login=member.tracker_login,
                 display=member.display,
                 in_progress=in_progress_by_assignee.get(login_key, []),
                 done_today=done_by_assignee.get(login_key, []),
+                standup_response=str(poll.response_text or "") if poll is not None else "",
+                applied_items=_poll_applied_items(poll) if poll is not None else [],
             )
         )
 
@@ -231,7 +296,7 @@ async def build_daily_digest_report(
         team_id=team_id,
         queue=queue,
         local_date=local_date,
-        local_hour=local_hour_key(now, timezone_name=cfg.timezone),
+        local_hour=local_hour,
         timezone=cfg.timezone,
         members=digest_members,
     )
@@ -271,6 +336,11 @@ def format_daily_digest(report: DigestReport, *, max_issues_per_section: int | N
         lines.extend(_format_issue_section(member.in_progress, limit=limit))
         lines.append("Сделано сегодня:")
         lines.extend(_format_issue_section(member.done_today, limit=limit))
+        lines.append("Ответ на опрос:")
+        lines.append(member.standup_response or "- ответа пока нет")
+        if member.applied_items:
+            lines.append("Изменения:")
+            lines.extend(f"- {item}" for item in member.applied_items)
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -440,44 +510,72 @@ async def ensure_daily_digest_scheduled_job(session: Any, team_id: str | uuid.UU
     cfg = get_config().daily_digest
     team_uuid = team_id if isinstance(team_id, uuid.UUID) else uuid.UUID(str(team_id))
 
-    from core.scheduler import compute_next_run
     from core.seed import ensure_agent_instances
 
     instance = (await ensure_agent_instances(session, str(team_uuid), ["pm_agent"]))["pm_agent"]
+    digest_job = await _ensure_scheduled_job(
+        session,
+        agent_instance_id=instance.id,
+        name=DAILY_DIGEST_JOB_NAME,
+        cron_expr=cfg.cron_expr,
+        payload={"type": DAILY_DIGEST_PAYLOAD_TYPE, "team_id": str(team_uuid)},
+        enabled=cfg.enabled,
+    )
+    poll_cfg = get_config().standup_poll
+    await _ensure_scheduled_job(
+        session,
+        agent_instance_id=instance.id,
+        name=STANDUP_POLL_JOB_NAME,
+        cron_expr=poll_cfg.cron_expr,
+        payload={"type": STANDUP_POLL_PAYLOAD_TYPE, "team_id": str(team_uuid)},
+        enabled=poll_cfg.enabled,
+    )
+    await _disable_legacy_digest_jobs(session, instance.id, keep_id=digest_job.id)
+    await session.flush()
+
+
+async def _ensure_scheduled_job(
+    session: Any,
+    *,
+    agent_instance_id: uuid.UUID,
+    name: str,
+    cron_expr: str,
+    payload: dict[str, Any],
+    enabled: bool,
+) -> ScheduledJob:
+    from core.scheduler import compute_next_run
+
     stmt = select(ScheduledJob).where(
-        ScheduledJob.agent_instance_id == instance.id,
-        ScheduledJob.name == DAILY_DIGEST_JOB_NAME,
+        ScheduledJob.agent_instance_id == agent_instance_id,
+        ScheduledJob.name == name,
     )
     job = (await session.execute(stmt)).scalar_one_or_none()
-    payload = {"type": DAILY_DIGEST_PAYLOAD_TYPE, "team_id": str(team_uuid)}
-    next_run = compute_next_run(cfg.cron_expr) if cfg.enabled else None
+    next_run = compute_next_run(cron_expr) if enabled else None
 
     if job is None:
-        session.add(
-            ScheduledJob(
-                id=uuid.uuid4(),
-                agent_instance_id=instance.id,
-                name=DAILY_DIGEST_JOB_NAME,
-                cron_expr=cfg.cron_expr,
-                payload=payload,
-                max_runs=None,
-                run_count=0,
-                next_run=next_run,
-                enabled=cfg.enabled,
-            )
+        job = ScheduledJob(
+            id=uuid.uuid4(),
+            agent_instance_id=agent_instance_id,
+            name=name,
+            cron_expr=cron_expr,
+            payload=payload,
+            max_runs=None,
+            run_count=0,
+            next_run=next_run,
+            enabled=enabled,
         )
-        await _disable_legacy_digest_jobs(session, instance.id)
-        await session.flush()
-        return
+        session.add(job)
+        return job
 
-    cron_changed = job.cron_expr != cfg.cron_expr
-    job.cron_expr = cfg.cron_expr
+    cron_changed = job.cron_expr != cron_expr
+    job.cron_expr = cron_expr
     job.payload = payload
-    job.enabled = cfg.enabled
-    if cfg.enabled and (cron_changed or job.next_run is None):
+    job.enabled = enabled
+    if enabled and (cron_changed or job.next_run is None):
         job.next_run = next_run
-    await _disable_legacy_digest_jobs(session, instance.id, keep_id=job.id)
-    await session.flush()
+    if not enabled:
+        job.next_run = None
+    return job
 
 
 async def _disable_legacy_digest_jobs(
@@ -503,6 +601,8 @@ __all__ = [
     "DAILY_DIGEST_JOB_NAME",
     "DAILY_DIGEST_PAYLOAD_TYPE",
     "LEGACY_DAILY_DIGEST_JOB_NAMES",
+    "STANDUP_POLL_JOB_NAME",
+    "STANDUP_POLL_PAYLOAD_TYPE",
     "DigestIssue",
     "DigestMember",
     "DigestReport",

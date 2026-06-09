@@ -139,6 +139,20 @@ class TestSchedulerDaemonFire:
         send_digest.assert_awaited_once_with(session, team_id=team_id)
         svc.invoke.assert_not_awaited()
 
+    async def test_standup_poll_payload_bypasses_agent_invoke(self) -> None:
+        svc = _make_svc()
+        daemon = SchedulerDaemon(svc)
+        team_id = "00000000-0000-0000-0000-000000000001"
+        job = _make_job(payload={"type": "team_standup_poll", "team_id": team_id})
+        session = MagicMock()
+        session.flush = AsyncMock()
+
+        with patch("core.standup_poll.send_team_standup_poll", AsyncMock()) as send_poll:
+            await daemon._fire(session, job)
+
+        send_poll.assert_awaited_once_with(session, team_id=team_id)
+        svc.invoke.assert_not_awaited()
+
     async def test_run_count_incremented(self) -> None:
         svc = _make_svc()
         daemon = SchedulerDaemon(svc)

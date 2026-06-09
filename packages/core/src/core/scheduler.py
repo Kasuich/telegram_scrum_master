@@ -134,6 +134,14 @@ class SchedulerDaemon:
                     raise RuntimeError("team_daily_digest job requires team_id")
                 await send_team_daily_digest(session, team_id=str(team_id))
                 logger.info("Scheduler fired daily digest job %s (team_id=%s)", job.id, team_id)
+            elif job_type == "team_standup_poll":
+                from core.standup_poll import send_team_standup_poll
+
+                team_id = payload.get("team_id") or getattr(self._svc, "_team_id", None)
+                if not team_id:
+                    raise RuntimeError("team_standup_poll job requires team_id")
+                await send_team_standup_poll(session, team_id=str(team_id))
+                logger.info("Scheduler fired standup poll job %s (team_id=%s)", job.id, team_id)
             else:
                 agent_name: str = payload.get("agent", "pm_agent")
                 message: str = payload.get("message", "")

@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from core.assignee_resolver import TrackerUser
 from core.daily_digest import (
     DAILY_DIGEST_JOB_NAME,
     DigestIssue,
@@ -41,6 +40,7 @@ def _cfg(
     )
     return SimpleNamespace(
         daily_digest=digest,
+        standup_poll=SimpleNamespace(enabled=True, cron_expr="50 * * * *"),
         tracker=SimpleNamespace(tracker_queue="TEST"),
     )
 
@@ -49,6 +49,7 @@ class FakeSession:
     def __init__(self, *, team_queue: str = "TEST", existing_job=None) -> None:
         self.team_queue = team_queue
         self.existing_job = existing_job
+        self.execute_results: list[object] = []
         self.legacy_jobs: list[object] = []
         self.added: list[object] = []
         self.flushed = False
@@ -61,19 +62,23 @@ class FakeSession:
         del stmt
 
         class Result:
-            def __init__(self, job, legacy_jobs):
-                self.job = job
+            def __init__(self, value, legacy_jobs):
+                self.value = value
                 self.legacy_jobs = legacy_jobs
 
             def scalar_one_or_none(self):
-                return self.job
+                return self.value
 
             def scalars(self):
                 return self
 
             def all(self):
+                if isinstance(self.value, list):
+                    return self.value
                 return self.legacy_jobs
 
+        if self.execute_results:
+            return Result(self.execute_results.pop(0), self.legacy_jobs)
         return Result(self.existing_job, self.legacy_jobs)
 
     def add(self, obj):
@@ -134,20 +139,21 @@ def test_done_today_yql_uses_tracker_date_literals() -> None:
     assert "T21:00:00Z" not in yql
 
 
-async def test_build_report_groups_by_tracker_team_members() -> None:
+async def test_build_report_groups_by_registered_telegram_members() -> None:
     client = FakeTrackerClient()
 
     with (
         patch("core.daily_digest.get_config", return_value=_cfg()),
         patch(
-            "core.daily_digest.load_team_users",
+            "core.daily_digest.load_registered_participants",
             AsyncMock(
                 return_value=[
-                    TrackerUser(login="alice", display="Alice"),
-                    TrackerUser(login="bob", display="Bob"),
+                    SimpleNamespace(tracker_login="alice", display="Alice"),
+                    SimpleNamespace(tracker_login="bob", display="Bob"),
                 ]
             ),
         ),
+        patch("core.daily_digest._load_standup_polls_by_login", AsyncMock(return_value={})),
     ):
         report = await build_daily_digest_report(
             FakeSession(team_queue="DARKHORSE"),
@@ -256,16 +262,20 @@ async def test_ensure_daily_digest_job_is_idempotent() -> None:
         ),
         patch("core.scheduler.compute_next_run", return_value=first_run),
     ):
+        session.execute_results = [None, None, []]
         await ensure_daily_digest_scheduled_job(session, team_id)
-        session.existing_job = session.added[0]
+        session.execute_results = [session.added[0], session.added[1], []]
         await ensure_daily_digest_scheduled_job(session, team_id)
 
-    assert len(session.added) == 1
-    job = session.added[0]
-    assert isinstance(job, ScheduledJob)
-    assert job.name == DAILY_DIGEST_JOB_NAME
-    assert job.payload["type"] == "team_daily_digest"
-    assert job.enabled is True
+    assert len(session.added) == 2
+    digest_job, poll_job = session.added
+    assert isinstance(digest_job, ScheduledJob)
+    assert digest_job.name == DAILY_DIGEST_JOB_NAME
+    assert digest_job.payload["type"] == "team_daily_digest"
+    assert digest_job.enabled is True
+    assert poll_job.name == "team_hourly_standup_poll"
+    assert poll_job.payload["type"] == "team_standup_poll"
+    assert poll_job.enabled is True
 
 
 async def test_ensure_daily_digest_job_disables_legacy_job() -> None:
@@ -287,6 +297,7 @@ async def test_ensure_daily_digest_job_disables_legacy_job() -> None:
         ),
         patch("core.scheduler.compute_next_run", return_value=datetime(2026, 6, 8, 15, 0)),
     ):
+        session.execute_results = [None, None, [legacy]]
         await ensure_daily_digest_scheduled_job(session, team_id)
 
     assert legacy.enabled is False

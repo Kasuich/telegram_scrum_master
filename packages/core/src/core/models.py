@@ -594,6 +594,81 @@ class TelegramOnboardingSession(Base):
     )
 
 
+class TelegramStandupPoll(Base):
+    """Per-user hourly standup poll state for deterministic Telegram replies."""
+
+    __tablename__ = "telegram_standup_polls"
+    __table_args__ = (
+        Index("idx_telegram_standup_polls_team_hour", "team_id", "local_hour"),
+        Index(
+            "idx_telegram_standup_polls_user_status",
+            "team_id",
+            "telegram_user_id",
+            "status",
+        ),
+        UniqueConstraint(
+            "team_id",
+            "telegram_user_id",
+            "local_hour",
+            name="uq_telegram_standup_polls_team_user_hour",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    installation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("telegram_installations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    telegram_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("telegram_users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tracker_login: Mapped[str] = mapped_column(String(255), nullable=False)
+    board_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    board_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    local_hour: Mapped[str] = mapped_column(String(32), nullable=False)
+    issues_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    response_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    applied_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    team: Mapped[Team] = relationship("Team")
+    installation: Mapped[TelegramInstallation] = relationship("TelegramInstallation")
+    telegram_user: Mapped[TelegramUser] = relationship("TelegramUser")
+    user: Mapped[User] = relationship("User")
+
+
 class LoginChallenge(Base):
     """Short-lived one-time code challenge that creates a console session."""
 
@@ -1519,6 +1594,7 @@ __all__ = [
     "TelegramImportJob",
     "TelegramNotificationPreference",
     "TelegramOnboardingSession",
+    "TelegramStandupPoll",
     "LoginChallenge",
     "RuntimeConfigModel",
     "ScheduledJob",

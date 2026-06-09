@@ -260,6 +260,11 @@ class TrackerClient:
         result = await self._request("GET", "/boards")
         return result if isinstance(result, list) else []
 
+    async def get_board(self, board_id: str) -> dict[str, Any]:
+        """Return Agile board parameters including its query/filter settings."""
+        result = await self._request("GET", f"/boards/{board_id}")
+        return result if isinstance(result, dict) else {}
+
     async def add_issue_to_sprint(
         self,
         issue_key: str,

@@ -312,6 +312,7 @@ async def test_route_inbound_message_short_circuits_telemost_link() -> None:
     telegram_user = _telegram_user()
     telemost_url = "https://telemost.yandex.ru/j/12345678901234567"
     payload = {"text": telemost_url, "from": {"first_name": "Ivan"}}
+    meeting_reply = "🤖 Иду на встречу и включаю запись."
 
     with (
         patch(
@@ -320,7 +321,7 @@ async def test_route_inbound_message_short_circuits_telemost_link() -> None:
         ) as invoke,
         patch(
             "platform_api.telegram_bridge._schedule_meeting_capture",
-            AsyncMock(return_value="🤖 Иду на встречу и включаю запись."),
+            AsyncMock(return_value=meeting_reply),
         ) as schedule,
         patch(
             "platform_api.telegram_bridge.get_confirmed_membership",
@@ -341,7 +342,47 @@ async def test_route_inbound_message_short_circuits_telemost_link() -> None:
     assert routing is not None
     assert "Иду на встречу" in routing["reply"]
     assert len(session.added) == 1
-    assert session.added[0].payload["text"] == "🤖 Иду на встречу и включаю запись."
+    assert session.added[0].payload["text"] == meeting_reply
+
+
+@pytest.mark.asyncio
+async def test_route_private_standup_response_short_circuits_agent() -> None:
+    session = _FakeSession()
+    installation = _installation()
+    chat = _chat(type="private", ingest_mode="direct", external_chat_id="991")
+    message = _message(external_chat_id="991")
+    telegram_user = _telegram_user()
+    payload = {"text": "задача 1 закрыта", "from": {"first_name": "Ivan"}}
+
+    with (
+        patch(
+            "platform_api.telegram_bridge.rpc_client.invoke",
+            AsyncMock(),
+        ) as invoke,
+        patch(
+            "platform_api.telegram_bridge.handle_standup_response",
+            AsyncMock(return_value="Принял статус:\n- TEST-1: закрыл"),
+        ) as handle,
+        patch(
+            "platform_api.telegram_bridge.get_confirmed_membership",
+            AsyncMock(return_value=_confirmed_identity()),
+        ),
+    ):
+        routing = await _route_inbound_message(
+            session,
+            installation=installation,
+            chat=chat,
+            message=message,
+            telegram_user=telegram_user,
+            message_payload=payload,
+        )
+
+    invoke.assert_not_awaited()
+    handle.assert_awaited_once()
+    assert routing is not None
+    assert routing["standup_poll"] == "handled"
+    assert session.added[0].target_chat_id == "991"
+    assert session.added[0].payload["text"].startswith("Принял статус")
 
 
 @pytest.mark.asyncio

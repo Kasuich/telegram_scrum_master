@@ -311,6 +311,53 @@ class DailyDigestConfig(BaseSettings):
         ]
 
 
+class StandupPollConfig(BaseSettings):
+    """Hourly Telegram standup poll sent before the team digest."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="standup_poll_",
+        extra="ignore",
+    )
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable private standup poll messages before each digest",
+    )
+
+    cron_expr: str = Field(
+        default="50 * * * *",
+        description="UTC cron expression for the private standup poll",
+    )
+
+    lead_minutes: int = Field(
+        default=10,
+        ge=0,
+        le=59,
+        description="Minutes before the digest slot represented by a poll",
+    )
+
+    max_issues_per_member: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Maximum open issues shown in one private poll",
+    )
+
+    blocked_transition_aliases: str = Field(
+        default="blocked,\u0411\u043b\u043e\u043a\u0435\u0440,"
+        "\u0417\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d\u043e,"
+        "\u0417\u0430\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044f",
+        description="Comma-separated transition aliases used for blocked/delayed tasks",
+    )
+
+    def blocked_transition_alias_list(self) -> list[str]:
+        return [
+            part.strip()
+            for part in self.blocked_transition_aliases.replace(";", ",").split(",")
+            if part.strip()
+        ]
+
+
 class RuntimeConfig(BaseSettings):
     """Runtime configuration that can be overridden per team."""
 
@@ -390,6 +437,7 @@ class Config(BaseSettings):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     backlog: BacklogConfig = Field(default_factory=BacklogConfig)
     daily_digest: DailyDigestConfig = Field(default_factory=DailyDigestConfig)
+    standup_poll: StandupPollConfig = Field(default_factory=StandupPollConfig)
 
     # Database URL shortcut (delegates to database.database_url)
     @property
@@ -519,6 +567,7 @@ __all__ = [
     "AppConfig",
     "RuntimeConfig",
     "DailyDigestConfig",
+    "StandupPollConfig",
     "get_config",
     "reload_config",
     "set_config",

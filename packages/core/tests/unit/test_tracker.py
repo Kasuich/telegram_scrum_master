@@ -247,6 +247,15 @@ class TestCreateSprint:
         assert url.endswith("/boards")
         assert result[0]["name"] == "Testing"
 
+    async def test_get_board(self):
+        c = _client()
+        with _patch_request(_ok(BOARD_RESPONSE)) as mock_req:
+            result = await c.get_board("3")
+        method, url = mock_req.call_args[0]
+        assert method == "GET"
+        assert url.endswith("/boards/3")
+        assert result["name"] == "Testing"
+
     async def test_lists_board_sprints(self):
         c = _client()
         with _patch_request(_ok([SPRINT_RESPONSE])) as mock_req:

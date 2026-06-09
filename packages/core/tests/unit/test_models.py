@@ -32,6 +32,7 @@ from core.models import (
     TelegramNotificationPreference,
     TelegramOnboardingSession,
     TelegramOutbox,
+    TelegramStandupPoll,
     TelegramUpdate,
     TelegramUser,
     TelegramUserLink,
@@ -376,6 +377,19 @@ class TestTelegramOnboardingSession:
 
     def test_default_step(self) -> None:
         assert _get_column(TelegramOnboardingSession, "step_key").default.arg == "tracker_login"
+
+
+class TestTelegramStandupPoll:
+    def test_tablename(self) -> None:
+        assert TelegramStandupPoll.__tablename__ == "telegram_standup_polls"
+
+    def test_team_user_hour_unique_constraint(self) -> None:
+        assert "uq_telegram_standup_polls_team_user_hour" in _constraint_names(
+            TelegramStandupPoll
+        )
+
+    def test_default_status(self) -> None:
+        assert _get_column(TelegramStandupPoll, "status").default.arg == "pending"
 
 
 class TestLoginChallenge:
