@@ -120,6 +120,22 @@ class FakeTrackerClient:
         ]
 
 
+class EmptyTrackerClient:
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        pass
+
+    async def search_issues(self, query: str, *, limit: int = 20):
+        del limit
+        self.queries.append(query)
+        return []
+
+
 def test_day_window_uses_moscow_date() -> None:
     local_date, start_utc, end_utc = day_window_utc(
         datetime(2026, 6, 8, 20, 30, tzinfo=timezone.utc),
@@ -170,6 +186,74 @@ async def test_build_report_groups_by_registered_telegram_members() -> None:
     assert bob.in_progress == []
     assert bob.done_today == []
     assert any("Updated: >=" in query for query in client.queries)
+
+
+async def test_build_report_uses_poll_tasks_when_tracker_sections_are_empty() -> None:
+    client = EmptyTrackerClient()
+    team_id = uuid.uuid4()
+    poll = SimpleNamespace(
+        tracker_login="alice",
+        response_text=(
+            "задача 2 закрыта "
+            "задача 1 нужно больше информации"
+        ),
+        issues_json=[
+            {
+                "number": 1,
+                "key": "TEST-1",
+                "summary": "Need info",
+                "status": "Open",
+                "url": "https://tracker.yandex.ru/TEST-1",
+            },
+            {
+                "number": 2,
+                "key": "TEST-2",
+                "summary": "Done task",
+                "status": "Open",
+                "url": "https://tracker.yandex.ru/TEST-2",
+            },
+        ],
+        applied_json={
+            "results": [
+                {
+                    "kind": "comment",
+                    "issue_key": "TEST-1",
+                    "issue_number": 1,
+                    "ok": True,
+                },
+                {
+                    "kind": "close",
+                    "issue_key": "TEST-2",
+                    "issue_number": 2,
+                    "ok": True,
+                },
+            ]
+        },
+    )
+
+    with (
+        patch("core.daily_digest.get_config", return_value=_cfg()),
+        patch(
+            "core.daily_digest.load_registered_participants",
+            AsyncMock(return_value=[SimpleNamespace(tracker_login="alice", display="Alice")]),
+        ),
+        patch(
+            "core.daily_digest._load_standup_polls_by_login",
+            AsyncMock(return_value={"alice": poll}),
+        ),
+    ):
+        report = await build_daily_digest_report(
+            FakeSession(team_queue="DARKHORSE"),
+            team_id=team_id,
+            now=datetime(2026, 6, 8, 15, 0, tzinfo=timezone.utc),
+            client_factory=lambda: client,
+        )
+
+    alice = report.members[0]
+    assert [issue.key for issue in alice.in_progress] == ["TEST-1"]
+    assert [issue.key for issue in alice.done_today] == ["TEST-2"]
+    assert "TEST-1: добавлен комментарий" in alice.applied_items
+    assert "TEST-2: закрыта" in alice.applied_items
 
 
 def test_format_report_includes_empty_member_sections() -> None:

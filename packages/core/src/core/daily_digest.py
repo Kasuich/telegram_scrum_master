@@ -189,6 +189,117 @@ def _group_by_assignee(issues: list[DigestIssue]) -> dict[str, list[DigestIssue]
     return grouped
 
 
+def _poll_issue_map(poll: TelegramStandupPoll) -> dict[str, dict[str, Any]]:
+    mapped: dict[str, dict[str, Any]] = {}
+    for item in poll.issues_json or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        if key:
+            mapped[key] = item
+    return mapped
+
+
+def _poll_item_to_digest_issue(
+    item: dict[str, Any],
+    *,
+    assignee_login: str,
+    assignee_display: str,
+    status: str = "",
+) -> DigestIssue | None:
+    key = str(item.get("key") or "").strip()
+    if not key:
+        return None
+    return DigestIssue(
+        key=key,
+        summary=str(item.get("summary") or "").strip(),
+        status=status or str(item.get("status") or "").strip(),
+        assignee_login=assignee_login,
+        assignee_display=assignee_display,
+        url=str(item.get("url") or f"https://tracker.yandex.ru/{key}"),
+    )
+
+
+def _is_terminal_status(status: str) -> bool:
+    normalized = status.casefold()
+    terminal_tokens = (
+        "закры",
+        "отмен",
+        "closed",
+        "cancel",
+        "resolved",
+        "решен",
+        "решён",
+    )
+    return any(
+        token in normalized
+        for token in terminal_tokens
+    )
+
+
+def _poll_done_issues(poll: TelegramStandupPoll, *, display: str) -> list[DigestIssue]:
+    issue_map = _poll_issue_map(poll)
+    rows = (poll.applied_json or {}).get("results", [])
+    if not isinstance(rows, list):
+        return []
+    issues: list[DigestIssue] = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("ok"):
+            continue
+        if row.get("kind") not in {"close", "cancel"}:
+            continue
+        if row.get("kind") == "cancel" and not row.get("transitioned"):
+            continue
+        key = str(row.get("issue_key") or "").strip()
+        item = issue_map.get(key, {"key": key})
+        status = "Отменена" if row.get("kind") == "cancel" else "Закрыта"
+        issue = _poll_item_to_digest_issue(
+            item,
+            assignee_login=poll.tracker_login,
+            assignee_display=display,
+            status=status,
+        )
+        if issue is not None:
+            issues.append(issue)
+    return issues
+
+
+def _poll_open_issues(
+    poll: TelegramStandupPoll,
+    *,
+    display: str,
+    done_keys: set[str],
+) -> list[DigestIssue]:
+    issues: list[DigestIssue] = []
+    for item in poll.issues_json or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        status = str(item.get("status") or "").strip()
+        if not key or key in done_keys or _is_terminal_status(status):
+            continue
+        issue = _poll_item_to_digest_issue(
+            item,
+            assignee_login=poll.tracker_login,
+            assignee_display=display,
+        )
+        if issue is not None:
+            issues.append(issue)
+    return issues
+
+
+def _merge_issue_lists(*groups: list[DigestIssue]) -> list[DigestIssue]:
+    seen: set[str] = set()
+    merged: list[DigestIssue] = []
+    for group in groups:
+        for issue in group:
+            if issue.key in seen:
+                continue
+            seen.add(issue.key)
+            merged.append(issue)
+    return merged
+
+
 def _poll_applied_items(poll: TelegramStandupPoll) -> list[str]:
     applied = poll.applied_json or {}
     rows = applied.get("results") if isinstance(applied, dict) else []
@@ -204,6 +315,15 @@ def _poll_applied_items(poll: TelegramStandupPoll) -> list[str]:
             items.append(f"создана {key}: {row.get('summary') or ''}".strip())
         elif row.get("kind") == "close" and issue_key:
             items.append(f"{issue_key}: закрыта")
+        elif row.get("kind") == "cancel" and issue_key:
+            if row.get("transitioned"):
+                items.append(f"{issue_key}: отменена")
+            else:
+                message = (
+                    "добавлен комментарий, "
+                    "статус не изменен"
+                )
+                items.append(f"{issue_key}: {message}")
         elif row.get("kind") == "in_progress" and issue_key:
             items.append(f"{issue_key}: в работе")
         elif row.get("kind") == "blocked" and issue_key:
@@ -281,12 +401,24 @@ async def build_daily_digest_report(
     for member in members:
         login_key = member.tracker_login.casefold()
         poll = polls_by_login.get(login_key)
+        member_done = done_by_assignee.get(login_key, [])
+        member_in_progress = in_progress_by_assignee.get(login_key, [])
+        if poll is not None:
+            poll_done = _poll_done_issues(poll, display=member.display)
+            done_keys = {issue.key for issue in _merge_issue_lists(member_done, poll_done)}
+            poll_open = _poll_open_issues(
+                poll,
+                display=member.display,
+                done_keys=done_keys,
+            )
+            member_done = _merge_issue_lists(member_done, poll_done)
+            member_in_progress = _merge_issue_lists(member_in_progress, poll_open)
         digest_members.append(
             DigestMember(
                 login=member.tracker_login,
                 display=member.display,
-                in_progress=in_progress_by_assignee.get(login_key, []),
-                done_today=done_by_assignee.get(login_key, []),
+                in_progress=member_in_progress,
+                done_today=member_done,
                 standup_response=str(poll.response_text or "") if poll is not None else "",
                 applied_items=_poll_applied_items(poll) if poll is not None else [],
             )

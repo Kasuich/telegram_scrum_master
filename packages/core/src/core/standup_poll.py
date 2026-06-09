@@ -441,20 +441,27 @@ async def send_team_standup_poll(
 
 
 _TASK_RE = re.compile(r"(?:задач[аиу]?|task)\s*#?\s*(\d+)", re.IGNORECASE)
+_NUMBERED_TASK_RE = re.compile(r"(?<!\S)(\d{1,3})\s*[\).:]", re.IGNORECASE)
+_ACTION_MARKER_RE = re.compile(
+    r"(?P<task>(?:задач[аиу]?|task)\s*#?\s*(?P<task_num>\d+))"
+    r"|(?P<numbered>(?<!\S)(?P<numbered_num>\d{1,3})\s*[\).:])"
+    r"|(?P<new>(?:новая\s+задача|new\s+task)\s*[:\-—]?\s*)",
+    re.IGNORECASE,
+)
 _NEW_TASK_RE = re.compile(
-    r"(?:новая\s+задача|new\s+task)\s*:\s*(.+)",
+    r"(?:новая\s+задача|new\s+task)\s*[:\-—]\s*(.+)",
     re.IGNORECASE | re.DOTALL,
 )
 
 
 def is_standup_response(text: str) -> bool:
     lowered = text.casefold()
-    return bool(_TASK_RE.search(text) or _NEW_TASK_RE.search(text) or "закры" in lowered)
-
-
-def _split_response(text: str) -> list[str]:
-    rough = re.split(r"[\n;]+", text)
-    return [part.strip(" .") for part in rough if part.strip(" .")]
+    return bool(
+        _TASK_RE.search(text)
+        or _NUMBERED_TASK_RE.search(text)
+        or _NEW_TASK_RE.search(text)
+        or "закры" in lowered
+    )
 
 
 def _action_kind(text: str) -> str:
@@ -464,6 +471,8 @@ def _action_kind(text: str) -> str:
         for token in ("закры", "готов", "сделан", "done", "closed")
     ):
         return "close"
+    if any(token in lowered for token in ("отмен", "отмени", "cancel")):
+        return "cancel"
     blocked_tokens = (
         "задерж",
         "блокер",
@@ -481,23 +490,40 @@ def _action_kind(text: str) -> str:
     return "comment"
 
 
+def _iter_response_parts(text: str) -> list[tuple[str, int | None, str]]:
+    matches = list(_ACTION_MARKER_RE.finditer(text))
+    if not matches:
+        return []
+    parts: list[tuple[str, int | None, str]] = []
+    for index, match in enumerate(matches):
+        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        raw = text[match.start() : next_start].strip(" \n\r\t.;,")
+        body = text[match.end() : next_start].strip(" \n\r\t.;,")
+        if not raw:
+            continue
+        if match.group("new") is not None:
+            parts.append(("create", None, body))
+            continue
+        number = match.group("task_num") or match.group("numbered_num")
+        if number is None:
+            continue
+        parts.append(("issue", int(number), raw))
+    return parts
+
+
 def parse_standup_response(text: str) -> list[ParsedAction]:
     actions: list[ParsedAction] = []
-    for part in _split_response(text):
-        new_task = _NEW_TASK_RE.search(part)
-        if new_task is not None:
-            summary = new_task.group(1).strip()
+    for marker_kind, issue_number, text_part in _iter_response_parts(text):
+        if marker_kind == "create":
+            summary = text_part.strip()
             if summary:
                 actions.append(ParsedAction(kind="create", text=summary))
             continue
-        task = _TASK_RE.search(part)
-        if task is None:
-            continue
         actions.append(
             ParsedAction(
-                kind=_action_kind(part),
-                issue_number=int(task.group(1)),
-                text=part,
+                kind=_action_kind(text_part),
+                issue_number=issue_number,
+                text=text_part,
             )
         )
     return actions
@@ -595,12 +621,29 @@ async def _apply_action(
             comment=action.text,
             resolution="fixed",
         )
+        if not ok:
+            await client.comment_issue(issue_key, action.text)
         return {
             "kind": "close",
             "issue_number": action.issue_number,
             "issue_key": issue_key,
             "ok": ok,
             "error": error,
+        }
+    if action.kind == "cancel":
+        await client.comment_issue(issue_key, action.text)
+        ok, error = await _try_transition(
+            client,
+            issue_key,
+            ["cancelled", "cancel", "Отменить", "Отменено", "Отмена"],
+        )
+        return {
+            "kind": "cancel",
+            "issue_number": action.issue_number,
+            "issue_key": issue_key,
+            "ok": True,
+            "transitioned": ok,
+            "error": error if not ok else None,
         }
     if action.kind == "in_progress":
         ok, error = await _try_transition(
@@ -609,6 +652,8 @@ async def _apply_action(
             ["in_progress", "В работе", "start"],
             comment=action.text,
         )
+        if not ok:
+            await client.comment_issue(issue_key, action.text)
         return {
             "kind": "in_progress",
             "issue_number": action.issue_number,
@@ -656,6 +701,13 @@ def _format_apply_report(results: list[dict[str, Any]]) -> str:
                 lines.append(f"- создал задачу {key}: {item.get('summary')}")
             elif item.get("kind") == "close":
                 lines.append(f"- {key}: закрыл")
+            elif item.get("kind") == "cancel":
+                if item.get("transitioned"):
+                    lines.append(f"- {key}: отменил")
+                else:
+                    lines.append(
+                        f"- {key}: комментарий, статус не изменил"
+                    )
             elif item.get("kind") == "in_progress":
                 lines.append(f"- {key}: перевел в работу")
             else:
