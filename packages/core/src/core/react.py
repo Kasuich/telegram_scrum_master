@@ -606,10 +606,26 @@ def _build_action_report(steps: list[dict[str, Any]]) -> str:
 
 _READ_VOICE_STAGES = {StageId.QUERY}
 
+# YandexGPT content-safety filter phrases that leak into LLM output.
+# When detected, we suppress the response and use a safe fallback instead.
+_SAFETY_FILTER_PHRASES = (
+    "Я не могу обсуждать эту тему",
+    "Давайте поговорим о чём-нибудь ещё",
+    "не могу помочь с этим запросом",
+)
+
+
+def _is_safety_filtered(text: str) -> bool:
+    return any(phrase in text for phrase in _SAFETY_FILTER_PHRASES)
+
 
 def _action_only_final_reply(steps: list[dict[str, Any]], llm_text: str, had_tool: bool, *, stage_id: StageId | None = None) -> str:
-    if stage_id in _READ_VOICE_STAGES and llm_text.strip():
-        return llm_text.strip()
+    if stage_id in _READ_VOICE_STAGES:
+        if llm_text.strip() and not _is_safety_filtered(llm_text):
+            return llm_text.strip()
+        # Safety filter fired or no text on read stage — neutral fallback so filter text never reaches user
+        if had_tool:
+            return "Получил данные из трекера. Попробуй переформулировать запрос конкретнее."
     report = _build_action_report(steps)
     if report:
         return report
@@ -832,9 +848,12 @@ class ReActRunner:
             session_summary=state.get("summary_context", ""),
         )
         llm_response, _ = await self.agent._call_with_fallback(llm_messages, [])
-        reply = (llm_response.content or "").strip() or (
-            "Я на связи. Могу найти, создать или обновить задачи в Яндекс Трекере."
-        )
+        reply = (llm_response.content or "").strip()
+        if not reply or _is_safety_filtered(reply):
+            reply = (
+                "Я — PM-агент для Яндекс Трекера. "
+                "Могу найти, создать или обновить задачи в DARKHORSE. Чем помочь?"
+            )
         state["steps"].append(_step("final", content=reply, reason="dialog"))
         state["messages"].append({"role": "assistant", "content": reply})
         await self._compact_session_history(state)

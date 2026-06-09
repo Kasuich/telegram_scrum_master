@@ -16,7 +16,7 @@ def test_action_only_final_reply_query_prefers_llm_text():
 def test_action_only_final_reply_query_empty_llm_falls_back():
     steps = [{"kind": "tool_result", "tool_name": "tracker_board_snapshot", "result": {"total": 5}}]
     reply = _action_only_final_reply(steps, "", had_tool=True, stage_id=StageId.QUERY)
-    assert "tracker_board_snapshot" in reply or "выполнено" in reply
+    assert "Получил данные" in reply or "tracker_board_snapshot" in reply or "выполнено" in reply
 
 
 def test_action_only_final_reply_intake_uses_action_report():
