@@ -54,6 +54,12 @@ jobs:
             TELEGRAM_BRIDGE_HMAC_KEYS=${{ secrets.TELEGRAM_BRIDGE_HMAC_KEYS }}
             TELEGRAM_BRIDGE_NONCE_TTL=300
             TELEGRAM_OUTBOX_LEASE_SECONDS=60
+            S3_ENDPOINT=${{ secrets.S3_ENDPOINT || 'https://storage.yandexcloud.net' }}
+            S3_BUCKET=${{ secrets.S3_BUCKET }}
+            S3_ACCESS_KEY=${{ secrets.S3_ACCESS_KEY }}
+            S3_SECRET_KEY=${{ secrets.S3_SECRET_KEY }}
+            S3_REGION=${{ secrets.S3_REGION || 'ru-central1' }}
+            SPEECHKIT_API_KEY=${{ secrets.SPEECHKIT_API_KEY }}
             EOF
 
             docker compose \
