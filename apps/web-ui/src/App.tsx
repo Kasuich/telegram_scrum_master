@@ -17,6 +17,16 @@ export function App() {
       queryClient.setQueryData(["me"], user);
     },
   });
+  const codeLogin = useMutation({
+    mutationFn: ({ challengeId, code }: { challengeId: string; code: string }) =>
+      api.verifyLoginCode(challengeId, code),
+    onSuccess: ({ user }) => {
+      queryClient.setQueryData(["me"], user);
+    },
+  });
+  const requestCode = useMutation({
+    mutationFn: api.requestLoginCode,
+  });
   const logout = useMutation({
     mutationFn: api.logout,
     onSuccess: () => {
@@ -29,7 +39,14 @@ export function App() {
   }
 
   if (!me.data) {
-    return <LoginPage error={login.error?.message} onLogin={(email, password) => login.mutate({ email, password })} />;
+    return (
+      <LoginPage
+        error={requestCode.error?.message ?? codeLogin.error?.message ?? login.error?.message}
+        onPasswordLogin={(email, password) => login.mutate({ email, password })}
+        onRequestCode={(identifier) => requestCode.mutateAsync(identifier)}
+        onVerifyCode={(challengeId, code) => codeLogin.mutate({ challengeId, code })}
+      />
+    );
   }
 
   return (

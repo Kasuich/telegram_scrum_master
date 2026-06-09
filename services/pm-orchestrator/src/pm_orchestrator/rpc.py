@@ -40,13 +40,20 @@ _svc = OrchestratorService()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from core.config import get_config
+    from core.logging import configure_logging
     from core.scheduler import SchedulerDaemon
 
     from pm_orchestrator.tools.call_agent import register_call_agent_tool
     from pm_orchestrator.tools.meeting_capture import register_meeting_capture_tools
     from pm_orchestrator.tools.schedule_task import register_schedule_task_tool
 
+    from core.metrics import init_agent_metrics
+
+    config = get_config()
+    configure_logging(config.app.log_level)
     _svc.discover_agents()
+    for agent_name in _svc._runners:
+        init_agent_metrics(agent_name)
     _svc.configure_persistence()
     await _svc.ensure_schema_and_seed()
     register_call_agent_tool(_svc)
@@ -54,7 +61,7 @@ async def lifespan(app: FastAPI):
     register_schedule_task_tool(_svc)
 
     scheduler_task = None
-    if get_config().app.scheduler_enabled:
+    if config.app.scheduler_enabled:
         daemon = SchedulerDaemon(_svc)
         scheduler_task = asyncio.create_task(daemon.run(), name="scheduler")
 

@@ -85,6 +85,36 @@ agent_confirms_pending = Gauge(
     "Number of agent actions awaiting user confirmation",
 )
 
+agent_stage_visits_total = Counter(
+    "pm_agent_stage_visits_total",
+    "Total agent stage entries",
+    ["agent_name", "stage"],
+)
+
+agent_stage_outcomes_total = Counter(
+    "pm_agent_stage_outcomes_total",
+    "Total agent stage outcomes",
+    ["agent_name", "stage", "outcome"],
+)
+
+agent_graph_edges_total = Counter(
+    "pm_agent_graph_edges_total",
+    "Total traversals of agent graph edges",
+    ["agent_name", "source", "target"],
+)
+
+agent_tool_calls_total = Counter(
+    "pm_agent_tool_calls_total",
+    "Total agent tool-call lifecycle events",
+    ["agent_name", "stage", "tool_name", "risk", "status"],
+)
+
+agent_tool_outputs_total = Counter(
+    "pm_agent_tool_outputs_total",
+    "Total agent tool outputs by bounded result kind",
+    ["agent_name", "stage", "tool_name", "result_kind"],
+)
+
 
 # ── Decorator helpers ─────────────────────────────────────────────────────────
 
@@ -136,6 +166,20 @@ def track_tool(
     return decorator
 
 
+_KNOWN_STAGES = [
+    "INTAKE", "STATUS", "BOARD", "TRANSITION",
+    "QUERY", "REORG", "PROACTIVE", "HYGIENE", "DIALOG",
+]
+_KNOWN_TOOL_STATUSES = ["requested", "completed", "failed", "rejected", "guard_rejected"]
+
+
+def init_agent_metrics(agent_name: str) -> None:
+    """Pre-initialize counters for a given agent so Prometheus captures a 0
+    baseline before the first event, enabling increase() to work correctly."""
+    for stage in _KNOWN_STAGES:
+        agent_stage_visits_total.labels(agent_name=agent_name, stage=stage)
+
+
 __all__ = [
     "llm_requests_total",
     "llm_latency_seconds",
@@ -147,5 +191,11 @@ __all__ = [
     "db_pool_checked_out",
     "agent_traces_total",
     "agent_confirms_pending",
+    "agent_stage_visits_total",
+    "agent_stage_outcomes_total",
+    "agent_graph_edges_total",
+    "agent_tool_calls_total",
+    "agent_tool_outputs_total",
     "track_tool",
+    "init_agent_metrics",
 ]

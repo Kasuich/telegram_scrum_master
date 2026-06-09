@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import json
 import logging
 import pkgutil
 import uuid
@@ -22,8 +23,17 @@ from core.config import get_config
 from core.effective_config import EffectiveAgentConfig, build_effective_config
 from core.exceptions import AgentError
 from core.invocation import InvocationContext, normalize_invocation_context
+from core.metrics import (
+    agent_confirms_pending,
+    agent_graph_edges_total,
+    agent_stage_outcomes_total,
+    agent_stage_visits_total,
+    agent_tool_calls_total,
+    agent_tool_outputs_total,
+)
 from core.react import AgentResult, ReActRunner
 from core.telemost_shortcut import try_meeting_capture_shortcut
+from core.tools import get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +263,7 @@ class OrchestratorService:
                 invocation_context=invocation_context,
             )
         self._index_confirms(agent_name, result)
-        self._log_actions(result)
+        self._log_actions(agent_name, result)
         return result
 
     async def resume(self, confirm_id: str, approved: bool) -> AgentResult:
@@ -288,7 +298,8 @@ class OrchestratorService:
                 effective_runtime_config=eff_rc,
             )
         self._confirm_index.pop(confirm_id, None)
-        self._log_actions(result)
+        agent_confirms_pending.set(len(self._confirm_index))
+        self._log_actions(agent_name, result)
         return result
 
     async def _lookup_agent_name_for_confirm_db(self, confirm_id: str) -> str | None:
@@ -334,11 +345,146 @@ class OrchestratorService:
     def _index_confirms(self, agent_name: str, result: AgentResult) -> None:
         if result.pending_confirm:
             self._confirm_index[result.pending_confirm.confirm_id] = agent_name
+        agent_confirms_pending.set(len(self._confirm_index))
 
-    def _log_actions(self, result: AgentResult) -> None:
-        loggable = {"tool_call", "tool_result", "confirm_wait", "confirm_rejected", "tool_error"}
+    @staticmethod
+    def _result_kind(result: Any) -> str:
+        if result is None:
+            return "none"
+        if isinstance(result, dict):
+            if result.get("error"):
+                return "error"
+            return "empty_object" if not result else "object"
+        if isinstance(result, list):
+            return "empty_list" if not result else "list"
+        if isinstance(result, bool):
+            return "boolean"
+        if isinstance(result, (int, float)):
+            return "number"
+        if isinstance(result, str):
+            return "empty_string" if not result else "string"
+        return "other"
+
+    @staticmethod
+    def _event_json(event: dict[str, Any]) -> str:
+        payload = json.dumps(event, ensure_ascii=False, default=str, separators=(",", ":"))
+        if len(payload) <= 16_000:
+            return payload
+        return json.dumps(
+            {
+                "event": "agent_step",
+                "agent_name": event.get("agent_name"),
+                "session_id": event.get("session_id"),
+                "stage": event.get("stage"),
+                "kind": event.get("kind"),
+                "tool_name": event.get("tool_name"),
+                "truncated": True,
+                "preview": payload[:12_000],
+            },
+            ensure_ascii=False,
+            default=str,
+            separators=(",", ":"),
+        )
+
+    def _log_actions(self, agent_name: str, result: AgentResult) -> None:
+        loggable = {
+            "stage",
+            "tool_call",
+            "tool_result",
+            "confirm_wait",
+            "confirm_rejected",
+            "tool_error",
+            "clarification",
+            "final",
+        }
+        stage = "unknown"
+        tool_risks = {tool.name: tool.risk for tool in get_registry().list()}
         for step in result.steps:
+            kind = str(step.get("kind", "unknown"))
+            if kind == "stage":
+                stage = str(step.get("stage") or "unknown")
+                agent_stage_visits_total.labels(agent_name=agent_name, stage=stage).inc()
+            elif kind == "tool_call":
+                tool_name = str(step.get("tool_name") or "unknown")
+                risk = tool_risks.get(tool_name, "unknown")
+                agent_graph_edges_total.labels(
+                    agent_name=agent_name, source=stage, target=tool_name
+                ).inc()
+                agent_tool_calls_total.labels(
+                    agent_name=agent_name,
+                    stage=stage,
+                    tool_name=tool_name,
+                    risk=risk,
+                    status="requested",
+                ).inc()
+            elif kind == "confirm_wait":
+                tool_name = str(step.get("tool_name") or "unknown")
+                agent_tool_calls_total.labels(
+                    agent_name=agent_name,
+                    stage=stage,
+                    tool_name=tool_name,
+                    risk=tool_risks.get(tool_name, "unknown"),
+                    status="pending",
+                ).inc()
+                agent_graph_edges_total.labels(
+                    agent_name=agent_name, source=tool_name, target="pending"
+                ).inc()
+            elif kind == "tool_result":
+                tool_name = str(step.get("tool_name") or "unknown")
+                result_kind = self._result_kind(step.get("result"))
+                agent_tool_calls_total.labels(
+                    agent_name=agent_name,
+                    stage=stage,
+                    tool_name=tool_name,
+                    risk=tool_risks.get(tool_name, "unknown"),
+                    status="completed",
+                ).inc()
+                agent_tool_outputs_total.labels(
+                    agent_name=agent_name,
+                    stage=stage,
+                    tool_name=tool_name,
+                    result_kind=result_kind,
+                ).inc()
+                agent_graph_edges_total.labels(
+                    agent_name=agent_name, source=tool_name, target=f"completed:{result_kind}"
+                ).inc()
+            elif kind in {"tool_error", "confirm_rejected"}:
+                tool_name = str(step.get("tool_name") or "unknown")
+                status = str(
+                    step.get("status") or ("rejected" if kind == "confirm_rejected" else "failed")
+                )
+                agent_tool_calls_total.labels(
+                    agent_name=agent_name,
+                    stage=stage,
+                    tool_name=tool_name,
+                    risk=tool_risks.get(tool_name, "unknown"),
+                    status=status,
+                ).inc()
+                agent_graph_edges_total.labels(
+                    agent_name=agent_name, source=tool_name, target=status
+                ).inc()
+            elif kind in {"final", "clarification"}:
+                outcome = (
+                    "clarification"
+                    if kind == "clarification"
+                    else str(step.get("reason") or "completed")
+                )
+                agent_stage_outcomes_total.labels(
+                    agent_name=agent_name, stage=stage, outcome=outcome
+                ).inc()
+
             if step.get("kind") in loggable:
-                self.actions.append({"session_id": result.session_id, **step})
+                event = {
+                    "event": "agent_step",
+                    "agent_name": agent_name,
+                    "session_id": result.session_id,
+                    "stage": stage,
+                    **step,
+                }
+                self.actions.append(event)
+                logger.info(
+                    "agent_event",
+                    extra={"agent_event": json.loads(self._event_json(event))},
+                )
         if len(self.actions) > 500:
             self.actions[:] = self.actions[-500:]

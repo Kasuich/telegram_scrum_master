@@ -671,6 +671,7 @@ class ReActRunner:
         state["stage_addendum"] = stage.prompt_addendum if stage else ""
         state["_turn_user_message"] = item.payload
         state["_action_only_nudges"] = 0
+        state["steps"].append(_step("stage", stage=item.stage.value))
 
     async def _run_dialog(
         self, ctx: _RunCtx, session_id: str, state: dict[str, Any]
@@ -678,6 +679,7 @@ class ReActRunner:
         """Single LLM call for DIALOG — no tools, no action_only report."""
         steps_before = len(state["steps"])
         stage = get_stage(StageId.DIALOG)
+        state["steps"].append(_step("stage", stage=StageId.DIALOG.value))
         addendum = stage.prompt_addendum if stage else ""
         llm_messages = self._llm_messages(
             ctx,
@@ -753,8 +755,8 @@ class ReActRunner:
         for idx in range(start_index, len(turn_plan.items)):
             item = turn_plan.items[idx]
             state["_plan_cursor"] = idx
-            self._freeze_scenario_stage(state, item)
             scenario_steps_before = len(state["steps"])
+            self._freeze_scenario_stage(state, item)
             outcome = await self._run_scenario(ctx, session_id, state, scenario_steps_before)
             outcomes.append(outcome)
             if outcome.kind == "needs_confirm" and outcome.agent_result is not None:
@@ -847,8 +849,8 @@ class ReActRunner:
             if retries.get(retry_key, 0) < 1 and outcome.kind in ("done", "max_iter"):
                 retries[retry_key] = retries.get(retry_key, 0) + 1
                 state["_plan_cursor"] = idx
-                self._freeze_scenario_stage(state, item)
                 scenario_steps_before = len(state["steps"])
+                self._freeze_scenario_stage(state, item)
                 retry_outcome = await self._run_scenario(
                     ctx, session_id, state, scenario_steps_before
                 )
@@ -1000,6 +1002,8 @@ class ReActRunner:
         # Re-hydrate the frozen stage when plan metadata was not persisted.
         if getattr(self.agent, "action_only", False) and not state.get("_stage"):
             await self._set_turn_stage(state, state.get("_turn_user_message", ""), use_llm=False)
+        if state.get("_stage"):
+            state["steps"].append(_step("stage", stage=state["_stage"], reason="resume"))
 
         if approved:
             try:
@@ -1240,7 +1244,14 @@ class ReActRunner:
             if not registry.exists(tool_call.name):
                 err = f"Tool '{tool_call.name}' is not registered"
                 logger.warning("Agent %s: %s", self.agent.name, err)
-                steps.append(_step("tool_error", tool_name=tool_call.name, error=err))
+                steps.append(
+                    _step(
+                        "tool_error",
+                        tool_name=tool_call.name,
+                        error=err,
+                        status="unknown_tool",
+                    )
+                )
                 messages.append(
                     {"role": "user", "content": f"Ошибка: {err}. Сообщи об этом пользователю."}
                 )
@@ -1272,7 +1283,14 @@ class ReActRunner:
                             queue_key=get_config().tracker.tracker_queue,
                         )
                 if guard_err:
-                    steps.append(_step("tool_error", tool_name=tool_call.name, error=guard_err))
+                    steps.append(
+                        _step(
+                            "tool_error",
+                            tool_name=tool_call.name,
+                            error=guard_err,
+                            status="guard_rejected",
+                        )
+                    )
                     messages.append(
                         {
                             "role": "user",
@@ -1370,6 +1388,7 @@ class ReActRunner:
                         "tool_error",
                         tool_name=tool_call.name,
                         error="Уже выполнено с теми же аргументами в этом запросе",
+                        status="duplicate",
                     )
                 )
                 messages.append(

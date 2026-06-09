@@ -18,16 +18,19 @@ from core.models import (
     Base,
     Confirm,
     ConsoleSession,
+    LoginChallenge,
     Organization,
     RuntimeConfigModel,
     ScheduledJob,
     Team,
+    TeamMembership,
     TelegramBusinessConnection,
     TelegramCallbackToken,
     TelegramChat,
     TelegramInstallation,
     TelegramMessage,
     TelegramNotificationPreference,
+    TelegramOnboardingSession,
     TelegramOutbox,
     TelegramUpdate,
     TelegramUser,
@@ -357,6 +360,30 @@ class TestTelegramUserLink:
 
     def test_user_id_nullable(self) -> None:
         assert _get_column(TelegramUserLink, "user_id").nullable
+
+
+class TestTeamMembership:
+    def test_team_user_unique_constraint(self) -> None:
+        assert "uq_team_memberships_team_user" in _constraint_names(TeamMembership)
+
+    def test_tracker_login_unique_within_team(self) -> None:
+        assert "uq_team_memberships_team_tracker_login" in _constraint_names(TeamMembership)
+
+
+class TestTelegramOnboardingSession:
+    def test_tablename(self) -> None:
+        assert TelegramOnboardingSession.__tablename__ == "telegram_onboarding_sessions"
+
+    def test_default_step(self) -> None:
+        assert _get_column(TelegramOnboardingSession, "step_key").default.arg == "tracker_login"
+
+
+class TestLoginChallenge:
+    def test_tablename(self) -> None:
+        assert LoginChallenge.__tablename__ == "login_challenges"
+
+    def test_attempts_default_zero(self) -> None:
+        assert _get_column(LoginChallenge, "attempts").default.arg == 0
 
 
 # ===========================================================================

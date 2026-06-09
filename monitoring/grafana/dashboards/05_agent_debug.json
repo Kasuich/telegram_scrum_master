@@ -1,0 +1,156 @@
+{
+  "title": "Agent Debug — Graph, Tools and Outputs",
+  "uid": "pm-agent-debug",
+  "tags": ["pm-agent", "debug", "tools", "graph"],
+  "schemaVersion": 38,
+  "version": 3,
+  "refresh": "10s",
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "browser",
+  "templating": {
+    "list": [
+      {
+        "name": "agent",
+        "label": "Agent",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "query": {"query": "label_values(pm_agent_stage_visits_total, agent_name)", "refId": "agent"},
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {"text": "All", "value": "$__all"}
+      },
+      {
+        "name": "stage",
+        "label": "Stage",
+        "type": "custom",
+        "query": "INTAKE,STATUS,BOARD,TRANSITION,QUERY,REORG,PROACTIVE,HYGIENE,DIALOG",
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {"text": "All", "value": "$__all"}
+      },
+      {
+        "name": "tool",
+        "label": "Tool",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "query": {"query": "label_values(pm_tool_executions_total, tool_name)", "refId": "tool"},
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {"text": "All", "value": "$__all"}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Tool Calls",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"},
+      "targets": [{"expr": "sum(pm_agent_tool_calls_total{agent_name=~\"$agent\",stage=~\"$stage\",tool_name=~\"$tool\",status=\"requested\"}) or vector(0)", "refId": "A"}]
+    },
+    {
+      "id": 2,
+      "title": "Failed / Rejected",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"},
+      "targets": [{"expr": "sum(pm_agent_tool_calls_total{agent_name=~\"$agent\",stage=~\"$stage\",tool_name=~\"$tool\",status=~\"failed|rejected|guard_rejected|duplicate|unknown_tool\"}) or vector(0)", "refId": "A"}]
+    },
+    {
+      "id": 3,
+      "title": "Pending Confirmations",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 10}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [{"expr": "pm_agent_confirms_pending", "refId": "A"}]
+    },
+    {
+      "id": 4,
+      "title": "Successful Outputs",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [{"expr": "sum(pm_agent_tool_calls_total{agent_name=~\"$agent\",stage=~\"$stage\",tool_name=~\"$tool\",status=\"completed\"}) or vector(0)", "refId": "A"}]
+    },
+    {
+      "id": 5,
+      "title": "Graph Traversal: Stage → Tool → Outcome",
+      "description": "The legend is the actual traversed edge.",
+      "type": "bargauge",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "color": {"mode": "continuous-GrYlRd"}}, "overrides": []},
+      "options": {"orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true, "reduceOptions": {"calcs": ["lastNotNull"], "values": false}},
+      "targets": [{"expr": "sum by (source, target) (pm_agent_graph_edges_total{agent_name=~\"$agent\"}) or label_replace(label_replace(vector(0), \"source\", \"no events yet\", \"\", \"\"), \"target\", \"waiting\", \"\", \"\")", "legendFormat": "{{source}} → {{target}}", "instant": true, "refId": "A"}]
+    },
+    {
+      "id": 6,
+      "title": "Tool Call Statuses",
+      "type": "piechart",
+      "gridPos": {"h": 9, "w": 6, "x": 12, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "palette-classic"}}, "overrides": []},
+      "options": {"pieType": "donut", "displayLabels": ["name", "percent"], "legend": {"displayMode": "table", "placement": "bottom", "values": ["value"]}, "reduceOptions": {"calcs": ["lastNotNull"], "values": false}},
+      "targets": [{"expr": "sum by (status) (pm_agent_tool_calls_total{agent_name=~\"$agent\",stage=~\"$stage\",tool_name=~\"$tool\"}) or label_replace(vector(0), \"status\", \"no events yet\", \"\", \"\")", "legendFormat": "{{status}}", "instant": true, "refId": "A"}]
+    },
+    {
+      "id": 7,
+      "title": "Output Shapes",
+      "description": "Full payloads are in the event log below.",
+      "type": "bargauge",
+      "gridPos": {"h": 9, "w": 6, "x": 18, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "color": {"mode": "palette-classic"}}, "overrides": []},
+      "options": {"orientation": "horizontal", "displayMode": "basic", "showUnfilled": true, "reduceOptions": {"calcs": ["lastNotNull"], "values": false}},
+      "targets": [{"expr": "sum by (tool_name, result_kind) (pm_agent_tool_outputs_total{agent_name=~\"$agent\",stage=~\"$stage\",tool_name=~\"$tool\"}) or label_replace(label_replace(vector(0), \"tool_name\", \"no events\", \"\", \"\"), \"result_kind\", \"waiting\", \"\", \"\")", "legendFormat": "{{tool_name}}: {{result_kind}}", "instant": true, "refId": "A"}]
+    },
+    {
+      "id": 8,
+      "title": "Stage Activity",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops", "min": 0, "color": {"mode": "palette-classic"}, "custom": {"lineWidth": 2, "fillOpacity": 15, "stacking": {"mode": "normal", "group": "A"}}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["sum"]}},
+      "targets": [{"expr": "sum by (stage) (rate(pm_agent_stage_visits_total{agent_name=~\"$agent\"}[$__rate_interval]))", "legendFormat": "{{stage}}", "refId": "A"}]
+    },
+    {
+      "id": 9,
+      "title": "Tools by Status",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops", "min": 0, "color": {"mode": "palette-classic"}, "custom": {"lineWidth": 2, "fillOpacity": 10}}, "overrides": []},
+      "options": {"tooltip": {"mode": "multi"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["sum"]}},
+      "targets": [{"expr": "sum by (tool_name, status) (rate(pm_agent_tool_calls_total{agent_name=~\"$agent\",stage=~\"$stage\",tool_name=~\"$tool\"}[$__rate_interval])) or vector(0)", "legendFormat": "{{tool_name}} / {{status}}", "refId": "A"}]
+    },
+    {
+      "id": 10,
+      "title": "Agent Walks, Inputs and Outputs",
+      "description": "Expand a row to inspect tool_args, result, error and session_id.",
+      "type": "logs",
+      "gridPos": {"h": 12, "w": 16, "x": 0, "y": 21},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "options": {"showTime": true, "showLabels": false, "showCommonLabels": false, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none"},
+      "targets": [{"expr": "{job=\"docker\"} |= \"agent_event\" | json agent_name=\"agent_event.agent_name\", stage=\"agent_event.stage\" | agent_name=~\"$agent\" | stage=~\"$stage\" | line_format \"{{.agent_event}}\"", "refId": "A"}]
+    },
+    {
+      "id": 11,
+      "title": "Errors and Rejections",
+      "type": "logs",
+      "gridPos": {"h": 12, "w": 8, "x": 16, "y": 21},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "options": {"showTime": true, "showLabels": false, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none"},
+      "targets": [{"expr": "{job=\"docker\"} |= \"agent_event\" | json agent_name=\"agent_event.agent_name\", kind=\"agent_event.kind\" | agent_name=~\"$agent\" | kind=~\"tool_error|confirm_rejected\" | line_format \"{{.agent_event}}\"", "refId": "A"}]
+    }
+  ]
+}

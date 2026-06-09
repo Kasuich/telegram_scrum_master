@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -19,20 +20,28 @@ from core.models import (
     AgentSpec,
     Confirm,
     ConsoleSession,
+    LoginChallenge,
     ScheduledJob,
+    TeamMembership,
+    TelegramInstallation,
+    TelegramOutbox,
+    TelegramUser,
+    TelegramUserLink,
     Trace,
     User,
 )
 from core.seed import ensure_default_team
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import Select, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from console_api.security import (
+    hash_login_code,
     hash_password,
     hash_session_token,
+    new_login_code,
     new_session_token,
     verify_password,
 )
@@ -64,6 +73,24 @@ def _default_team_id() -> uuid.UUID:
 def _session_ttl() -> timedelta:
     hours = int(os.getenv("CONSOLE_SESSION_TTL_HOURS", "24"))
     return timedelta(hours=hours)
+
+
+def _login_code_secret() -> str:
+    return os.getenv("CONSOLE_LOGIN_CODE_SECRET") or os.getenv(
+        "TELEGRAM_BRIDGE_SECRET",
+        "dev-login-code-secret-change-me",
+    )
+
+
+def _set_session_cookie(response: Response, raw_token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        raw_token,
+        httponly=True,
+        samesite="lax",
+        secure=os.getenv("CONSOLE_SECURE_COOKIES", "false").lower() == "true",
+        max_age=int(_session_ttl().total_seconds()),
+    )
 
 
 def _cors_origins() -> list[str]:
@@ -128,6 +155,20 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     user: UserDTO
+
+
+class CodeLoginRequest(BaseModel):
+    identifier: str = Field(min_length=1, max_length=255)
+
+
+class CodeLoginChallengeResponse(BaseModel):
+    challenge_id: str
+    expires_in_seconds: int = 300
+
+
+class CodeLoginVerifyRequest(BaseModel):
+    challenge_id: uuid.UUID
+    code: str = Field(pattern=r"^\d{6}$")
 
 
 class AutonomyDTO(BaseModel):
@@ -325,14 +366,159 @@ async def login(request: LoginRequest, response: Response) -> LoginResponse:
             )
         )
 
-    response.set_cookie(
-        SESSION_COOKIE,
-        raw_token,
-        httponly=True,
-        samesite="lax",
-        secure=os.getenv("CONSOLE_SECURE_COOKIES", "false").lower() == "true",
-        max_age=int(_session_ttl().total_seconds()),
-    )
+    _set_session_cookie(response, raw_token)
+    return LoginResponse(user=_user_dto(user))
+
+
+@app.post("/auth/code/request", response_model=CodeLoginChallengeResponse)
+async def request_login_code(
+    payload: CodeLoginRequest,
+    request: Request,
+) -> CodeLoginChallengeResponse:
+    challenge_id = uuid.uuid4()
+    identifier = payload.identifier.strip().lstrip("@").lower()
+    now = datetime.now(timezone.utc)
+
+    async with get_session() as session:
+        stmt = (
+            select(User, TelegramUser, TelegramInstallation)
+            .join(TelegramUserLink, TelegramUserLink.user_id == User.id)
+            .join(TelegramUser, TelegramUser.id == TelegramUserLink.telegram_user_id)
+            .join(
+                TeamMembership,
+                (TeamMembership.team_id == TelegramUserLink.team_id)
+                & (TeamMembership.user_id == User.id),
+            )
+            .join(
+                TelegramInstallation,
+                TelegramInstallation.id == TelegramUserLink.installation_id,
+            )
+            .where(
+                User.active.is_(True),
+                TelegramUserLink.status == "active",
+                TeamMembership.tracker_match_status == "confirmed",
+                (User.email == identifier) | (TelegramUser.username.ilike(identifier)),
+            )
+        )
+        row = (await session.execute(stmt)).first()
+        if row is None:
+            return CodeLoginChallengeResponse(challenge_id=str(challenge_id))
+
+        user, telegram_user, installation = row
+        recent = (
+            await session.execute(
+                select(LoginChallenge).where(
+                    LoginChallenge.user_id == user.id,
+                    LoginChallenge.created_at >= now - timedelta(minutes=10),
+                )
+            )
+        ).scalars().all()
+        if len(recent) >= 3:
+            return CodeLoginChallengeResponse(challenge_id=str(challenge_id))
+
+        pending = (
+            await session.execute(
+                select(LoginChallenge).where(
+                    LoginChallenge.user_id == user.id,
+                    LoginChallenge.status == "pending",
+                )
+            )
+        ).scalars()
+        for old_challenge in pending:
+            old_challenge.status = "superseded"
+
+        code = new_login_code()
+        challenge = LoginChallenge(
+            id=challenge_id,
+            team_id=installation.team_id,
+            user_id=user.id,
+            telegram_user_id=telegram_user.id,
+            installation_id=installation.id,
+            code_hash=hash_login_code(str(challenge_id), code, _login_code_secret()),
+            status="pending",
+            attempts=0,
+            expires_at=now + timedelta(minutes=5),
+            request_ip=request.client.host if request.client else None,
+        )
+        session.add(challenge)
+        session.add(
+            TelegramOutbox(
+                team_id=installation.team_id,
+                installation_id=installation.id,
+                category="login_code",
+                target_chat_id=telegram_user.external_user_id,
+                target_user_id=telegram_user.external_user_id,
+                dedupe_key=f"telegram:login-code:{challenge_id}",
+                priority=120,
+                status="pending",
+                attempts=0,
+                payload={
+                    "method": "sendMessage",
+                    "text": (
+                        f"Код для входа в UI: {code}\n"
+                        "Код действует 5 минут. Никому его не сообщайте."
+                    ),
+                },
+            )
+        )
+
+    return CodeLoginChallengeResponse(challenge_id=str(challenge_id))
+
+
+@app.post("/auth/code/verify", response_model=LoginResponse)
+async def verify_login_code(
+    payload: CodeLoginVerifyRequest,
+    response: Response,
+) -> LoginResponse:
+    now = datetime.now(timezone.utc)
+    async with get_session() as session:
+        challenge = (
+            await session.execute(
+                select(LoginChallenge)
+                .where(LoginChallenge.id == payload.challenge_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if challenge is None or challenge.status != "pending":
+            raise HTTPException(status_code=401, detail="Invalid or expired code")
+        if challenge.expires_at <= now:
+            challenge.status = "expired"
+            await session.commit()
+            raise HTTPException(status_code=401, detail="Invalid or expired code")
+        if challenge.attempts >= 5:
+            challenge.status = "locked"
+            await session.commit()
+            raise HTTPException(status_code=401, detail="Invalid or expired code")
+
+        challenge.attempts += 1
+        expected = hash_login_code(
+            str(challenge.id),
+            payload.code,
+            _login_code_secret(),
+        )
+        if not hmac.compare_digest(expected, challenge.code_hash):
+            if challenge.attempts >= 5:
+                challenge.status = "locked"
+            await session.commit()
+            raise HTTPException(status_code=401, detail="Invalid or expired code")
+
+        user = await session.get(User, challenge.user_id)
+        if user is None or not user.active:
+            raise HTTPException(status_code=401, detail="Invalid or expired code")
+
+        challenge.status = "used"
+        challenge.consumed_at = now
+        raw_token = new_session_token()
+        session.add(
+            ConsoleSession(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                token_hash=hash_session_token(raw_token),
+                expires_at=now + _session_ttl(),
+            )
+        )
+
+    _set_session_cookie(response, raw_token)
     return LoginResponse(user=_user_dto(user))
 
 

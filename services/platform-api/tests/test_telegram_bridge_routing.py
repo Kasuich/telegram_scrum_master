@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -102,6 +103,14 @@ def _telegram_user(**overrides: object) -> TelegramUser:
     }
     data.update(overrides)
     return TelegramUser(**data)
+
+
+def _confirmed_identity():
+    membership = MagicMock()
+    membership.user_id = uuid.uuid4()
+    membership.tracker_login = "ivan.petrov"
+    membership.default_board_id = "3"
+    return MagicMock(), membership
 
 
 def test_should_route_private_direct_message() -> None:
@@ -260,6 +269,47 @@ def test_extract_telemost_url_ignores_non_links() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unauthorized_group_mention_starts_onboarding() -> None:
+    session = _FakeSession()
+    installation = _installation()
+    chat = _chat()
+    message = _message()
+    telegram_user = _telegram_user()
+    payload = {
+        "text": "@pm_bot status?",
+        "entities": [{"type": "mention", "offset": 0, "length": 7}],
+    }
+    onboarding_id = uuid.uuid4()
+
+    with (
+        patch(
+            "platform_api.telegram_bridge.get_confirmed_membership",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "platform_api.telegram_bridge.start_onboarding",
+            AsyncMock(return_value=SimpleNamespace(id=onboarding_id)),
+        ) as start,
+        patch("platform_api.telegram_bridge.rpc_client.invoke", AsyncMock()) as invoke,
+    ):
+        routing = await _route_inbound_message(
+            session,
+            installation=installation,
+            chat=chat,
+            message=message,
+            telegram_user=telegram_user,
+            message_payload=payload,
+        )
+
+    invoke.assert_not_awaited()
+    start.assert_awaited_once()
+    assert routing == {
+        "authorization": "pending",
+        "onboarding_id": str(onboarding_id),
+    }
+
+
+@pytest.mark.asyncio
 async def test_route_inbound_message_short_circuits_telemost_link() -> None:
     session = _FakeSession()
     installation = _installation()
@@ -278,6 +328,10 @@ async def test_route_inbound_message_short_circuits_telemost_link() -> None:
             "platform_api.telegram_bridge.schedule_meeting_capture",
             AsyncMock(return_value={"meeting_id": "m1", "status": "recording"}),
         ) as schedule,
+        patch(
+            "platform_api.telegram_bridge.get_confirmed_membership",
+            AsyncMock(return_value=_confirmed_identity()),
+        ),
     ):
         routing = await _route_inbound_message(
             session,
@@ -306,10 +360,16 @@ async def test_route_inbound_message_creates_agent_reply_outbox() -> None:
     telegram_user = _telegram_user()
     payload = {"text": "/status", "from": {"first_name": "Ivan"}}
 
-    with patch(
-        "platform_api.telegram_bridge.rpc_client.invoke",
-        AsyncMock(return_value=AgentResult(reply="All good", session_id="s1")),
-    ) as invoke:
+    with (
+        patch(
+            "platform_api.telegram_bridge.rpc_client.invoke",
+            AsyncMock(return_value=AgentResult(reply="All good", session_id="s1")),
+        ) as invoke,
+        patch(
+            "platform_api.telegram_bridge.get_confirmed_membership",
+            AsyncMock(return_value=_confirmed_identity()),
+        ),
+    ):
         routing = await _route_inbound_message(
             session,
             installation=installation,
@@ -362,7 +422,13 @@ async def test_route_inbound_message_creates_confirmation_outbox() -> None:
         session_id="s1",
     )
 
-    with patch("platform_api.telegram_bridge.rpc_client.invoke", AsyncMock(return_value=result)):
+    with (
+        patch("platform_api.telegram_bridge.rpc_client.invoke", AsyncMock(return_value=result)),
+        patch(
+            "platform_api.telegram_bridge.get_confirmed_membership",
+            AsyncMock(return_value=_confirmed_identity()),
+        ),
+    ):
         routing = await _route_inbound_message(
             session,
             installation=installation,
