@@ -106,6 +106,11 @@ class User(Base):
         "ActionFeedback",
         back_populates="user",
     )
+    team_memberships: Mapped[list[TeamMembership]] = relationship(
+        "TeamMembership",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class ConsoleSession(Base):
@@ -194,6 +199,65 @@ class Team(Base):
     )
     actions: Mapped[list[Action]] = relationship("Action", back_populates="team")
     meetings: Mapped[list[Meeting]] = relationship("Meeting", back_populates="team")
+    memberships: Mapped[list[TeamMembership]] = relationship(
+        "TeamMembership",
+        back_populates="team",
+        cascade="all, delete-orphan",
+    )
+
+
+class TeamMembership(Base):
+    """Confirmed mapping between an internal user and a Tracker team member."""
+
+    __tablename__ = "team_memberships"
+    __table_args__ = (
+        Index("idx_team_memberships_team_id", "team_id"),
+        UniqueConstraint("team_id", "user_id", name="uq_team_memberships_team_user"),
+        UniqueConstraint(
+            "team_id",
+            "tracker_login",
+            name="uq_team_memberships_team_tracker_login",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tracker_login: Mapped[str] = mapped_column(String(255), nullable=False)
+    tracker_uid: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tracker_display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tracker_match_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="confirmed",
+    )
+    default_board_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="user")
+    settings_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    team: Mapped[Team] = relationship("Team", back_populates="memberships")
+    user: Mapped[User] = relationship("User", back_populates="team_memberships")
 
 
 class AgentSpec(Base):
@@ -407,6 +471,10 @@ class TelegramUser(Base):
         "TelegramBusinessConnection",
         back_populates="telegram_user",
     )
+    onboarding_sessions: Mapped[list[TelegramOnboardingSession]] = relationship(
+        "TelegramOnboardingSession",
+        back_populates="telegram_user",
+    )
 
 
 class TelegramUserLink(Base):
@@ -469,6 +537,107 @@ class TelegramUserLink(Base):
         back_populates="links",
     )
     user: Mapped[User | None] = relationship("User")
+
+
+class TelegramOnboardingSession(Base):
+    """Deterministic Telegram onboarding state for Tracker identity matching."""
+
+    __tablename__ = "telegram_onboarding_sessions"
+    __table_args__ = (
+        Index(
+            "idx_telegram_onboarding_team_user_status",
+            "team_id",
+            "telegram_user_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    installation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("telegram_installations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    telegram_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("telegram_users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    step_key: Mapped[str] = mapped_column(String(64), nullable=False, default="tracker_login")
+    answers_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    telegram_user: Mapped[TelegramUser] = relationship(
+        "TelegramUser",
+        back_populates="onboarding_sessions",
+    )
+
+
+class LoginChallenge(Base):
+    """Short-lived one-time code challenge that creates a console session."""
+
+    __tablename__ = "login_challenges"
+    __table_args__ = (
+        Index("idx_login_challenges_user_status", "user_id", "status"),
+        Index("idx_login_challenges_expires_at", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    telegram_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("telegram_users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    installation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("telegram_installations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    request_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
 
 
 class TelegramBusinessConnection(Base):
@@ -1332,6 +1501,7 @@ __all__ = [
     "User",
     "ConsoleSession",
     "Team",
+    "TeamMembership",
     "AgentSpec",
     "TelegramInstallation",
     "TelegramChat",
@@ -1348,6 +1518,8 @@ __all__ = [
     "TelegramCallbackToken",
     "TelegramImportJob",
     "TelegramNotificationPreference",
+    "TelegramOnboardingSession",
+    "LoginChallenge",
     "RuntimeConfigModel",
     "ScheduledJob",
     "ActionFeedback",

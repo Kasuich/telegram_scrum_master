@@ -140,6 +140,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email, password }),
     }),
+  requestLoginCode: (identifier: string) =>
+    request<{ challenge_id: string; expires_in_seconds: number }>("/auth/code/request", {
+      method: "POST",
+      body: JSON.stringify({ identifier }),
+    }),
+  verifyLoginCode: (challengeId: string, code: string) =>
+    request<{ user: User }>("/auth/code/verify", {
+      method: "POST",
+      body: JSON.stringify({ challenge_id: challengeId, code }),
+    }),
   logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
   me: () => request<User>("/auth/me"),
   agents: () => request<AgentListItem[]>("/agents"),
@@ -175,7 +185,7 @@ export const api = {
 };
 
 function localizeError(status: number, raw: string): string {
-  if (status === 401) return "Неверная почта или пароль";
+  if (status === 401) return "Неверные данные или код подтверждения";
   if (status === 403) return "Недостаточно прав";
   if (status === 404) return "Не найдено";
   if (status >= 500) return "Внутренняя ошибка сервера";

@@ -25,14 +25,19 @@ from core.models import (
     TelegramUpdate,
     TelegramUser,
 )
-from platform_api.telegram_import import ImportReport, ImportRequest
-from platform_api.telegram_media import PresignedUploadRequest
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from platform_api import rpc_client
+from platform_api.telegram_auth import (
+    complete_onboarding,
+    get_confirmed_membership,
+    start_onboarding,
+)
+from platform_api.telegram_import import ImportReport, ImportRequest
+from platform_api.telegram_media import PresignedUploadRequest
 
 router = APIRouter(prefix="/internal/telegram/v1", tags=["telegram-bridge"])
 
@@ -536,12 +541,52 @@ async def _route_inbound_message(
     if not _should_route_message(installation, chat, message_payload):
         return None
 
+    if telegram_user is None:
+        return None
+
+    identity = await get_confirmed_membership(
+        session,
+        team_id=installation.team_id,
+        telegram_user_id=telegram_user.id,
+    )
+    if identity is None:
+        if chat.type == "private":
+            body = _strip_bot_mention(installation, message_payload)
+            if body and not body.startswith("/start"):
+                membership = await complete_onboarding(
+                    session,
+                    installation=installation,
+                    telegram_user=telegram_user,
+                    answer=body,
+                )
+                return {
+                    "authorization": "completed" if membership is not None else "pending",
+                    "tracker_login": membership.tracker_login if membership is not None else None,
+                }
+        onboarding = await start_onboarding(
+            session,
+            installation=installation,
+            telegram_user=telegram_user,
+            source_chat_id=chat.external_chat_id,
+            source_message_id=message.external_message_id,
+            source_is_private=chat.type == "private",
+        )
+        return {"authorization": "pending", "onboarding_id": str(onboarding.id)}
+
     context = _build_invocation_context(
         installation,
         chat,
         message,
         telegram_user,
         message_payload,
+    )
+    _, membership = identity
+    context.metadata.update(
+        {
+            "user_id": str(membership.user_id),
+            "tracker_login": membership.tracker_login,
+            "default_board_id": membership.default_board_id,
+        }
     )
     body = context.raw_text_without_mention or _message_text(message_payload)
 
