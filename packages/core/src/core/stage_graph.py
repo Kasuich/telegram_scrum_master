@@ -407,7 +407,7 @@ _TRANSITION_ADDENDUM = (
 _QUERY_ADDENDUM = (
     "Активная стадия: QUERY (только чтение). Разрешены лишь read-инструменты "
     "(board_snapshot, find/search/get, list_team_members). Любые мутации запрещены. "
-    "Один агрегатный read → оформи ответ → заверши."
+    "Получи данные и оформи ответ."
 )
 _REORG_ADDENDUM = (
     "Активная стадия: REORG. Сначала find/search, затем patch_issue / link_issues "
@@ -491,7 +491,7 @@ TRANSITION = Stage(
 QUERY = Stage(
     id=StageId.QUERY,
     allowed_tools=_READ_TOOLS | {"tracker_board_snapshot", "call_agent"},
-    terminal=any_read_answer,
+    terminal=lambda steps: False,  # Goal-based terminal — react.py decides
     prompt_addendum=_QUERY_ADDENDUM,
 )
 

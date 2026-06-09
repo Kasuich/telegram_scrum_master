@@ -1,6 +1,6 @@
 """Tests for fuzzy assignee resolution (no API)."""
 
-from core.assignee_resolver import TrackerUser, best_user_match, extract_assignee_mention
+from core.assignee_resolver import TrackerUser, best_user_match, extract_assignee_mention, resolve_first_person
 
 
 def _team() -> list[TrackerUser]:
@@ -74,3 +74,59 @@ def test_extract_zadacha_kolya_line():
 
 def test_extract_chat_status_prefix():
     assert extract_assignee_mention("Коля: добавил meeting_summarizer") == "Коля"
+
+
+def test_resolve_first_person_mne():
+    assert resolve_first_person("назначь мне задачу", tracker_login="nukolaus") == "nukolaus"
+
+
+def test_resolve_first_person_ya():
+    assert resolve_first_person("я сделаю это", tracker_login="nukolaus") == "nukolaus"
+
+
+def test_resolve_first_person_moi():
+    assert resolve_first_person("мои задачи", tracker_login="nukolaus") == "nukolaus"
+
+
+def test_resolve_first_person_moya():
+    assert resolve_first_person("моя задача", tracker_login="nukolaus") == "nukolaus"
+
+
+def test_resolve_first_person_mnoy():
+    assert resolve_first_person("за мной", tracker_login="nukolaus") == "nukolaus"
+
+
+def test_resolve_first_person_ko_mne():
+    assert resolve_first_person("ко мне обращаются", tracker_login="nukolaus") == "nukolaus"
+
+
+def test_resolve_first_person_u_menya():
+    assert resolve_first_person("у меня проблемы", tracker_login="nukolaus") == "nukolaus"
+
+
+def test_resolve_first_person_no_first_person():
+    assert resolve_first_person("создай задачу Коле", tracker_login="nukolaus") is None
+
+
+def test_resolve_first_person_no_login():
+    assert resolve_first_person("назначь мне", tracker_login=None) is None
+
+
+def test_resolve_first_person_empty_login():
+    assert resolve_first_person("назначь мне", tracker_login="") is None
+
+
+def test_resolve_first_person_empty_message():
+    assert resolve_first_person("", tracker_login="nukolaus") is None
+
+
+def test_resolve_first_person_case_insensitive():
+    assert resolve_first_person("МНЕ нужна задача", tracker_login="nukolaus") == "nukolaus"
+
+
+def test_resolve_first_person_embedded_in_sentence():
+    assert resolve_first_person("пожалуйста, назначь мне задачу по CI", tracker_login="nukolaus") == "nukolaus"
+
+
+def test_resolve_first_person_third_person_unaffected():
+    assert resolve_first_person("создай задачу Коле", tracker_login="nukolaus") is None

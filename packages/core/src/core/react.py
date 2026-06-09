@@ -31,6 +31,13 @@ from pydantic import BaseModel, Field
 from core.agent import BaseAgent
 from core.config import RuntimeConfig
 from core.exceptions import AgentError
+from core.goal import (
+    GoalItem,
+    GoalPlan,
+    build_goal_plan,
+    deserialize_plan,
+    serialize_plan,
+)
 from core.invocation import (
     InvocationContext,
     format_transport_context_for_prompt,
@@ -39,7 +46,7 @@ from core.invocation import (
     set_current_invocation_context,
 )
 from core.llm import LLMClient, Message
-from core.stage_graph import StageId, get_stage
+from core.stage_graph import Stage, StageId, get_stage
 from core.stage_router import detect_stage
 from core.tools import get_registry
 from core.turn_guards import (
@@ -48,17 +55,27 @@ from core.turn_guards import (
     created_issue_keys_in_turn,
     message_has_create_sprint_intent,
 )
-from core.turn_plan import (
-    ScenarioItem,
-    TurnPlan,
-    deserialize_plan,
-    plan_turn,
-    serialize_plan,
-)
+from core.assignee_resolver import best_user_match, load_team_users
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_ITERATIONS = 12
+
+_TOOL_LABELS = {
+    "tracker_create_issue": "Создание задачи в Трекере",
+    "tracker_patch_issue": "Обновление задачи",
+    "tracker_update_issue": "Изменение задачи",
+    "tracker_close_issue": "Закрытие задачи",
+    "tracker_close_issues": "Закрытие задач",
+    "tracker_transition_issue": "Смена статуса задачи",
+    "tracker_move_issues_to_in_progress": "Перевод задач в работу",
+    "tracker_comment_issue": "Комментарий к задаче",
+    "tracker_link_issues": "Связывание задач",
+    "tracker_create_sprint": "Создание спринта",
+    "tracker_apply_backlog_plan": "Создание задач из плана",
+    "schedule_task": "Планирование cron-задачи",
+    "tracker_add_issues_to_sprint": "Добавление задач в спринт",
+}
 _SESSION_MESSAGE_WINDOW = 10
 _SESSION_CONTEXT_FALLBACK_LINES = 24
 _SESSION_CONTEXT_SYSTEM = (
@@ -411,6 +428,103 @@ def _should_auto_finalize_turn(turn_steps: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _goal_terminal_for_stage(
+    stage: Stage | None,
+    goal_item: GoalItem | None,
+    turn_steps: list[dict],
+) -> bool:
+    """Check if the goal is likely met for the current stage."""
+    if stage is None:
+        return False
+    if stage.id == StageId.QUERY:
+        tool_results = [
+            s for s in turn_steps if s.get("kind") == "tool_result" and s.get("tool_name")
+        ]
+        if not tool_results:
+            return False
+        return any(
+            isinstance(s.get("result"), dict) and not s.get("result", {}).get("error")
+            for s in tool_results
+        )
+    return stage.is_terminal(turn_steps)
+
+
+_GOAL_JUDGE_SYSTEM = (
+    "Ты — судья PM-агента. Реши, достигнута ли цель по результатам инструментов.\n"
+    "Ответь СТРОГО одно слово: YES / NO / NEEDS_MORE.\n"
+    "Если NO или NEEDS_MORE — через | укажи что не хватает.\n"
+    "Пример: NO|нет данных по story points"
+)
+
+
+@dataclass
+class GoalVerdict:
+    met: bool
+    reason: str
+    tier: int  # 1=deterministic, 2=LLM judge
+
+
+async def _goal_met(
+    goal_item: GoalItem,
+    turn_steps: list[dict],
+    *,
+    use_llm: bool = True,
+) -> GoalVerdict:
+    """Two-tier goal verification: deterministic first, LLM judge when uncertain."""
+    stage_id = goal_item.stage
+    tool_results = [s for s in turn_steps if s.get("kind") == "tool_result"]
+
+    if stage_id == StageId.INTAKE:
+        if created_issue_keys_in_turn(turn_steps, 0):
+            return GoalVerdict(met=True, reason="issue_created", tier=1)
+    elif stage_id == StageId.STATUS:
+        from core.stage_graph import comment_succeeded
+
+        if comment_succeeded(turn_steps):
+            return GoalVerdict(met=True, reason="comment_succeeded", tier=1)
+    elif stage_id == StageId.TRANSITION:
+        from core.stage_graph import transition_or_close_succeeded
+
+        if transition_or_close_succeeded(turn_steps):
+            return GoalVerdict(met=True, reason="transition_succeeded", tier=1)
+    elif stage_id == StageId.QUERY:
+        has_data = any(
+            isinstance(s.get("result"), dict) and not s.get("result", {}).get("error")
+            for s in tool_results
+        )
+        metric = (goal_item.entities or {}).get("metric")
+        if has_data and not metric:
+            return GoalVerdict(met=True, reason="query_data_present", tier=1)
+        # Metric (SP/count/load) requested → let judge verify the answer contains it
+        if has_data and metric and not use_llm:
+            return GoalVerdict(met=True, reason="query_data_present_no_llm", tier=1)
+        # Otherwise fall through to tier-2 LLM judge below
+
+    if not use_llm or not tool_results:
+        return GoalVerdict(met=False, reason="no_data", tier=1)
+
+    try:
+        client = LLMClient(model="yandexgpt", temperature=0.0, max_tokens=32, max_retries=0)
+        results_summary = str(turn_steps)[:2000]
+        judge_prompt = (
+            f"Цель: {goal_item.success_criteria or goal_item.intent}\n"
+            f"Результаты инструментов: {results_summary}"
+        )
+        resp = await client.complete(
+            [
+                Message(role="system", content=_GOAL_JUDGE_SYSTEM),
+                Message(role="user", content=judge_prompt),
+            ]
+        )
+        await client.close()
+        raw = (resp.content or "").strip().upper()
+        if raw.startswith("YES"):
+            return GoalVerdict(met=True, reason=raw, tier=2)
+        return GoalVerdict(met=False, reason=raw, tier=2)
+    except Exception:
+        return GoalVerdict(met=False, reason="judge_error", tier=2)
+
+
 def _assumptions_line(steps: list[dict[str, Any]]) -> str:
     """Surface fields the agent filled on create (self-check transparency).
 
@@ -490,33 +604,15 @@ def _build_action_report(steps: list[dict[str, Any]]) -> str:
     return lines[-1]
 
 
-def _is_chatty_delegation(text: str) -> bool:
-    """Detect LLM asking user for input instead of using tools."""
-    if not text:
-        return False
-    lower = text.lower()
-    markers = (
-        "нужен ключ",
-        "укажите ключ",
-        "какую задачу",
-        "которую вы хотите",
-        "для продолжения мне нужен",
-        "пожалуйста, укаж",
-        "уточните",
-        "подтвердите, хотите",
-    )
-    return "?" in text or any(m in lower for m in markers)
+_READ_VOICE_STAGES = {StageId.QUERY}
 
 
-def _action_only_final_reply(steps: list[dict[str, Any]], llm_text: str, had_tool: bool) -> str:
+def _action_only_final_reply(steps: list[dict[str, Any]], llm_text: str, had_tool: bool, *, stage_id: StageId | None = None) -> str:
+    if stage_id in _READ_VOICE_STAGES and llm_text.strip():
+        return llm_text.strip()
     report = _build_action_report(steps)
     if report:
         return report
-    if _is_chatty_delegation(llm_text):
-        return (
-            "Действия не выполнены: сначала tracker_find_issues "
-            "(summary_hint, assignee) по контексту запроса."
-        )
     if not had_tool:
         return "Действия не выполнены."
     return llm_text
@@ -627,7 +723,6 @@ class ReActRunner:
             state["context"] = ctx.invocation_context.model_dump(exclude_none=True)
         state["messages"].append({"role": "user", "content": message})
         state["_turn_user_message"] = message
-        state["_action_only_nudges"] = 0
         await self._compact_session_history(state)
         from core.backlog_context import set_pending_backlog_plan
 
@@ -640,15 +735,65 @@ class ReActRunner:
                 ctx, session_id, state, outcome, scenario_steps_before
             )
 
-        turn_plan = await plan_turn(message, use_llm=True)
-        state["_plan"] = serialize_plan(turn_plan)
+        goal_plan = await build_goal_plan(message, use_llm=True)
+        state["_plan"] = serialize_plan(goal_plan)
         state["_plan_cursor"] = 0
         state["_scenario_retries"] = {}
+        steps_before = len(state["steps"])
 
-        if turn_plan.is_dialog:
+        all_missing = []
+        for item in goal_plan.items:
+            all_missing.extend(item.missing_info)
+
+        # Resolve 1st-person ("мне/я/мои") from invocation context
+        actor_login = (ctx.invocation_context or self._active_invocation_context or InvocationContext()).actor_tracker_login
+        user_msg = message
+        from core.assignee_resolver import resolve_first_person
+        resolved_login = resolve_first_person(user_msg, tracker_login=actor_login) if actor_login else None
+
+        if resolved_login:
+            # Substitute 1st-person references in goal items and clear related missing_info
+            for item in goal_plan.items:
+                if item.entities and "assignee" in item.entities:
+                    item.entities["assignee"] = resolved_login
+                item.missing_info = [m for m in item.missing_info if "исполнител" not in m.lower() and "assignee" not in m.lower()]
+            all_missing = [m for item in goal_plan.items for m in item.missing_info]
+
+        # Resolve team member names ("Коля" etc) from entities
+        for item in goal_plan.items:
+            if not item.entities:
+                continue
+            mention = item.entities.get("assignee")
+            if not mention:
+                continue
+            try:
+                from core.config import get_config as _get_cfg
+                from core.tracker import TrackerClient as _TrackerClient
+                _cfg = _get_cfg()
+                _qkey = _cfg.tracker.tracker_queue
+                async with _TrackerClient() as _tc:
+                    _users = await load_team_users(_tc, _qkey)
+                match = best_user_match(mention, _users)
+                if match and match.score >= 0.42:
+                    item.entities["assignee"] = match.login
+                    item.missing_info = [m for m in item.missing_info if "исполнител" not in m.lower() and "assignee" not in m.lower()]
+            except Exception:
+                pass  # resolution is best-effort, don't block on failure
+            all_missing = [m for item in goal_plan.items for m in item.missing_info]
+
+        if all_missing:
+            question = "Уточни, пожалуйста: " + "; ".join(all_missing)
+            state["steps"].append(_step("clarification", content=question))
+            return AgentResult(
+                reply=question,
+                session_id=session_id,
+                steps=state["steps"][steps_before:],
+            )
+
+        if goal_plan.is_dialog:
             return await self._run_dialog(ctx, session_id, state)
 
-        return await self._execute_turn_plan(ctx, session_id, state, turn_plan, start_index=0)
+        return await self._execute_turn_plan(ctx, session_id, state, goal_plan, start_index=0)
 
     async def _set_turn_stage(
         self, state: dict[str, Any], message: str, *, use_llm: bool = True
@@ -664,13 +809,12 @@ class ReActRunner:
         stage = get_stage(stage_id)
         state["stage_addendum"] = stage.prompt_addendum if stage else ""
 
-    def _freeze_scenario_stage(self, state: dict[str, Any], item: ScenarioItem) -> None:
-        """Freeze stage and payload for one scenario in a multi-scenario turn."""
+    def _freeze_scenario_stage(self, state: dict[str, Any], item: GoalItem) -> None:
         state["_stage"] = item.stage.value
+        state["_current_goal_item"] = item
         stage = get_stage(item.stage)
         state["stage_addendum"] = stage.prompt_addendum if stage else ""
         state["_turn_user_message"] = item.payload
-        state["_action_only_nudges"] = 0
         state["steps"].append(_step("stage", stage=item.stage.value))
 
     async def _run_dialog(
@@ -747,13 +891,13 @@ class ReActRunner:
         ctx: _RunCtx,
         session_id: str,
         state: dict[str, Any],
-        turn_plan: TurnPlan,
+        goal_plan: GoalPlan,
         *,
         start_index: int,
     ) -> AgentResult:
         outcomes: list[ScenarioOutcome] = []
-        for idx in range(start_index, len(turn_plan.items)):
-            item = turn_plan.items[idx]
+        for idx in range(start_index, len(goal_plan.items)):
+            item = goal_plan.items[idx]
             state["_plan_cursor"] = idx
             scenario_steps_before = len(state["steps"])
             self._freeze_scenario_stage(state, item)
@@ -768,22 +912,22 @@ class ReActRunner:
                     session_id, state, outcome.clarification, scenario_steps_before
                 )
         return await self._reflect_and_finalize(
-            ctx, session_id, state, turn_plan, outcomes, start_index=start_index
+            ctx, session_id, state, goal_plan, outcomes, start_index=start_index
         )
 
     def _build_multi_scenario_report(
         self,
-        turn_plan: TurnPlan,
+        goal_plan: GoalPlan,
         outcomes: list[ScenarioOutcome],
     ) -> str:
-        if len(turn_plan.items) == 1 and outcomes:
+        if len(goal_plan.items) == 1 and outcomes:
             outcome = outcomes[0]
             if outcome.kind == "done" and outcome.turn_steps is not None:
                 single = _build_action_report(outcome.turn_steps)
                 if single:
                     return single
         lines: list[str] = []
-        for item, outcome in zip(turn_plan.items, outcomes):
+        for item, outcome in zip(goal_plan.items, outcomes):
             label = item.stage.value
             if outcome.kind == "done":
                 report = _build_action_report(outcome.turn_steps or [])
@@ -803,7 +947,7 @@ class ReActRunner:
         ctx: _RunCtx,
         session_id: str,
         state: dict[str, Any],
-        turn_plan: TurnPlan,
+        goal_plan: GoalPlan,
         outcomes: list[ScenarioOutcome],
         *,
         start_index: int = 0,
@@ -811,13 +955,16 @@ class ReActRunner:
         """Hybrid reflection: deterministic checks; LLM only for multi/failure."""
         from core.stage_graph import get_stage as _get_stage
 
-        plan_slice = turn_plan.items[start_index:]
+        plan_slice = goal_plan.items[start_index:]
         if len(plan_slice) == 1 and outcomes:
             outcome = outcomes[0]
             turn_steps = list(outcome.turn_steps or [])
-            stage = _get_stage(plan_slice[0].stage)
+            item = plan_slice[0]
+            stage = _get_stage(item.stage)
             if outcome.kind == "done":
-                if stage is not None and stage.is_terminal(turn_steps):
+                if stage and stage.id == StageId.QUERY and outcome.reply:
+                    reply = outcome.reply
+                elif _goal_terminal_for_stage(stage, item, turn_steps):
                     reply = _build_action_report(turn_steps) or "Действие выполнено."
                 elif outcome.reply:
                     reply = outcome.reply
@@ -840,10 +987,11 @@ class ReActRunner:
             idx = start_index + offset
             stage = _get_stage(item.stage)
             turn_steps = outcome.turn_steps or []
-            complete = (
-                outcome.kind == "done" and stage is not None and stage.is_terminal(turn_steps)
-            )
+            complete = outcome.kind == "done" and _goal_terminal_for_stage(stage, item, turn_steps)
             if complete:
+                continue
+            verdict = await _goal_met(item, turn_steps)
+            if verdict.met:
                 continue
             retry_key = str(idx)
             if retries.get(retry_key, 0) < 1 and outcome.kind in ("done", "max_iter"):
@@ -851,6 +999,12 @@ class ReActRunner:
                 state["_plan_cursor"] = idx
                 scenario_steps_before = len(state["steps"])
                 self._freeze_scenario_stage(state, item)
+                state["messages"].append(
+                    {
+                        "role": "user",
+                        "content": (f"Цель не достигнута: {verdict.reason}. Попробуй иначе."),
+                    }
+                )
                 retry_outcome = await self._run_scenario(
                     ctx, session_id, state, scenario_steps_before
                 )
@@ -864,10 +1018,8 @@ class ReActRunner:
                         retry_outcome.clarification or "",
                         scenario_steps_before,
                     )
-                if (
-                    retry_outcome.kind == "done"
-                    and stage is not None
-                    and stage.is_terminal(turn_steps)
+                if retry_outcome.kind == "done" and _goal_terminal_for_stage(
+                    stage, item, turn_steps
                 ):
                     continue
             question = clarification_needed(
@@ -887,12 +1039,16 @@ class ReActRunner:
             o.kind != "done"
             or (
                 _get_stage(plan_slice[i].stage) is not None
-                and not _get_stage(plan_slice[i].stage).is_terminal(o.turn_steps or [])
+                and not _goal_terminal_for_stage(
+                    _get_stage(plan_slice[i].stage),
+                    plan_slice[i],
+                    o.turn_steps or [],
+                )
             )
             for i, o in enumerate(final_outcomes)
         )
 
-        reply = self._build_multi_scenario_report(TurnPlan(items=plan_slice), final_outcomes)
+        reply = self._build_multi_scenario_report(GoalPlan(items=plan_slice), final_outcomes)
         if needs_llm and len(plan_slice) > 1:
             llm_reply = await self._reflection_llm_check(reply, plan_slice, final_outcomes)
             if llm_reply:
@@ -911,7 +1067,7 @@ class ReActRunner:
     async def _reflection_llm_check(
         self,
         report: str,
-        items: list[ScenarioItem],
+        items: list[GoalItem],
         outcomes: list[ScenarioOutcome],
     ) -> str | None:
         """Optional LLM pass to sanity-check a multi-scenario report."""
@@ -1176,30 +1332,6 @@ class ReActRunner:
                     for s in turn_steps
                 )
 
-                if action_only and not had_tool and state.get("_action_only_nudges", 0) < 4:
-                    state["_action_only_nudges"] = state.get("_action_only_nudges", 0) + 1
-                    if llm_text:
-                        messages.append({"role": "assistant", "content": llm_text})
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Запрещено спрашивать у пользователя. "
-                                "Если просят создать спринт — tracker_create_sprint "
-                                "(name, start_date, end_date, board_id или board_name), "
-                                "не tracker_create_issue. "
-                                "Если просят СОЗДАТЬ задачу "
-                                "(создай/заведи/поставь) — tracker_create_issue "
-                                "(summary, assignee), без поиска. "
-                                "Если закрыть/изменить/найти — "
-                                "tracker_find_issues, затем действие. "
-                                "Пустой поиск — только для изменения: «задача не найдена»."
-                            ),
-                        }
-                    )
-                    await self._compact_session_history(state)
-                    continue
-
                 if action_only:
                     question = clarification_needed(
                         state.get("_stage"),
@@ -1213,7 +1345,7 @@ class ReActRunner:
                             turn_steps=list(turn_steps),
                             clarification=question,
                         )
-                    reply = _action_only_final_reply(turn_steps, llm_text, had_tool)
+                    reply = _action_only_final_reply(turn_steps, llm_text, had_tool, stage_id=StageId(state.get("_stage")) if state.get("_stage") else None)
                 else:
                     reply = llm_text
                 if action_only and state.get("_plan"):
@@ -1342,8 +1474,10 @@ class ReActRunner:
                 # --- Autonomy gate: pause and ask ---
                 confirm_id = str(uuid.uuid4())
                 confirm_prompt = (
-                    f"Agent wants to call '{tool_call.name}' "
-                    f"(risk={tool.risk}) with: {tool_call.arguments}"
+                    f"Запрос на действие: {_TOOL_LABELS.get(tool_call.name, tool_call.name)}\n"
+                    f"Риск: {tool.risk}\n"
+                    f"Параметры: {tool_call.arguments}\n"
+                    f"Разрешить?"
                 )
                 pending = PendingConfirm(
                     confirm_id=confirm_id,
@@ -1400,7 +1534,7 @@ class ReActRunner:
                     }
                 )
                 await self._compact_session_history(state)
-                if self._turn_is_done(stage, steps[steps_before_turn:]):
+                if self._turn_is_done(stage, steps[steps_before_turn:], goal_item=state.get("_current_goal_item")):
                     turn_steps = steps[steps_before_turn:]
                     if state.get("_plan"):
                         return ScenarioOutcome(kind="done", turn_steps=list(turn_steps))
@@ -1553,11 +1687,9 @@ class ReActRunner:
     # Stage graph helpers
     # ------------------------------------------------------------------
 
-    def _turn_is_done(self, stage: Any, turn_steps: list[dict[str, Any]]) -> bool:
-        """Terminal decision: stage terminal node when a stage is active,
-        else the legacy magic-number heuristic (non-stage action_only agents)."""
+    def _turn_is_done(self, stage: Any, turn_steps: list[dict[str, Any]], *, goal_item: GoalItem | None = None) -> bool:
         if stage is not None:
-            return stage.is_terminal(turn_steps)
+            return _goal_terminal_for_stage(stage, goal_item, turn_steps)
         return _should_auto_finalize_turn(turn_steps)
 
     async def _run_forced_edges(
@@ -1984,7 +2116,12 @@ class ReActRunner:
         await ctx.db_session.flush()
 
         if status == "pending" and confirm_id:
-            confirm_prompt = f"Agent wants to call '{tool_name}' (risk={risk}) with: {tool_args}"
+            confirm_prompt = (
+                f"Запрос на действие: {_TOOL_LABELS.get(tool_name, tool_name)}\n"
+                f"Риск: {risk}\n"
+                f"Параметры: {tool_args}\n"
+                f"Разрешить?"
+            )
             confirm = Confirm(
                 id=uuid.UUID(confirm_id),
                 action_id=action.id,
