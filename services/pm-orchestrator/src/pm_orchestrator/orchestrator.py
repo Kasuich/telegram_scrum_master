@@ -32,6 +32,7 @@ from core.metrics import (
     agent_tool_outputs_total,
 )
 from core.react import AgentResult, ReActRunner
+from core.telemost_shortcut import try_meeting_capture_shortcut
 from core.tools import get_registry
 
 logger = logging.getLogger(__name__)
@@ -227,12 +228,18 @@ class OrchestratorService:
         session_id: str,
         context: InvocationContext | dict[str, Any] | None = None,
     ) -> AgentResult:
+        invocation_context = normalize_invocation_context(context)
+        shortcut = await try_meeting_capture_shortcut(
+            message, session_id, context=invocation_context
+        )
+        if shortcut is not None:
+            return shortcut
+
         runner = self._runner(agent_name)
         await self._ensure_agent_enabled(agent_name)
         eff = await self._load_effective_config(agent_name)
         eff_prompt = eff.prompt if eff else None
         eff_rc = eff.runtime_config if eff else None
-        invocation_context = normalize_invocation_context(context)
 
         if self._db_enabled:
             from core.db import get_session
