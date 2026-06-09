@@ -193,13 +193,20 @@ class TestQueryStage:
     async def test_query_terminates_on_snapshot(self):
         _register_fake_tracker_tools()
         runner = _runner(_pm_agent())
-        post = AsyncMock(return_value=_http_ok(_tool_call_response("tracker_board_snapshot", {})))
+        # QUERY flow: call 1 → tool call, call 2 → verbalization text
+        post = AsyncMock(
+            side_effect=[
+                _http_ok(_tool_call_response("tracker_board_snapshot", {})),
+                _http_ok(_text_response("На доске 5 задач.")),
+            ]
+        )
         with patch("httpx.AsyncClient.post", post):
             result = await runner.invoke("что на доске", "q1")
         kinds = [s.get("tool_name") for s in result.steps if s.get("kind") == "tool_result"]
         assert "tracker_board_snapshot" in kinds
-        # Single read -> terminal; no second LLM call needed.
-        assert post.await_count == 1
+        # QUERY needs 2 LLM calls: tool call + verbalization
+        assert post.await_count == 2
+        assert result.reply and "выполнено" not in result.reply
 
     @patch.dict("os.environ", ENV)
     async def test_query_blocks_write(self):
@@ -418,6 +425,8 @@ class TestMultiScenario:
                     )
                 ),
                 _http_ok(_tool_call_response("tracker_board_snapshot", {})),
+                # QUERY verbalization pass (data ready, LLM replies in words)
+                _http_ok(_text_response("На доске 3 задачи.")),
                 _http_ok(_tool_call_response("tracker_find_issues", {"assignee": "Коля"})),
                 _http_ok(
                     _tool_call_response(

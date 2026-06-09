@@ -1626,6 +1626,16 @@ class ReActRunner:
             if action_only and self._turn_is_done(stage, steps[steps_before_turn:]):
                 turn_steps = steps[steps_before_turn:]
                 if state.get("_plan"):
+                    # QUERY: tool data ready; need one more LLM pass to verbalize in words
+                    if stage is not None and stage.id == StageId.QUERY:
+                        _verbalize_msg = (
+                            "Данные получены. Ответь на вопрос пользователя своими словами, "
+                            "без tool calls."
+                        )
+                        if not messages or messages[-1].get("content") != _verbalize_msg:
+                            messages.append({"role": "user", "content": _verbalize_msg})
+                            await self._compact_session_history(state)
+                            continue
                     return ScenarioOutcome(kind="done", turn_steps=list(turn_steps))
                 reply = _build_action_report(turn_steps) or ("Действие выполнено.")
                 reason = "stage_terminal" if stage is not None else "auto_finalize"
