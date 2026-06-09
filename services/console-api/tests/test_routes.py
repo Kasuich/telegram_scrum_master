@@ -17,6 +17,8 @@ def test_console_api_routes_are_registered() -> None:
     routes = {(route.path, ",".join(sorted(route.methods or []))) for route in app.routes}
 
     assert ("/auth/login", "POST") in routes
+    assert ("/auth/code/request", "POST") in routes
+    assert ("/auth/code/verify", "POST") in routes
     assert ("/auth/logout", "POST") in routes
     assert ("/auth/me", "GET") in routes
     assert ("/agents", "GET") in routes

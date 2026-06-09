@@ -38,3 +38,12 @@ def new_session_token() -> str:
 
 def hash_session_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def new_login_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def hash_login_code(challenge_id: str, code: str, secret: str) -> str:
+    payload = f"{challenge_id}:{code}".encode()
+    return hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
