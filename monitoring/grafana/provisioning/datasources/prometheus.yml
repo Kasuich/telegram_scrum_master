@@ -1,5 +1,11 @@
 apiVersion: 1
 
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+  - name: Loki
+    orgId: 1
+
 datasources:
   - name: Prometheus
     type: prometheus
@@ -7,6 +13,8 @@ datasources:
     url: http://prometheus:9090
     access: proxy
     isDefault: true
+    editable: false
+    version: 1
     jsonData:
       timeInterval: 15s
       httpMethod: POST
@@ -16,5 +24,7 @@ datasources:
     uid: loki
     url: http://loki:3100
     access: proxy
+    editable: false
+    version: 1
     jsonData:
       maxLines: 1000
