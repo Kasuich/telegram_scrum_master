@@ -181,11 +181,11 @@ async def test_build_report_groups_by_registered_telegram_members() -> None:
     assert report.queue == "DARKHORSE"
     alice = report.members[0]
     bob = report.members[1]
-    assert [issue.key for issue in alice.in_progress] == ["TEST-1"]
-    assert [issue.key for issue in alice.done_today] == ["TEST-2"]
+    assert alice.in_progress == []
+    assert alice.done_today == []
     assert bob.in_progress == []
     assert bob.done_today == []
-    assert any("Updated: >=" in query for query in client.queries)
+    assert client.queries == []
 
 
 async def test_build_report_uses_poll_tasks_when_tracker_sections_are_empty() -> None:
@@ -254,6 +254,130 @@ async def test_build_report_uses_poll_tasks_when_tracker_sections_are_empty() ->
     assert [issue.key for issue in alice.done_today] == ["TEST-2"]
     assert "TEST-1: добавлен комментарий" in alice.applied_items
     assert "TEST-2: закрыта" in alice.applied_items
+
+
+async def test_build_report_uses_all_poll_history_actions_only() -> None:
+    client = EmptyTrackerClient()
+    team_id = uuid.uuid4()
+    poll = SimpleNamespace(
+        tracker_login="alice",
+        response_text="old fallback",
+        issues_json=[
+            {
+                "number": 1,
+                "key": "TEST-1",
+                "summary": "Needs data",
+                "status": "Open",
+                "url": "https://tracker.yandex.ru/TEST-1",
+            },
+            {
+                "number": 2,
+                "key": "TEST-2",
+                "summary": "Deploy bot",
+                "status": "Open",
+                "url": "https://tracker.yandex.ru/TEST-2",
+            },
+            {
+                "number": 3,
+                "key": "TEST-3",
+                "summary": "Untouched task",
+                "status": "Open",
+                "url": "https://tracker.yandex.ru/TEST-3",
+            },
+        ],
+        applied_json={
+            "responses": [
+                {
+                    "text": "task 1 need more info",
+                    "results": [
+                        {
+                            "kind": "comment",
+                            "issue_key": "TEST-1",
+                            "issue_number": 1,
+                            "ok": True,
+                        }
+                    ],
+                },
+                {
+                    "text": "task 2 done new task: write release notes",
+                    "results": [
+                        {
+                            "kind": "close",
+                            "issue_key": "TEST-2",
+                            "issue_number": 2,
+                            "ok": True,
+                        },
+                        {
+                            "kind": "create",
+                            "issue_key": "TEST-4",
+                            "summary": "write release notes",
+                            "ok": True,
+                        },
+                        {
+                            "kind": "comment",
+                            "issue_number": 99,
+                            "ok": False,
+                            "error": "unknown_issue_number",
+                        },
+                    ],
+                },
+            ],
+            "results": [
+                {
+                    "kind": "comment",
+                    "issue_key": "TEST-1",
+                    "issue_number": 1,
+                    "ok": True,
+                },
+                {
+                    "kind": "close",
+                    "issue_key": "TEST-2",
+                    "issue_number": 2,
+                    "ok": True,
+                },
+                {
+                    "kind": "create",
+                    "issue_key": "TEST-4",
+                    "summary": "write release notes",
+                    "ok": True,
+                },
+                {
+                    "kind": "comment",
+                    "issue_number": 99,
+                    "ok": False,
+                    "error": "unknown_issue_number",
+                },
+            ],
+        },
+    )
+
+    with (
+        patch("core.daily_digest.get_config", return_value=_cfg()),
+        patch(
+            "core.daily_digest.load_registered_participants",
+            AsyncMock(return_value=[SimpleNamespace(tracker_login="alice", display="Alice")]),
+        ),
+        patch(
+            "core.daily_digest._load_standup_polls_by_login",
+            AsyncMock(return_value={"alice": poll}),
+        ),
+    ):
+        report = await build_daily_digest_report(
+            FakeSession(team_queue="DARKHORSE"),
+            team_id=team_id,
+            now=datetime(2026, 6, 8, 15, 0, tzinfo=timezone.utc),
+            client_factory=lambda: client,
+        )
+
+    alice = report.members[0]
+    assert [issue.key for issue in alice.in_progress] == ["TEST-1", "TEST-4"]
+    assert [issue.key for issue in alice.done_today] == ["TEST-2"]
+    assert "TEST-3" not in [issue.key for issue in alice.in_progress]
+    assert alice.standup_response == (
+        "task 1 need more info\n\ntask 2 done new task: write release notes"
+    )
+    assert len(alice.applied_items) == 4
+    assert any("99" in item for item in alice.applied_items)
 
 
 def test_format_report_includes_empty_member_sections() -> None:

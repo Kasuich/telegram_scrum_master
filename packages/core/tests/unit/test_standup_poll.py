@@ -298,3 +298,50 @@ async def test_handle_standup_response_applies_changes() -> None:
     ]
     assert tracker.created == [("TEST", "подготовить демо", "alice")]
     assert "TEST-3" in reply
+
+
+async def test_handle_standup_response_accumulates_multiple_messages() -> None:
+    team_id = uuid.uuid4()
+    telegram_user_id = uuid.uuid4()
+    poll = TelegramStandupPoll(
+        id=uuid.uuid4(),
+        team_id=team_id,
+        installation_id=uuid.uuid4(),
+        telegram_user_id=telegram_user_id,
+        user_id=uuid.uuid4(),
+        tracker_login="alice",
+        local_hour="2026-06-08T11",
+        issues_json=[
+            {"number": 1, "key": "TEST-1", "summary": "Build bot"},
+            {"number": 2, "key": "TEST-2", "summary": "Deploy bot"},
+        ],
+        applied_json={},
+        status="pending",
+    )
+    tracker = _FakeTracker()
+    session = _ResponseSession(poll)
+
+    first_reply = await handle_standup_response(
+        session,
+        team_id=team_id,
+        telegram_user_id=telegram_user_id,
+        text="task 1 done",
+        client_factory=lambda: tracker,
+    )
+    second_reply = await handle_standup_response(
+        session,
+        team_id=team_id,
+        telegram_user_id=telegram_user_id,
+        text="task 2 in progress",
+        client_factory=lambda: tracker,
+    )
+
+    assert first_reply is not None
+    assert second_reply is not None
+    assert poll.status == "answered"
+    assert poll.response_text == "task 1 done\n\ntask 2 in progress"
+    assert len(poll.applied_json["responses"]) == 2
+    assert [row["issue_key"] for row in poll.applied_json["results"]] == [
+        "TEST-1",
+        "TEST-2",
+    ]
