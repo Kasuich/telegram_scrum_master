@@ -60,7 +60,7 @@ class SpeechKitTranscriber(Transcriber):
                 participants_observed=participants_observed,
             )
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             operation_id = await self._start_operation(
                 client,
                 audio_uri=audio_uri,
@@ -81,19 +81,19 @@ class SpeechKitTranscriber(Transcriber):
         audio_uri: str,
         language: str,
     ) -> str:
-        url = f"{self.settings.speechkit_base_url.rstrip('/')}/stt/v3/recognizeFileAsync"
+        # SpeechKit v2 async API: POST to transcribe.api.cloud.yandex.net
+        url = "https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize"
         body = {
-            "uri": audio_uri,
-            "recognitionModel": {
-                "model": "general",
-                "audioFormat": {"containerAudio": {"containerAudioType": "OGG_OPUS"}},
-                "languageRestriction": {
-                    "restrictionType": "WHITELIST",
-                    "languageCode": [language],
-                },
+            "config": {
+                "specification": {
+                    "languageCode": language,
+                    "audioEncoding": "OGG_OPUS",
+                    "model": "general",
+                    "enableSpeakerDiarization": True,
+                    "speakerCount": 10,
+                }
             },
-            "speechAnalysis": {"enableSpeakerAnalysis": True},
-            "speakerLabeling": {"speakerLabeling": "SPEAKER_LABELING_ENABLED"},
+            "audio": {"uri": audio_uri},
         }
         response = await client.post(
             url,
@@ -106,16 +106,16 @@ class SpeechKitTranscriber(Transcriber):
             payload.get("id") or payload.get("operation_id") or payload.get("operationId")
         )
         if not operation_id:
-            raise RuntimeError("SpeechKit did not return an operation id")
+            raise RuntimeError(f"SpeechKit did not return an operation id: {payload}")
         return str(operation_id)
 
     async def _poll_result(self, client: httpx.AsyncClient, operation_id: str) -> Any:
+        # Operations API: GET operation.api.cloud.yandex.net/operations/{id}
         deadline = time.monotonic() + self.settings.speechkit_timeout_sec
-        url = f"{self.settings.speechkit_base_url.rstrip('/')}/stt/v3/getRecognition"
+        url = f"https://operation.api.cloud.yandex.net/operations/{operation_id}"
         while time.monotonic() < deadline:
             response = await client.get(
                 url,
-                params={"operationId": operation_id},
                 headers={"Authorization": f"Api-Key {self.settings.effective_speechkit_api_key}"},
             )
             if response.status_code in (202, 404, 409):
@@ -123,7 +123,7 @@ class SpeechKitTranscriber(Transcriber):
                 continue
             response.raise_for_status()
             payload = response.json()
-            if payload.get("done") is False:
+            if not payload.get("done"):
                 await asyncio.sleep(self.settings.speechkit_poll_interval_sec)
                 continue
             return payload
@@ -162,50 +162,105 @@ def empty_transcription_user_message(source: str) -> str:
 
 
 def parse_speechkit_segments(payload: Any) -> list[dict[str, Any]]:
-    """Normalize SpeechKit response events into transcript segments."""
+    """Normalize SpeechKit v2 async response into transcript segments.
+
+    The Operations API wraps the result as:
+      {"done": true, "response": {"chunks": [{"alternatives": [...], "speakerTag": "1"}]}}
+    Each chunk has one winning alternative. Words carry per-word speakerTag for
+    diarization when enableSpeakerDiarization=true.
+    Also handles bare list/dict payloads (tests, v3 streaming fallback).
+    """
+    # Unwrap Operations API envelope.
+    if isinstance(payload, dict) and "response" in payload:
+        payload = payload["response"]
 
     segments: list[dict[str, Any]] = []
-    for event in _iter_dicts(payload):
-        final = event.get("final")
-        if not isinstance(final, dict):
+
+    chunks = None
+    if isinstance(payload, dict):
+        chunks = payload.get("chunks")
+
+    if chunks is None:
+        # Fallback: iterate all dicts looking for "final" (v3 streaming shape).
+        for event in _iter_dicts(payload):
+            final = event.get("final")
+            if not isinstance(final, dict):
+                continue
+            channel_or_speaker = _first_value(
+                final, "speaker_tag", "speakerTag", "channel_tag", "channelTag"
+            )
+            alternatives = final.get("alternatives") or []
+            if not isinstance(alternatives, list):
+                continue
+            for alternative in alternatives:
+                if not isinstance(alternative, dict):
+                    continue
+                text = str(alternative.get("text") or "").strip()
+                if not text:
+                    continue
+                words = alternative.get("words")
+                speaker = (
+                    _first_value(
+                        alternative, "speaker_tag", "speakerTag", "channel_tag", "channelTag"
+                    )
+                    or _speaker_from_words(words)
+                    or channel_or_speaker
+                    or "SPEAKER_00"
+                )
+                start_ms = _int_value(alternative, "start_time_ms", "startTimeMs")
+                end_ms = _int_value(alternative, "end_time_ms", "endTimeMs")
+                if start_ms is None and isinstance(words, list) and words:
+                    start_ms = _int_value(words[0], "start_time_ms", "startTimeMs")
+                if end_ms is None and isinstance(words, list) and words:
+                    end_ms = _int_value(words[-1], "end_time_ms", "endTimeMs")
+                segments.append(
+                    {
+                        "start_ms": max(start_ms or 0, 0),
+                        "end_ms": max(end_ms or start_ms or 0, 0),
+                        "speaker_label": str(speaker),
+                        "text": text,
+                    }
+                )
+        return sorted(segments, key=lambda item: (item["start_ms"], item["end_ms"]))
+
+    # v2 chunks path.
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
             continue
-        channel_or_speaker = _first_value(
-            final,
-            "speaker_tag",
-            "speakerTag",
-            "channel_tag",
-            "channelTag",
+        chunk_speaker = (
+            _first_value(chunk, "speakerTag", "speaker_tag", "channelTag", "channel_tag")
+            or "SPEAKER_00"
         )
-        alternatives = final.get("alternatives") or []
+        alternatives = chunk.get("alternatives") or []
         if not isinstance(alternatives, list):
             continue
-        for alternative in alternatives:
-            if not isinstance(alternative, dict):
-                continue
-            text = str(alternative.get("text") or "").strip()
-            if not text:
-                continue
-            words = alternative.get("words")
-            speaker = (
-                _first_value(alternative, "speaker_tag", "speakerTag", "channel_tag", "channelTag")
-                or _speaker_from_words(words)
-                or channel_or_speaker
-                or "SPEAKER_00"
-            )
-            start_ms = _int_value(alternative, "start_time_ms", "startTimeMs")
-            end_ms = _int_value(alternative, "end_time_ms", "endTimeMs")
-            if start_ms is None and isinstance(words, list) and words:
-                start_ms = _int_value(words[0], "start_time_ms", "startTimeMs")
-            if end_ms is None and isinstance(words, list) and words:
-                end_ms = _int_value(words[-1], "end_time_ms", "endTimeMs")
-            segments.append(
-                {
-                    "start_ms": max(start_ms or 0, 0),
-                    "end_ms": max(end_ms or start_ms or 0, 0),
-                    "speaker_label": str(speaker),
-                    "text": text,
-                }
-            )
+        # v2 returns only the best alternative per chunk.
+        alternative = alternatives[0] if alternatives else None
+        if not isinstance(alternative, dict):
+            continue
+        text = str(alternative.get("text") or "").strip()
+        if not text:
+            continue
+        words = alternative.get("words")
+        # Per-word speakerTag is authoritative when diarization is on.
+        speaker = _speaker_from_words(words) or chunk_speaker
+        start_ms = _int_value(alternative, "startTimeMs", "start_time_ms")
+        end_ms = _int_value(alternative, "endTimeMs", "end_time_ms")
+        if start_ms is None and isinstance(words, list) and words:
+            start_ms = _int_value(words[0], "startTimeMs", "start_time_ms")
+        if end_ms is None and isinstance(words, list) and words:
+            end_ms = _int_value(words[-1], "endTimeMs", "end_time_ms")
+        segments.append(
+            {
+                "start_ms": max(start_ms or 0, 0),
+                "end_ms": max(end_ms or start_ms or 0, 0),
+                "speaker_label": f"SPEAKER_{speaker.zfill(2)}"
+                if speaker.isdigit()
+                else str(speaker),
+                "text": text,
+            }
+        )
+
     return sorted(segments, key=lambda item: (item["start_ms"], item["end_ms"]))
 
 
