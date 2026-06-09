@@ -173,7 +173,8 @@ async def _resolve_login(
 async def _resolve_yql_assignees(yql: str, client: TrackerClient, queue: str) -> str:
     """Replace Assignee: \"Name\" with resolved login in YQL."""
     pattern = re.compile(
-        r'(Assignee:\s*)"([^"]+)"|Assignee:\s+([a-z0-9._-]+)',
+        # Skip YQL functions like empty() / notEmpty() — only resolve plain names/logins
+        r'(Assignee:\s*)"([^"]+)"|Assignee:\s+(?!empty\(\)|notEmpty\(\))([a-z0-9._-]+)',
         re.IGNORECASE,
     )
 
@@ -351,8 +352,12 @@ async def tracker_search_issues(query: str, queue: str = "") -> dict[str, Any]:
       query='Summary: "MCP" AND Assignee: shinkarenkorom'
       query='Assignee: shinkarenkorom'
       query='Status: Open'
+      query='Assignee: empty()'                         -- tasks with NO assignee
+      query='Assignee: empty() AND Status: Open'        -- open tasks without assignee
+      query='Deadline: < now() AND Status: Open'        -- overdue open tasks
     Do NOT use assignee = 'name' — use tracker_find_issues or Assignee: login.
     By default excludes closed/cancelled unless Status: is present in the query.
+    Use Assignee: empty() to find unassigned tasks (NOT Assignee: "" or Assignee: null).
     """
     q = _effective_queue(queue)
     async with TrackerClient() as client:
