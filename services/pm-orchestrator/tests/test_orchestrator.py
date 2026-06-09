@@ -103,6 +103,23 @@ class TestOrchestratorService:
             await svc.invoke("alpha", "hello", "s1", context=ctx)
         assert mocked.call_args.kwargs["invocation_context"] == ctx
 
+    async def test_invoke_short_circuits_telemost_link(self):
+        svc = self._svc(_make_agent("pm_agent"))
+        telemost_url = "https://telemost.yandex.ru/j/12345678901234567"
+        with (
+            patch.object(svc._runners["pm_agent"], "invoke", AsyncMock()) as runner_invoke,
+            patch(
+                "core.telemost_shortcut.schedule_meeting_capture",
+                AsyncMock(return_value={"meeting_id": "m1", "status": "recording"}),
+            ),
+        ):
+            result = await svc.invoke("pm_agent", telemost_url, "s1")
+
+        runner_invoke.assert_not_awaited()
+        assert result.reply is not None
+        assert "m1" in result.reply
+        assert result.steps[0]["kind"] == "meeting_capture_scheduled"
+
     async def test_invoke_unknown_agent_raises(self):
         svc = self._svc()
         with pytest.raises(KeyError, match="not found"):

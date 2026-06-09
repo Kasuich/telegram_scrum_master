@@ -26,6 +26,11 @@ from core.models import (
     TelegramUpdate,
     TelegramUser,
 )
+from core.telemost_shortcut import (
+    extract_telemost_url,
+    format_meeting_capture_reply,
+    schedule_meeting_capture,
+)
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import Select, or_, select
@@ -43,34 +48,8 @@ from platform_api.telegram_media import PresignedUploadRequest
 
 router = APIRouter(prefix="/internal/telegram/v1", tags=["telegram-bridge"])
 
-# A bare Telemost link is an unambiguous "send the recording bot here" signal —
-# detect it deterministically and short-circuit to meeting-capture, bypassing
-# the LLM agent (whose stage whitelist would otherwise hide schedule_meeting_bot).
-_TELEMOST_RE = re.compile(r"https?://telemost\.yandex\.[a-z]+/\S+", re.IGNORECASE)
-
-
-def _extract_telemost_url(text: str) -> str | None:
-    match = _TELEMOST_RE.search(text or "")
-    return match.group(0).rstrip(".,);]") if match else None
-
-
-async def _schedule_meeting_capture(telemost_url: str, target_chat_id: str | None) -> str:
-    """POST the meeting to meeting-capture; return a human-readable reply."""
-    import httpx
-
-    base = os.getenv("MEETING_CAPTURE_URL", "http://meeting-capture:8003").rstrip("/")
-    payload = {
-        "telemost_url": telemost_url,
-        "consent_ack": True,
-        "language": "ru-RU",
-        "target_chat_id": target_chat_id,
-    }
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.post(f"{base}/meetings", json=payload)
-        response.raise_for_status()
-        data = response.json()
-    return f"🤖 Иду на встречу и включаю запись. Итоги пришлю сюда. (id: {data.get('meeting_id')})"
-
+# Telemost links short-circuit to meeting-capture via core.telemost_shortcut
+# (bypasses the LLM agent for minimum latency).
 
 _SEEN_NONCES: dict[str, float] = {}
 _DEFAULT_NONCE_TTL = 300
@@ -593,10 +572,13 @@ async def _route_inbound_message(
     body = context.raw_text_without_mention or _message_text(message_payload)
 
     # Short-circuit: a Telemost link goes straight to the recording bot.
-    telemost_url = _extract_telemost_url(body)
+    telemost_url = extract_telemost_url(body)
     if telemost_url is not None:
         try:
-            reply = await _schedule_meeting_capture(telemost_url, chat.external_chat_id)
+            data = await schedule_meeting_capture(
+                telemost_url, target_chat_id=chat.external_chat_id
+            )
+            reply = format_meeting_capture_reply(data)
         except Exception as exc:  # noqa: BLE001 — surface failure to the user, never 500
             reply = f"Не удалось отправить бота на встречу: {exc}"
         result = SimpleNamespace(reply=reply, pending_confirm=None)
@@ -1419,8 +1401,9 @@ async def resolve_installation_by_token(
     Resolve onboarding token to installation info.
     Token is hashed for lookup - original token never stored.
     """
-    from core.models import TelegramInstallation
     import hashlib
+
+    from core.models import TelegramInstallation
 
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     # For now, resolve by external_bot_id pattern or return first active installation
@@ -1481,7 +1464,6 @@ async def business_connection_connect(
     Handle Telegram update: bot connected as business account.
     Stores the connection and permissions.
     """
-    from sqlalchemy import update
 
     stmt = select(TelegramInstallation).where(
         TelegramInstallation.status == "active"
