@@ -21,7 +21,13 @@ scrape_configs:
       - match:
           selector: '{job="docker"} !~ "agent_step"'
           action: drop
+      # First json stage: parse the outer structlog JSON to get the "message" field
       - json:
+          expressions:
+            message: message
+      # Second json stage: parse the inner JSON inside "message"
+      - json:
+          source: message
           expressions:
             event: event
             agent_name: agent_name
@@ -37,5 +43,5 @@ scrape_configs:
           kind:
           tool_name:
       - timestamp:
-           source: ts
-           format: ISO8601
+          source: ts
+          format: ISO8601
