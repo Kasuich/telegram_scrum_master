@@ -97,7 +97,12 @@ async def ensure_default_agent_models(session: Any) -> None:
     await session.execute(
         update(AgentSpec)
         .where(AgentSpec.name == "pm_agent", AgentSpec.model == "yandexgpt")
-        .values(model="gpt-oss-120b")
+        .values(model="google/gemini-3.1-flash-lite")
+    )
+    await session.execute(
+        update(AgentSpec)
+        .where(AgentSpec.name == "pm_agent", AgentSpec.model == "gpt-oss-120b")
+        .values(model="google/gemini-3.1-flash-lite")
     )
 
 

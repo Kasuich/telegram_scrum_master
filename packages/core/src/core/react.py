@@ -569,7 +569,7 @@ async def _goal_met(
         return GoalVerdict(met=False, reason="no_data", tier=1)
 
     try:
-        client = LLMClient(model="yandexgpt", temperature=0.0, max_tokens=32, max_retries=0)
+        client = LLMClient(model="google/gemini-3.1-flash-lite", provider="openrouter", temperature=0.0, max_tokens=32, max_retries=0)
         results_summary = str(turn_steps)[:2000]
         judge_prompt = (
             f"Цель: {goal_item.success_criteria or goal_item.intent}\n"
@@ -1400,7 +1400,7 @@ class ReActRunner:
         from core.llm import LLMClient, Message
 
         scenarios_text = "\n".join(f"- {item.stage.value}: {item.payload[:200]}" for item in items)
-        client = LLMClient(model="yandexgpt", temperature=0.0, max_tokens=256, max_retries=0)
+        client = LLMClient(model="google/gemini-3.1-flash-lite", provider="openrouter", temperature=0.0, max_tokens=256, max_retries=0)
         try:
             resp = await client.complete(
                 [
@@ -2201,7 +2201,8 @@ class ReActRunner:
         prompt = "\n\n".join(user_parts)
 
         client = LLMClient(
-            model="yandexgpt",
+            model="google/gemini-3.1-flash-lite",
+            provider="openrouter",
             temperature=0.0,
             max_tokens=1200,
             max_retries=0,

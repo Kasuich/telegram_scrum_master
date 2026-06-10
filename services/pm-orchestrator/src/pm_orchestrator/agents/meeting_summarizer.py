@@ -73,5 +73,5 @@ class MeetingSummarizerAgent(BaseAgent):
     tools = []
     action_only = False
     llm_configs = [
-        LLMSettings(model="yandexgpt", temperature=0.2),
+        LLMSettings(model="google/gemini-3.1-flash-lite", provider="openrouter", temperature=0.2),
     ]

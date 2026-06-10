@@ -14,7 +14,7 @@ Example::
         name = "help_agent"
         description = "Answers help questions"
         prompt = "You are a helpful assistant."
-        llm_configs = [LLMSettings(model="yandexgpt-lite")]
+        llm_configs = [LLMSettings(model="google/gemini-3.1-flash-lite", provider="openrouter")]
 
     MY_BOT = BaseBot(
         bot_id="help_bot",

@@ -219,7 +219,7 @@ async def decompose_goal_llm(message: str) -> GoalPlan:
     """One LLM call with structured JSON output. Falls back to rules on failure."""
     from core.llm import LLMClient, Message
 
-    client = LLMClient(model="yandexgpt", temperature=0.0, max_tokens=512, max_retries=0)
+    client = LLMClient(model="google/gemini-3.1-flash-lite", provider="openrouter", temperature=0.0, max_tokens=512, max_retries=0)
     try:
         resp = await client.complete(
             [
