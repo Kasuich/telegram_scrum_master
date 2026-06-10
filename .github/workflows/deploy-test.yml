@@ -38,6 +38,7 @@ jobs:
             DB_PASSWORD=${{ secrets.TEST_DB_PASSWORD }}
             YC_API_KEY=${{ secrets.YC_API_KEY }}
             YC_FOLDER_ID=${{ secrets.YC_FOLDER_ID }}
+            OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
             TRACKER_TOKEN=${{ secrets.TRACKER_TOKEN }}
             TRACKER_ORG_ID=${{ secrets.TRACKER_ORG_ID }}
             TRACKER_ORG_TYPE=${{ secrets.TRACKER_ORG_TYPE }}

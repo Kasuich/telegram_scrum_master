@@ -160,5 +160,6 @@ class PMAgent(BaseAgent):
         "get_meeting_transcript",
     ]
     llm_configs = [
+        LLMSettings(model="google/gemini-3.1-flash-lite", provider="openrouter", temperature=0.2),
         LLMSettings(model="gpt-oss-120b", temperature=0.2),
     ]

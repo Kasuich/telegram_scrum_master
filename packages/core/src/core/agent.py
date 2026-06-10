@@ -29,7 +29,7 @@ Usage example::
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -48,6 +48,7 @@ class LLMSettings(BaseModel):
     """
 
     model: str = "gpt-oss-120b"
+    provider: Literal["yandex", "openrouter"] = "yandex"
     temperature: float | None = None
     max_tokens: int | None = None
     timeout: int | None = None
@@ -55,7 +56,7 @@ class LLMSettings(BaseModel):
 
     def to_client_kwargs(self) -> dict[str, Any]:
         """Return kwargs suitable for LLMClient constructor."""
-        kwargs: dict[str, Any] = {"model": self.model}
+        kwargs: dict[str, Any] = {"model": self.model, "provider": self.provider}
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
         if self.max_tokens is not None:

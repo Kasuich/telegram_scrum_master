@@ -1,9 +1,11 @@
 """
-LLM integration via Yandex Cloud's OpenAI-compatible Responses API.
+LLM integration supporting multiple providers.
 
-Default model: yandexgpt (served at ``/v1/responses``). Request/response
-follow the OpenAI Responses schema (``instructions`` + ``input`` items,
-``output`` items with ``function_call`` / ``message``).
+Supported providers:
+- ``yandex``: Yandex Cloud OpenAI-compatible Responses API
+  (``instructions`` + ``input`` items, ``output`` items).
+- ``openrouter``: OpenRouter Chat Completions API
+  (standard ``messages`` / ``choices`` format).
 """
 
 from __future__ import annotations
@@ -21,8 +23,8 @@ from core.config import get_config
 from core.exceptions import LLMError
 from core.metrics import llm_latency_seconds, llm_requests_total, llm_tokens_total
 
-# Yandex Cloud OpenAI-compatible Responses API endpoint.
-_RESPONSES_URL = "https://ai.api.cloud.yandex.net/v1/responses"
+# Provider-specific endpoints.
+_YANDEX_RESPONSES_URL = "https://ai.api.cloud.yandex.net/v1/responses"
 
 
 class Message(BaseModel):
@@ -73,10 +75,12 @@ class LLMResponse(BaseModel):
 
 class LLMClient:
     """
-    LLM client for Yandex Cloud's OpenAI-compatible Responses API.
+    LLM client supporting multiple providers.
 
     Features:
-    - Tool calling support (OpenAI function tools)
+    - Yandex Cloud OpenAI-compatible Responses API
+    - OpenRouter Chat Completions API (Gemini, Claude, etc.)
+    - Tool calling support (both native and emulated)
     - Streaming responses (client-side char chunking)
     - Automatic retries with exponential backoff
     - Token usage tracking
@@ -85,6 +89,7 @@ class LLMClient:
     def __init__(
         self,
         model: str | None = None,
+        provider: Literal["yandex", "openrouter"] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout: int | None = None,
@@ -92,13 +97,27 @@ class LLMClient:
     ):
         config = get_config()
         llm_cfg = config.llm
-        self.model = model if model is not None else llm_cfg.yandexgpt_model
-        self.temperature = temperature if temperature is not None else llm_cfg.yandexgpt_temperature
-        self.max_tokens = max_tokens if max_tokens is not None else llm_cfg.yandexgpt_max_tokens
-        self.timeout = timeout if timeout is not None else llm_cfg.yandexgpt_timeout
-        self.max_retries = max_retries if max_retries is not None else llm_cfg.yandexgpt_max_retries
-        self.api_key = config.yandex.yc_api_key
-        self.folder_id = config.yandex.yc_folder_id
+        self.provider = provider or "yandex"
+
+        if self.provider == "openrouter":
+            self.model = model if model is not None else llm_cfg.openrouter_default_model
+            self.temperature = temperature if temperature is not None else 0.7
+            self.max_tokens = max_tokens if max_tokens is not None else 4000
+            self.timeout = timeout if timeout is not None else 60
+            self.max_retries = max_retries if max_retries is not None else 3
+            self.api_key = llm_cfg.openrouter_api_key
+            self.base_url = llm_cfg.openrouter_base_url
+            self.folder_id = ""
+        else:
+            self.model = model if model is not None else llm_cfg.yandexgpt_model
+            self.temperature = temperature if temperature is not None else llm_cfg.yandexgpt_temperature
+            self.max_tokens = max_tokens if max_tokens is not None else llm_cfg.yandexgpt_max_tokens
+            self.timeout = timeout if timeout is not None else llm_cfg.yandexgpt_timeout
+            self.max_retries = max_retries if max_retries is not None else llm_cfg.yandexgpt_max_retries
+            self.api_key = config.yandex.yc_api_key
+            self.folder_id = config.yandex.yc_folder_id
+            self.base_url = ""
+
         self._client: httpx.AsyncClient | None = None
 
     @property
@@ -137,7 +156,13 @@ class LLMClient:
 
         for attempt in range(self.max_retries + 1):
             try:
-                return await self._complete_impl(messages, tools, stream, start_time, **kwargs)
+                if self.provider == "openrouter":
+                    return await self._complete_openrouter(
+                        messages, tools, start_time, **kwargs
+                    )
+                return await self._complete_yandex(
+                    messages, tools, stream, start_time, **kwargs
+                )
             except httpx.TimeoutException as e:
                 if attempt == self.max_retries:
                     llm_requests_total.labels(model=self.model, status="error").inc()
@@ -153,7 +178,9 @@ class LLMClient:
         llm_requests_total.labels(model=self.model, status="error").inc()
         raise LLMError("Max retries exceeded")
 
-    async def _complete_impl(
+    # ── Yandex (Responses API) ────────────────────────────────────────
+
+    async def _complete_yandex(
         self,
         messages: list[Message | dict[str, Any]],
         tools: list[dict[str, Any]] | None,
@@ -161,7 +188,7 @@ class LLMClient:
         start_time: float,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Internal completion implementation (OpenAI Responses API)."""
+        """Yandex Cloud OpenAI-compatible Responses API."""
         instructions, input_items = self._split_messages(messages)
 
         request_body: dict[str, Any] = {
@@ -182,29 +209,21 @@ class LLMClient:
             "Content-Type": "application/json",
         }
 
-        response = await self.client.post(_RESPONSES_URL, headers=headers, json=request_body)
+        response = await self.client.post(_YANDEX_RESPONSES_URL, headers=headers, json=request_body)
         response.raise_for_status()
 
         data = response.json()
         latency_ms = int((time.monotonic() - start_time) * 1000)
 
-        content, tool_calls, finish_reason = self._parse_output(data)
+        content, tool_calls, finish_reason = self._parse_yandex_output(data)
         if not tool_calls and content and tools:
             emulated_call = self._parse_emulated_tool_call(content, tools)
             if emulated_call is not None:
                 content = None
                 tool_calls = [emulated_call]
-        usage = self._parse_usage(data)
+        usage = self._parse_yandex_usage(data)
 
-        llm_requests_total.labels(model=self.model, status="success").inc()
-        llm_latency_seconds.labels(model=self.model).observe(latency_ms / 1000)
-        if usage.prompt_tokens:
-            llm_tokens_total.labels(model=self.model, token_type="prompt").inc(usage.prompt_tokens)
-        if usage.completion_tokens:
-            llm_tokens_total.labels(model=self.model, token_type="completion").inc(
-                usage.completion_tokens
-            )
-
+        self._record_metrics(usage, latency_ms)
         return LLMResponse(
             content=content,
             tool_calls=tool_calls,
@@ -213,6 +232,82 @@ class LLMClient:
             latency_ms=latency_ms,
             finish_reason=finish_reason,
         )
+
+    # ── OpenRouter (Chat Completions API) ──────────────────────────────
+
+    async def _complete_openrouter(
+        self,
+        messages: list[Message | dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        start_time: float,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """OpenRouter Chat Completions API."""
+        chat_messages = self._messages_to_chat(messages)
+
+        request_body: dict[str, Any] = {
+            "model": self.model,
+            "messages": chat_messages,
+            "temperature": kwargs.get("temperature", self.temperature),
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+        }
+        if tools:
+            # OpenRouter expects OpenAI-style nested function tools:
+            # {"type":"function","function":{"name":...,"parameters":...}}
+            request_body["tools"] = self._tools_to_openrouter(tools)
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        url = f"{self.base_url}/chat/completions"
+        response = await self.client.post(url, headers=headers, json=request_body)
+        response.raise_for_status()
+
+        data = response.json()
+        latency_ms = int((time.monotonic() - start_time) * 1000)
+
+        content, tool_calls, finish_reason = self._parse_openrouter_output(data)
+        if not tool_calls and content and tools:
+            emulated_call = self._parse_emulated_tool_call(content, tools)
+            if emulated_call is not None:
+                content = None
+                tool_calls = [emulated_call]
+        usage = self._parse_openrouter_usage(data)
+
+        self._record_metrics(usage, latency_ms)
+        return LLMResponse(
+            content=content,
+            tool_calls=tool_calls,
+            usage=usage,
+            model=self.model,
+            latency_ms=latency_ms,
+            finish_reason=finish_reason,
+        )
+
+    # ── Message conversion helpers ────────────────────────────────────
+
+    @staticmethod
+    def _messages_to_chat(
+        messages: list[Message | dict[str, Any]],
+    ) -> list[dict[str, str]]:
+        """Convert messages to OpenAI Chat Completions format.
+
+        System messages become regular ``{"role":"system","content":...}``
+        items (no separate ``instructions`` field).
+        """
+        items: list[dict[str, str]] = []
+        for msg in messages:
+            if isinstance(msg, Message):
+                role, content = msg.role, msg.content
+            else:
+                role = msg.get("role", "user")
+                content = msg.get("content", msg.get("text", ""))
+            content = str(content or "").strip()
+            if content:
+                items.append({"role": role, "content": content})
+        return items
 
     @staticmethod
     def _split_messages(
@@ -241,7 +336,32 @@ class LLMClient:
         return "\n\n".join(instructions_parts), input_items
 
     @staticmethod
-    def _parse_output(
+    def _tools_to_openrouter(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert flat tool definitions to OpenRouter nested function format.
+
+        Our internal tools are ``{"name":..., "description":..., "parameters":...}``.
+        OpenRouter expects ``{"type":"function","function":{"name":...,"parameters":...}}``.
+        """
+        result: list[dict[str, Any]] = []
+        for tool in tools:
+            if tool.get("type") == "function" and "function" in tool:
+                # Already in nested format — pass through.
+                result.append(tool)
+                continue
+            func_def: dict[str, Any] = {}
+            if "name" in tool:
+                func_def["name"] = tool["name"]
+            if "description" in tool:
+                func_def["description"] = tool["description"]
+            if "parameters" in tool:
+                func_def["parameters"] = tool["parameters"]
+            result.append({"type": "function", "function": func_def})
+        return result
+
+    # ── Yandex response parsing ───────────────────────────────────────
+
+    @staticmethod
+    def _parse_yandex_output(
         data: dict[str, Any],
     ) -> tuple[str | None, list[ToolCall] | None, str | None]:
         """Parse Responses-API ``output`` into (content, tool_calls, finish_reason)."""
@@ -273,6 +393,66 @@ class LLMClient:
         return content, (tool_calls or None), finish_reason
 
     @staticmethod
+    def _parse_yandex_usage(data: dict[str, Any]) -> TokenUsage:
+        """Parse Responses-API ``usage`` (input_tokens / output_tokens / total_tokens)."""
+        u = data.get("usage", {})
+        return TokenUsage(
+            prompt_tokens=int(u.get("input_tokens", 0) or 0),
+            completion_tokens=int(u.get("output_tokens", 0) or 0),
+            total_tokens=int(u.get("total_tokens", 0) or 0),
+        )
+
+    # ── OpenRouter response parsing ────────────────────────────────────
+
+    @staticmethod
+    def _parse_openrouter_output(
+        data: dict[str, Any],
+    ) -> tuple[str | None, list[ToolCall] | None, str | None]:
+        """Parse OpenRouter Chat Completions response."""
+        choices = data.get("choices", [])
+        if not choices:
+            return None, None, "empty"
+
+        choice = choices[0]
+        message = choice.get("message", {})
+        finish_reason = choice.get("finish_reason", "stop")
+
+        # Content
+        content: str | None = message.get("content") or None
+
+        # Tool calls
+        raw_tool_calls = message.get("tool_calls")
+        tool_calls: list[ToolCall] | None = None
+        if raw_tool_calls:
+            parsed: list[ToolCall] = []
+            for tc in raw_tool_calls:
+                func = tc.get("function", {})
+                raw_args = func.get("arguments", "{}")
+                if isinstance(raw_args, str):
+                    try:
+                        args = json.loads(raw_args) if raw_args else {}
+                    except json.JSONDecodeError:
+                        args = {}
+                else:
+                    args = raw_args or {}
+                parsed.append(ToolCall(name=func.get("name", ""), arguments=args))
+            tool_calls = parsed or None
+
+        return content, tool_calls, finish_reason
+
+    @staticmethod
+    def _parse_openrouter_usage(data: dict[str, Any]) -> TokenUsage:
+        """Parse OpenRouter usage."""
+        u = data.get("usage", {})
+        return TokenUsage(
+            prompt_tokens=int(u.get("prompt_tokens", 0) or 0),
+            completion_tokens=int(u.get("completion_tokens", 0) or 0),
+            total_tokens=int(u.get("total_tokens", 0) or 0),
+        )
+
+    # ── Shared helpers ─────────────────────────────────────────────────
+
+    @staticmethod
     def _parse_emulated_tool_call(
         content: str,
         tools: list[dict[str, Any]],
@@ -301,15 +481,16 @@ class LLMClient:
             return None
         return ToolCall(name=tool_name, arguments=arguments)
 
-    @staticmethod
-    def _parse_usage(data: dict[str, Any]) -> TokenUsage:
-        """Parse Responses-API ``usage`` (input_tokens / output_tokens / total_tokens)."""
-        u = data.get("usage", {})
-        return TokenUsage(
-            prompt_tokens=int(u.get("input_tokens", 0) or 0),
-            completion_tokens=int(u.get("output_tokens", 0) or 0),
-            total_tokens=int(u.get("total_tokens", 0) or 0),
-        )
+    def _record_metrics(self, usage: TokenUsage, latency_ms: int) -> None:
+        """Record Prometheus metrics for a successful request."""
+        llm_requests_total.labels(model=self.model, status="success").inc()
+        llm_latency_seconds.labels(model=self.model).observe(latency_ms / 1000)
+        if usage.prompt_tokens:
+            llm_tokens_total.labels(model=self.model, token_type="prompt").inc(usage.prompt_tokens)
+        if usage.completion_tokens:
+            llm_tokens_total.labels(model=self.model, token_type="completion").inc(
+                usage.completion_tokens
+            )
 
     async def stream_complete(
         self,

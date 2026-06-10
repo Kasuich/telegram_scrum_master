@@ -30,6 +30,7 @@ ENV = {
     "YC_FOLDER_ID": "b1g1234567890abcdef",
     "TRACKER_TOKEN": "test_tracker_token_12345678901234567890",
     "TRACKER_ORG_ID": "12345678901234567890",
+    "OPENROUTER_API_KEY": "sk-or-v1-test-key-1234567890",
 }
 
 # ---------------------------------------------------------------------------
@@ -656,3 +657,213 @@ class TestCompleteConvenience:
                     await complete([Message(role="user", content="hi")])
 
             instance.close.assert_called_once()
+
+
+# ===========================================================================
+# 6. TestLLMClientOpenRouter
+# ===========================================================================
+
+
+MOCK_OPENROUTER_TEXT_RESPONSE = {
+    "choices": [
+        {
+            "index": 0,
+            "finish_reason": "stop",
+            "message": {"role": "assistant", "content": "Hello from Gemini!"},
+        }
+    ],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+}
+
+MOCK_OPENROUTER_TOOL_CALL_RESPONSE = {
+    "choices": [
+        {
+            "index": 0,
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "index": 0,
+                        "id": "call_abc123",
+                        "function": {
+                            "name": "tracker_create_issue",
+                            "arguments": '{"queue": "TEST", "summary": "Fix bug"}',
+                        },
+                    }
+                ],
+            },
+        }
+    ],
+    "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+}
+
+
+class TestLLMClientOpenRouter:
+    """Tests for LLMClient with provider='openrouter'."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_config(self) -> None:
+        with patch.dict("os.environ", ENV):
+            from core.config import set_config
+
+            set_config(None)
+
+    @pytest.mark.asyncio
+    async def test_openrouter_text_response(self) -> None:
+        with patch.dict("os.environ", ENV):
+            from core.config import set_config
+
+            set_config(None)
+            client = LLMClient(
+                model="google/gemini-3.1-flash-lite",
+                provider="openrouter",
+                max_retries=0,
+            )
+
+            mock_http_resp = _make_httpx_response(MOCK_OPENROUTER_TEXT_RESPONSE)
+            client._client = AsyncMock()
+            client._client.post = AsyncMock(return_value=mock_http_resp)
+
+            result = await client.complete([Message(role="user", content="Hello")])
+
+            assert result.content == "Hello from Gemini!"
+            assert result.tool_calls is None
+            assert result.model == "google/gemini-3.1-flash-lite"
+            assert result.finish_reason == "stop"
+
+    @pytest.mark.asyncio
+    async def test_openrouter_tool_call_response(self) -> None:
+        with patch.dict("os.environ", ENV):
+            from core.config import set_config
+
+            set_config(None)
+            client = LLMClient(
+                model="google/gemini-3.1-flash-lite",
+                provider="openrouter",
+                max_retries=0,
+            )
+
+            mock_http_resp = _make_httpx_response(MOCK_OPENROUTER_TOOL_CALL_RESPONSE)
+            client._client = AsyncMock()
+            client._client.post = AsyncMock(return_value=mock_http_resp)
+
+            result = await client.complete(
+                [Message(role="user", content="create issue")],
+                tools=[{"name": "tracker_create_issue", "parameters": {"type": "object"}}],
+            )
+
+            assert result.content is None
+            assert result.tool_calls is not None
+            assert len(result.tool_calls) == 1
+            assert result.tool_calls[0].name == "tracker_create_issue"
+            assert result.tool_calls[0].arguments == {"queue": "TEST", "summary": "Fix bug"}
+            assert result.finish_reason == "tool_calls"
+
+    @pytest.mark.asyncio
+    async def test_openrouter_token_usage(self) -> None:
+        with patch.dict("os.environ", ENV):
+            from core.config import set_config
+
+            set_config(None)
+            client = LLMClient(
+                model="google/gemini-3.1-flash-lite",
+                provider="openrouter",
+                max_retries=0,
+            )
+
+            mock_http_resp = _make_httpx_response(MOCK_OPENROUTER_TEXT_RESPONSE)
+            client._client = AsyncMock()
+            client._client.post = AsyncMock(return_value=mock_http_resp)
+
+            result = await client.complete([Message(role="user", content="hi")])
+
+            assert result.usage is not None
+            assert result.usage.prompt_tokens == 10
+            assert result.usage.completion_tokens == 5
+            assert result.usage.total_tokens == 15
+
+    @pytest.mark.asyncio
+    async def test_openrouter_bearer_auth_header(self) -> None:
+        with patch.dict("os.environ", ENV):
+            from core.config import set_config
+
+            set_config(None)
+            client = LLMClient(
+                model="google/gemini-3.1-flash-lite",
+                provider="openrouter",
+                max_retries=0,
+            )
+
+            mock_http_resp = _make_httpx_response(MOCK_OPENROUTER_TEXT_RESPONSE)
+            client._client = AsyncMock()
+            client._client.post = AsyncMock(return_value=mock_http_resp)
+
+            await client.complete([Message(role="user", content="hi")])
+
+            call_kwargs = client._client.post.call_args
+            headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
+            assert headers["Authorization"] == f"Bearer {ENV['OPENROUTER_API_KEY']}"
+
+    def test_openrouter_client_init(self) -> None:
+        with patch.dict("os.environ", ENV):
+            from core.config import set_config
+
+            set_config(None)
+            client = LLMClient(
+                model="google/gemini-3.1-flash-lite",
+                provider="openrouter",
+            )
+            assert client.provider == "openrouter"
+            assert client.model == "google/gemini-3.1-flash-lite"
+            assert client.api_key == ENV["OPENROUTER_API_KEY"]
+            assert client.base_url == "https://openrouter.ai/api/v1"
+
+    def test_tools_to_openrouter_converts_flat_format(self) -> None:
+        flat_tool = {
+            "name": "create_task",
+            "description": "Create a task",
+            "parameters": {"type": "object", "properties": {"title": {"type": "string"}}},
+        }
+        result = LLMClient._tools_to_openrouter([flat_tool])
+        assert len(result) == 1
+        assert result[0]["type"] == "function"
+        assert "function" in result[0]
+        assert result[0]["function"]["name"] == "create_task"
+        assert result[0]["function"]["parameters"]["properties"]["title"]["type"] == "string"
+
+    def test_tools_to_openrouter_passes_through_nested(self) -> None:
+        nested = {
+            "type": "function",
+            "function": {
+                "name": "create_task",
+                "parameters": {"type": "object"},
+            },
+        }
+        result = LLMClient._tools_to_openrouter([nested])
+        assert result[0] == nested
+
+    @pytest.mark.asyncio
+    async def test_openrouter_retry_on_500(self) -> None:
+        with patch.dict("os.environ", ENV):
+            from core.config import set_config
+
+            set_config(None)
+            client = LLMClient(
+                model="google/gemini-3.1-flash-lite",
+                provider="openrouter",
+                max_retries=2,
+            )
+
+            error_resp = _make_httpx_response({}, status_code=500)
+            ok_resp = _make_httpx_response(MOCK_OPENROUTER_TEXT_RESPONSE)
+            client._client = AsyncMock()
+            client._client.post = AsyncMock(side_effect=[error_resp, error_resp, ok_resp])
+
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                result = await client.complete([Message(role="user", content="hi")])
+
+            assert client._client.post.call_count == 3
+            assert result.content == "Hello from Gemini!"
