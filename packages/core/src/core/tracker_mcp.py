@@ -360,6 +360,20 @@ def _normalize_tool_arguments(name: str, arguments: dict[str, Any]) -> dict[str,
         queue = get_config().tracker.tracker_queue.strip()
         if queue:
             normalized["queue"] = queue
+    elif name == "ChangeIssueStatus":
+        resolution = str(normalized.get("resolution") or "").strip().lower()
+        status = str(
+            normalized.get("status")
+            or normalized.get("transition")
+            or normalized.get("transition_id")
+            or ""
+        ).strip().lower()
+        closes_issue = status in {"done", "closed", "close", "resolved", "закрыт", "закрыто"}
+        if closes_issue and (
+            not resolution
+            or resolution in {"done", "closed", "close", "resolved", "решено", "закрыто"}
+        ):
+            normalized["resolution"] = "fixed"
     return normalized
 
 

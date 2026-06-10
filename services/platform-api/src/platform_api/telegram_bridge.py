@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from core.db import get_session
-from core.invocation import InvocationContext, format_actor_prefixed_message
+from core.invocation import InvocationContext
 from core.models import (
     TelegramBusinessConnection,
     TelegramCallbackToken,
@@ -615,10 +615,9 @@ async def _route_inbound_message(
             reply = f"Не удалось отправить бота на встречу: {exc}"
         result = SimpleNamespace(reply=reply, pending_confirm=None)
     else:
-        agent_message = format_actor_prefixed_message(body, context)
         result = await rpc_client.invoke(
             "pm_agent",
-            agent_message,
+            body,
             _telegram_session_id(installation, message),
             context=context,
         )

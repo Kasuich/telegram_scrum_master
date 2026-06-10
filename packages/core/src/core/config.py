@@ -139,7 +139,7 @@ class LLMConfig(BaseSettings):
     """LLM (Language Model) configuration."""
 
     yandexgpt_model: str = Field(
-        default="yandexgpt",
+        default="gpt-oss-120b",
         description="Default model name (served via Yandex OpenAI-compatible Responses API)",
         examples=["yandexgpt", "yandexgpt-lite", "gpt-oss-120b", "gpt-oss-20b"],
     )

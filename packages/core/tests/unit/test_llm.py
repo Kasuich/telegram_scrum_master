@@ -173,7 +173,7 @@ class TestLLMClientInit:
 
             set_config(None)  # clear cached singleton
             client = LLMClient()
-            assert client.model == "yandexgpt"
+            assert client.model == "gpt-oss-120b"
             assert client.temperature == 0.7
             assert client.max_tokens == 4000
             assert client.timeout == 60
@@ -290,7 +290,7 @@ class TestLLMClientComplete:
             assert isinstance(result, LLMResponse)
             assert result.content == "Hello, World!"
             assert result.tool_calls is None
-            assert result.model == "yandexgpt"
+            assert result.model == "gpt-oss-120b"
             assert result.finish_reason == "completed"
 
     @pytest.mark.asyncio

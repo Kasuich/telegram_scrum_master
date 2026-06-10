@@ -11,9 +11,9 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
-from core.models import AgentInstance, Organization, Team
+from core.models import AgentInstance, AgentSpec, Organization, Team
 
 
 async def ensure_default_team(
@@ -92,4 +92,17 @@ async def ensure_agent_instances(
     return result
 
 
-__all__ = ["ensure_default_team", "ensure_agent_instances"]
+async def ensure_default_agent_models(session: Any) -> None:
+    """Apply code-owned model defaults without overwriting custom choices."""
+    await session.execute(
+        update(AgentSpec)
+        .where(AgentSpec.name == "pm_agent", AgentSpec.model == "yandexgpt")
+        .values(model="gpt-oss-120b")
+    )
+
+
+__all__ = [
+    "ensure_default_team",
+    "ensure_agent_instances",
+    "ensure_default_agent_models",
+]

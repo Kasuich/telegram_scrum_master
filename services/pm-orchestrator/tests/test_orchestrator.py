@@ -220,10 +220,12 @@ class TestOrchestratorService:
             patch("core.db.get_session", fake_get_session),
             patch("core.seed.ensure_default_team", AsyncMock()),
             patch("core.seed.ensure_agent_instances", AsyncMock()),
+            patch("core.seed.ensure_default_agent_models", AsyncMock()) as ensure_models,
             patch("core.daily_digest.ensure_daily_digest_scheduled_job", AsyncMock()) as ensure_job,
         ):
             await svc.ensure_schema_and_seed()
 
+        ensure_models.assert_awaited_once()
         ensure_job.assert_awaited_once()
 
 

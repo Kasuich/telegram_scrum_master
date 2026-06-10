@@ -47,7 +47,7 @@ class LLMSettings(BaseModel):
     each in order and moves to the next on failure.
     """
 
-    model: str = "yandexgpt"
+    model: str = "gpt-oss-120b"
     temperature: float | None = None
     max_tokens: int | None = None
     timeout: int | None = None

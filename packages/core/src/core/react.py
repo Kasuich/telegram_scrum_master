@@ -677,11 +677,54 @@ _SAFETY_FILTER_PHRASES = (
     "Я не могу обсуждать эту тему",
     "Давайте поговорим о чём-нибудь ещё",
     "не могу помочь с этим запросом",
+    "Цель запроса",
+    "Нет необходимости в дополнительных действиях",
+    "Достигнут лимит итераций",
 )
 
 
 def _is_safety_filtered(text: str) -> bool:
     return any(phrase in text for phrase in _SAFETY_FILTER_PHRASES)
+
+
+def _issue_field(issue: dict[str, Any], name: str) -> str:
+    value = issue.get(name)
+    if isinstance(value, dict):
+        return str(value.get("display") or value.get("name") or value.get("key") or "").strip()
+    return str(value or "").strip()
+
+
+def _format_read_tool_reply(tool_name: str, result: Any) -> str | None:
+    """Render simple issue reads without another LLM pass."""
+    if tool_name == "GetIssue" and isinstance(result, dict):
+        issues = [result]
+    elif tool_name == "GetIssues":
+        if isinstance(result, list):
+            issues = result
+        elif isinstance(result, dict):
+            raw_issues = result.get("issues") or result.get("values") or result.get("items")
+            issues = raw_issues if isinstance(raw_issues, list) else []
+        else:
+            issues = []
+    else:
+        return None
+
+    issues = [issue for issue in issues if isinstance(issue, dict)]
+    if not issues:
+        return "Задачи не найдены."
+
+    lines: list[str] = []
+    for issue in issues[:20]:
+        key = _issue_field(issue, "key")
+        summary = _issue_field(issue, "summary")
+        status = _issue_field(issue, "status")
+        assignee = _issue_field(issue, "assignee")
+        title = " ".join(part for part in (key, f"«{summary}»" if summary else "") if part)
+        details = ", ".join(part for part in (status, assignee) if part)
+        lines.append(f"- {title}" + (f" ({details})" if details else ""))
+    if len(issues) > 20:
+        lines.append(f"- …и ещё {len(issues) - 20}")
+    return "\n".join(lines)
 
 
 def _action_only_final_reply(
@@ -1822,6 +1865,8 @@ class ReActRunner:
 
             # --- Auto-execute ---
             exec_args = dict(tool_call.arguments)
+            result: Any = None
+            tool_succeeded = False
             if not freeform and tool_call.name == "tracker_apply_backlog_plan":
                 from core.backlog_tools import plan_json_looks_invalid
 
@@ -1829,6 +1874,7 @@ class ReActRunner:
                     exec_args["plan_json"] = ""
             try:
                 result = await self._execute_tool(tool_call.name, exec_args)
+                tool_succeeded = True
                 steps.append(
                     _step(
                         "tool_result",
@@ -1892,6 +1938,19 @@ class ReActRunner:
                 )
                 feedback = _tool_error_message(tool_call.name, err_msg, action_only=action_only)
 
+            if (
+                freeform
+                and tool_succeeded
+                and state.get("_stage") == StageId.QUERY.value
+            ):
+                read_reply = _format_read_tool_reply(tool_call.name, result)
+                if read_reply:
+                    return ScenarioOutcome(
+                        kind="done",
+                        turn_steps=list(steps[steps_before_turn:]),
+                        reply=read_reply,
+                    )
+
             if freeform:
                 feedback += _progress_checkpoint(
                     state.get("_current_goal_item"),
@@ -1954,7 +2013,7 @@ class ReActRunner:
                     clarification=question,
                 )
         report = _build_action_report(turn_steps)
-        reply = report or "Достигнут лимит итераций. Пожалуйста, переформулируйте запрос."
+        reply = report or "Не удалось завершить запрос. Уточни задачу или ключ задачи."
         if state.get("_plan"):
             return ScenarioOutcome(
                 kind="max_iter",

@@ -166,6 +166,7 @@ def _freeform_pm_agent():
             "CreateIssue",
             "ChangeIssueStatus",
             "UpdateIssue",
+            "GetIssues",
             "tracker_board_snapshot",
         ]
         llm_configs = [LLMSettings(model="yandexgpt", max_retries=0)]
@@ -214,6 +215,33 @@ class TestBoardStage:
 
 
 class TestQueryStage:
+    @patch.dict("os.environ", ENV)
+    async def test_freeform_get_issues_finishes_without_verbalization_call(self):
+        @platform_tool(name="GetIssues", risk="low", scopes=["tracker:read"])
+        async def get_issues(query: str = "") -> dict:
+            return {
+                "issues": [
+                    {
+                        "key": "DARKHORSE-272",
+                        "summary": "Проверить файлы",
+                        "status": {"display": "В работе"},
+                    }
+                ]
+            }
+
+        runner = _runner(_freeform_pm_agent())
+        post = AsyncMock(
+            return_value=_http_ok(
+                _tool_call_response("GetIssues", {"query": "Assignee: me"})
+            )
+        )
+        with patch("httpx.AsyncClient.post", post):
+            result = await runner.invoke("Какие задачи у меня?", "query-my-issues")
+
+        assert post.await_count == 1
+        assert result.reply == "- DARKHORSE-272 «Проверить файлы» (В работе)"
+        assert "Цель запроса" not in (result.reply or "")
+
     @patch.dict("os.environ", ENV)
     async def test_query_terminates_on_snapshot(self):
         _register_fake_tracker_tools()

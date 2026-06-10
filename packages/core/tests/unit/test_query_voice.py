@@ -1,7 +1,12 @@
 """Tests for QUERY-voice: read-questions return LLM text, not action reports."""
 from __future__ import annotations
 
-from core.react import _action_only_final_reply, _READ_VOICE_STAGES, _build_action_report
+from core.react import (
+    _READ_VOICE_STAGES,
+    _action_only_final_reply,
+    _build_action_report,
+    _format_read_tool_reply,
+)
 from core.stage_graph import StageId
 
 
@@ -35,7 +40,13 @@ def test_action_only_final_reply_no_stage_uses_action_report():
 
 
 def test_action_only_final_reply_transition_uses_action_report():
-    steps = [{"kind": "tool_result", "tool_name": "tracker_close_issue", "result": {"issue": {"key": "D-1"}}}]
+    steps = [
+        {
+            "kind": "tool_result",
+            "tool_name": "tracker_close_issue",
+            "result": {"issue": {"key": "D-1"}},
+        }
+    ]
     llm_text = "Закрыто!"
     reply = _action_only_final_reply(steps, llm_text, had_tool=True, stage_id=StageId.TRANSITION)
     assert reply != llm_text
@@ -63,10 +74,41 @@ def test_read_voice_stages_only_contains_query():
 
 def test_query_voice_scenario_not_action_report():
     steps = [
-        {"kind": "tool_result", "tool_name": "tracker_board_snapshot", "result": {"total": 3, "by_assignee_sp": {"Коля": 8}}}
+        {
+            "kind": "tool_result",
+            "tool_name": "tracker_board_snapshot",
+            "result": {"total": 3, "by_assignee_sp": {"Коля": 8}},
+        }
     ]
     llm_text = "На доске 3 задачи, у Коли 8 SP."
     report = _build_action_report(steps)
     reply = _action_only_final_reply(steps, llm_text, had_tool=True, stage_id=StageId.QUERY)
     assert reply == llm_text
     assert reply != report
+
+
+def test_get_issues_reply_is_rendered_without_service_text():
+    reply = _format_read_tool_reply(
+        "GetIssues",
+        {
+            "issues": [
+                {
+                    "key": "DARKHORSE-272",
+                    "summary": "Проверить файлы",
+                    "status": {"display": "В работе"},
+                    "assignee": {"display": "Roman Shinkarenko"},
+                }
+            ]
+        },
+    )
+    assert reply == "- DARKHORSE-272 «Проверить файлы» (В работе, Roman Shinkarenko)"
+
+
+def test_internal_goal_message_is_filtered():
+    reply = _action_only_final_reply(
+        [{"kind": "tool_result", "tool_name": "GetIssues", "result": {"issues": []}}],
+        "Цель запроса достигнута. Нет необходимости в дополнительных действиях.",
+        had_tool=True,
+        stage_id=StageId.QUERY,
+    )
+    assert "Цель запроса" not in reply

@@ -424,7 +424,7 @@ async def test_route_inbound_message_creates_agent_reply_outbox() -> None:
     assert routing["pending_confirm_id"] is None
     invoke.assert_awaited_once()
     assert invoke.await_args.args[0] == "pm_agent"
-    assert invoke.await_args.args[1] == "Ivan Petrov: /status"
+    assert invoke.await_args.args[1] == "/status"
     assert invoke.await_args.kwargs["context"].actor_display_name == "Ivan Petrov"
     assert invoke.await_args.args[2].startswith(f"telegram:{installation.id}:")
     context = invoke.await_args.kwargs["context"]

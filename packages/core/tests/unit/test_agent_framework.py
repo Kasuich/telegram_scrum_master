@@ -134,7 +134,7 @@ def entry_point(agent):
 class TestLLMSettings:
     def test_defaults(self):
         s = LLMSettings()
-        assert s.model == "yandexgpt"
+        assert s.model == "gpt-oss-120b"
         assert s.temperature is None
         assert s.max_tokens is None
 
@@ -181,7 +181,7 @@ class TestBaseAgentClassValidation:
         a = _Agent()
         cfgs = a._effective_llm_configs()
         assert len(cfgs) == 1
-        assert cfgs[0].model == "yandexgpt"
+        assert cfgs[0].model == "gpt-oss-120b"
 
 
 # ---------------------------------------------------------------------------
