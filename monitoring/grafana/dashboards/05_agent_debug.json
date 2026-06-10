@@ -1,6 +1,6 @@
 {
   "title": "pm_agent",
-  "uid": "pm-agent",
+  "uid": "pm-agent-debug",
   "tags": ["pm-agent"],
   "schemaVersion": 38,
   "version": 6,
