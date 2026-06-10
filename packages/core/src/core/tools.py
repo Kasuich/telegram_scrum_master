@@ -36,11 +36,17 @@ class Tool(BaseModel):
     risk: Literal["low", "medium", "high"] = "medium"
     scopes: list[str] = Field(default_factory=list)
     parameters: list[ToolParameter] = Field(default_factory=list)
+    input_schema: dict[str, Any] | None = None
+    passthrough_arguments: bool = False
 
     model_config = {"arbitrary_types_allowed": True}
 
     def execute(self, **kwargs: Any) -> Any:
         """Execute tool with provided arguments."""
+        if self.passthrough_arguments:
+            if asyncio.iscoroutinefunction(self.func):
+                return self._execute_async(**kwargs)
+            return self.func(**kwargs)
         sig = inspect.signature(self.func)
         bound = sig.bind(**kwargs)
         bound.apply_defaults()
@@ -74,6 +80,14 @@ class Tool(BaseModel):
 
     def validate_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Validate tool arguments against parameter schema."""
+        if self.input_schema is not None:
+            required = self.input_schema.get("required", [])
+            missing = [name for name in required if name not in arguments]
+            if missing:
+                raise ToolValidationError(
+                    f"Missing required argument: {', '.join(missing)}"
+                )
+            return dict(arguments)
         validated = {}
         for param in self.parameters:
             if param.name in arguments:
@@ -110,6 +124,12 @@ class Tool(BaseModel):
 
     def get_schema(self) -> dict[str, Any]:
         """Generate OpenAPI-style schema for this tool."""
+        if self.input_schema is not None:
+            return {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.input_schema,
+            }
         properties: dict[str, Any] = {}
         required: list[str] = []
 
