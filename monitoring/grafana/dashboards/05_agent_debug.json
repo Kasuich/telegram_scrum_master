@@ -267,6 +267,41 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 16,
+      "title": "User → Agent Response Latency",
+      "description": "End-to-end time from Telegram message receipt to agent response queued. Shows avg, p95 and p99.",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 57},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"lineWidth": 2, "fillOpacity": 10}
+        },
+        "overrides": []
+      },
+      "options": {"tooltip": {"mode": "multi"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}},
+      "targets": [
+        {
+          "expr": "avg by (category) (rate(telegram_bridge_e2e_latency_seconds_sum{category=\"agent\"}[$__rate_interval]) / rate(telegram_bridge_e2e_latency_seconds_count{category=\"agent\"}[$__rate_interval]))",
+          "legendFormat": "avg (agent)",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, category) (rate(telegram_bridge_e2e_latency_seconds_bucket{category=\"agent\"}[$__rate_interval])))",
+          "legendFormat": "p95 (agent)",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, category) (rate(telegram_bridge_e2e_latency_seconds_bucket{category=\"agent\"}[$__rate_interval])))",
+          "legendFormat": "p99 (agent)",
+          "refId": "C"
+        }
+      ]
     }
   ]
 }

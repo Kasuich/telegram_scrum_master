@@ -102,13 +102,20 @@ try:
         ["team_id"],
     )
     BUSINESS_CONNECTION_TOTAL = Counter(
-        "telegram_business_connection_total",
+        "telegram_bridge_business_connection_total",
         "Business connection events",
         ["event"],
+    )
+    BRIDGE_E2E_LATENCY = Histogram(
+        "telegram_bridge_e2e_latency_seconds",
+        "End-to-end latency from message receipt to agent response queued",
+        ["category"],
+        buckets=[0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0],
     )
 except ImportError:
     BRIDGE_INGEST_TOTAL = BRIDGE_INGEST_LATENCY = BRIDGE_LEASE_TOTAL = BRIDGE_ACK_TOTAL = None
     OUTBOX_PENDING = OUTBOX_LEASED = OUTBOX_DEAD_LETTER = BUSINESS_CONNECTION_TOTAL = None
+    BRIDGE_E2E_LATENCY = None
 
 
 class HeartbeatRequest(BaseModel):
@@ -1263,6 +1270,10 @@ async def ingest_event(session: AsyncSession, data: IngestEventRequest) -> dict[
 
     update.status = "processed"
     update.processed_at = datetime.now(timezone.utc)
+    if BRIDGE_E2E_LATENCY is not None and update.received_at is not None:
+        e2e_seconds = (update.processed_at - update.received_at).total_seconds()
+        category = "agent" if routing_result and routing_result.get("session_id") else "other"
+        BRIDGE_E2E_LATENCY.labels(category=category).observe(e2e_seconds)
     await session.flush()
     return {
         "update_id": str(update.id),
