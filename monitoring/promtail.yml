@@ -36,6 +36,9 @@ scrape_configs:
             kind: kind
             tool_name: tool_name
             ts: ts
+            duration_s: duration_s
+            offset_s: offset_s
+            step_idx: step_idx
       - labels:
           agent_name:
           session_id:

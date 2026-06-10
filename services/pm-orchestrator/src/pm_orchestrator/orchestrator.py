@@ -383,6 +383,9 @@ class OrchestratorService:
                 "stage": event.get("stage"),
                 "kind": event.get("kind"),
                 "tool_name": event.get("tool_name"),
+                "step_idx": event.get("step_idx"),
+                "duration_s": event.get("duration_s"),
+                "offset_s": event.get("offset_s"),
                 "truncated": True,
                 "preview": payload[:12_000],
             },
@@ -404,7 +407,29 @@ class OrchestratorService:
         }
         stage = "unknown"
         tool_risks = {tool.name: tool.risk for tool in get_registry().list()}
+
+        from datetime import datetime, timezone
+
+        step_timestamps: list[datetime | None] = []
         for step in result.steps:
+            ts_str = step.get("ts")
+            if ts_str:
+                try:
+                    step_timestamps.append(
+                        datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+                    )
+                except (ValueError, TypeError):
+                    step_timestamps.append(None)
+            else:
+                step_timestamps.append(None)
+
+        trace_start: datetime | None = None
+        for ts in step_timestamps:
+            if ts is not None:
+                trace_start = ts
+                break
+
+        for step_idx, step in enumerate(result.steps):
             kind = str(step.get("kind", "unknown"))
             if kind == "stage":
                 stage = str(step.get("stage") or "unknown")
@@ -479,13 +504,27 @@ class OrchestratorService:
                 ).inc()
 
             if step.get("kind") in loggable:
+                current_ts = step_timestamps[step_idx] if step_idx < len(step_timestamps) else None
+                prev_ts = step_timestamps[step_idx - 1] if step_idx > 0 and step_idx - 1 < len(step_timestamps) else None
+                duration_s = None
+                offset_s = None
+                if current_ts and trace_start:
+                    offset_s = (current_ts - trace_start).total_seconds()
+                if prev_ts and current_ts:
+                    duration_s = (current_ts - prev_ts).total_seconds()
+
                 event = {
                     "event": "agent_step",
                     "agent_name": agent_name,
                     "session_id": result.session_id,
                     "stage": stage,
+                    "step_idx": step_idx,
                     **step,
                 }
+                if duration_s is not None:
+                    event["duration_s"] = round(duration_s, 3)
+                if offset_s is not None:
+                    event["offset_s"] = round(offset_s, 3)
                 self.actions.append(event)
                 logger.info(self._event_json(event))
         if len(self.actions) > 500:
