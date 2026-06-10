@@ -487,9 +487,6 @@ class OrchestratorService:
                     **step,
                 }
                 self.actions.append(event)
-                logger.info(
-                    "agent_event",
-                    extra={"agent_event": json.loads(self._event_json(event))},
-                )
+                logger.info(self._event_json(event))
         if len(self.actions) > 500:
             self.actions[:] = self.actions[-500:]

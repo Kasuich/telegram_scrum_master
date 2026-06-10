@@ -19,5 +19,23 @@ scrape_configs:
     pipeline_stages:
       - docker: {}
       - match:
-          selector: '{job="docker"} !~ "agent_event"'
+          selector: '{job="docker"} !~ "agent_step"'
           action: drop
+      - json:
+          expressions:
+            event: event
+            agent_name: agent_name
+            session_id: session_id
+            stage: stage
+            kind: kind
+            tool_name: tool_name
+            ts: ts
+      - labels:
+          agent_name:
+          session_id:
+          stage:
+          kind:
+          tool_name:
+      - timestamp:
+           source: ts
+           format: ISO8601
