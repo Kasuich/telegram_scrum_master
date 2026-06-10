@@ -53,6 +53,7 @@ class DigestMember:
     done_today: list[DigestIssue]
     standup_response: str = ""
     applied_items: list[str] = field(default_factory=list)
+    sections: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -218,6 +219,91 @@ def _poll_result_rows(poll: TelegramStandupPoll) -> list[dict[str, Any]]:
         if isinstance(results, list):
             result_rows.extend(row for row in results if isinstance(row, dict))
     return result_rows
+
+
+def _poll_event_rows(poll: TelegramStandupPoll) -> list[dict[str, Any]]:
+    applied = poll.applied_json if isinstance(poll.applied_json, dict) else {}
+    rows = applied.get("events")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+
+    events: list[dict[str, Any]] = []
+    for row in _poll_result_rows(poll):
+        if not isinstance(row, dict):
+            continue
+        event = dict(row)
+        if not event.get("ok") and not event.get("commented"):
+            event["kind"] = "not_applied"
+        events.append(event)
+    return events
+
+
+def _event_key(event: dict[str, Any]) -> str:
+    issue_key = str(event.get("issue_key") or "").strip()
+    if issue_key:
+        return issue_key
+    if event.get("kind") == "create":
+        return str(event.get("summary") or "новая задача").strip()
+    issue_number = event.get("issue_number")
+    if issue_number is not None:
+        return f"задача {issue_number}"
+    return "сообщение"
+
+
+def _event_result_text(event: dict[str, Any]) -> str:
+    kind = str(event.get("kind") or "")
+    ok = bool(event.get("ok"))
+    transitioned = event.get("transitioned")
+    commented = bool(event.get("commented"))
+    if kind == "create" and ok:
+        return "создана задача"
+    if kind == "close" and ok:
+        return "закрыто"
+    if kind == "cancel" and ok and transitioned:
+        return "отменено"
+    if kind == "in_progress" and ok:
+        return "переведено в работу"
+    if kind == "blocked" and ok and transitioned:
+        return "отмечен блокер"
+    if commented:
+        return "добавлен комментарий, статус не изменен"
+    if event.get("error") == "unknown_issue_number":
+        return "номер задачи не найден"
+    if event.get("error") == "ambiguous":
+        return "не удалось понять задачу"
+    error = str(event.get("error") or "").strip()
+    return f"не применено: {error}" if error else "не применено"
+
+
+def _event_line(event: dict[str, Any]) -> str:
+    key = _event_key(event)
+    text = str(event.get("text") or event.get("summary") or "").strip()
+    result = _event_result_text(event)
+    if text:
+        return f"- {key}: {result}. Текст: {text}"
+    return f"- {key}: {result}"
+
+
+def _event_section(event: dict[str, Any]) -> str:
+    kind = str(event.get("kind") or "")
+    if kind == "create" and event.get("ok"):
+        return "Создано"
+    if kind == "comment" and event.get("ok"):
+        return "Комментарии"
+    if kind == "blocked" or event.get("commented") and not event.get("transitioned", True):
+        return "Стопперы"
+    if kind in {"close", "cancel", "in_progress"} and event.get("ok"):
+        return "Статусы"
+    return "Не применено"
+
+
+def _poll_event_sections(poll: TelegramStandupPoll) -> dict[str, list[str]]:
+    ordered = ["Статусы", "Создано", "Комментарии", "Стопперы", "Не применено"]
+    sections: dict[str, list[str]] = {name: [] for name in ordered}
+    for event in _poll_event_rows(poll):
+        section = _event_section(event)
+        sections.setdefault(section, []).append(_event_line(event))
+    return {name: lines for name, lines in sections.items() if lines}
 
 
 def _poll_response_text(poll: TelegramStandupPoll) -> str:
@@ -415,6 +501,7 @@ async def _load_standup_polls_by_login(
     stmt = select(TelegramStandupPoll).where(
         TelegramStandupPoll.team_id == team_id,
         TelegramStandupPoll.local_hour == local_hour,
+        TelegramStandupPoll.status.in_(("pending", "answered", "ambiguous")),
     )
     polls = (await session.execute(stmt)).scalars().all()
     return {poll.tracker_login.casefold(): poll for poll in polls}
@@ -466,26 +553,20 @@ async def build_daily_digest_report(
     for member in members:
         login_key = member.tracker_login.casefold()
         poll = polls_by_login.get(login_key)
-        member_done: list[DigestIssue] = []
-        member_in_progress: list[DigestIssue] = []
-        if poll is not None:
-            poll_done = _poll_done_issues(poll, display=member.display)
-            done_keys = {issue.key for issue in poll_done}
-            poll_work = _poll_work_issues(
-                poll,
-                display=member.display,
-                done_keys=done_keys,
-            )
-            member_done = _merge_issue_lists(poll_done)
-            member_in_progress = _merge_issue_lists(poll_work)
+        if poll is None:
+            continue
+        sections = _poll_event_sections(poll)
+        if not sections:
+            continue
         digest_members.append(
             DigestMember(
                 login=member.tracker_login,
                 display=member.display,
-                in_progress=member_in_progress,
-                done_today=member_done,
+                in_progress=[],
+                done_today=[],
                 standup_response=_poll_response_text(poll) if poll is not None else "",
                 applied_items=_poll_applied_items(poll) if poll is not None else [],
+                sections=sections,
             )
         )
 
@@ -516,28 +597,23 @@ def _format_issue_section(issues: list[DigestIssue], *, limit: int) -> list[str]
 
 
 def format_daily_digest(report: DigestReport, *, max_issues_per_section: int | None = None) -> str:
-    cfg = get_config().daily_digest
-    limit = max_issues_per_section or cfg.max_issues_per_section
+    del max_issues_per_section
     lines = [
         f"Ежедневный отчёт по задачам за {report.local_date}",
         f"Очередь: {report.queue}",
         "",
     ]
     if not report.members:
-        lines.append("Участники команды очереди не найдены.")
+        lines.append("За период нет обновлений.")
         return "\n".join(lines)
 
     for member in report.members:
         lines.append(f"{member.display} (@{member.login})")
-        lines.append("В работе:")
-        lines.extend(_format_issue_section(member.in_progress, limit=limit))
-        lines.append("Сделано сегодня:")
-        lines.extend(_format_issue_section(member.done_today, limit=limit))
-        lines.append("Ответ на опрос:")
-        lines.append(member.standup_response or "- ответа пока нет")
-        if member.applied_items:
-            lines.append("Изменения:")
-            lines.extend(f"- {item}" for item in member.applied_items)
+        for title, section_lines in member.sections.items():
+            if not section_lines:
+                continue
+            lines.append(f"{title}:")
+            lines.extend(section_lines)
         lines.append("")
     return "\n".join(lines).rstrip()
 

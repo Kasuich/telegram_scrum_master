@@ -145,6 +145,21 @@ def test_parse_numbered_list_cancel_and_dash_new_task() -> None:
     assert actions[-1].text == "поспать"
 
 
+def test_parse_tracker_issue_keys() -> None:
+    actions = parse_standup_response("DARKHORSE-195, DARKHORSE-187 closed")
+
+    assert [action.issue_key for action in actions] == ["DARKHORSE-195", "DARKHORSE-187"]
+    assert [action.kind for action in actions] == ["comment", "close"]
+
+
+def test_parse_all_tasks_done() -> None:
+    actions = parse_standup_response("все задачи сделал, делаю сейчас презентацию")
+
+    assert len(actions) == 1
+    assert actions[0].kind == "close"
+    assert actions[0].all_issues is True
+
+
 class _Result:
     def __init__(self, value):
         self.value = value
@@ -341,7 +356,74 @@ async def test_handle_standup_response_accumulates_multiple_messages() -> None:
     assert poll.status == "answered"
     assert poll.response_text == "task 1 done\n\ntask 2 in progress"
     assert len(poll.applied_json["responses"]) == 2
+    assert len(poll.applied_json["events"]) == 2
     assert [row["issue_key"] for row in poll.applied_json["results"]] == [
         "TEST-1",
         "TEST-2",
     ]
+
+
+async def test_handle_standup_response_closes_all_active_snapshot_tasks() -> None:
+    team_id = uuid.uuid4()
+    telegram_user_id = uuid.uuid4()
+    poll = TelegramStandupPoll(
+        id=uuid.uuid4(),
+        team_id=team_id,
+        installation_id=uuid.uuid4(),
+        telegram_user_id=telegram_user_id,
+        user_id=uuid.uuid4(),
+        tracker_login="alice",
+        local_hour="2026-06-08T11",
+        issues_json=[
+            {"number": 1, "key": "TEST-1", "summary": "Build bot", "status": "Open"},
+            {"number": 2, "key": "TEST-2", "summary": "Deploy bot", "status": "In Progress"},
+            {"number": 3, "key": "TEST-3", "summary": "Old task", "status": "Closed"},
+        ],
+        applied_json={},
+        status="pending",
+    )
+    tracker = _FakeTracker()
+
+    reply = await handle_standup_response(
+        _ResponseSession(poll),
+        team_id=team_id,
+        telegram_user_id=telegram_user_id,
+        text="все задачи сделал",
+        client_factory=lambda: tracker,
+    )
+
+    assert reply is not None
+    assert [row[0] for row in tracker.transitions] == ["TEST-1", "TEST-2"]
+    assert [event["issue_key"] for event in poll.applied_json["events"]] == [
+        "TEST-1",
+        "TEST-2",
+    ]
+
+
+async def test_handle_standup_response_keeps_ambiguous_update() -> None:
+    team_id = uuid.uuid4()
+    telegram_user_id = uuid.uuid4()
+    poll = TelegramStandupPoll(
+        id=uuid.uuid4(),
+        team_id=team_id,
+        installation_id=uuid.uuid4(),
+        telegram_user_id=telegram_user_id,
+        user_id=uuid.uuid4(),
+        tracker_login="alice",
+        local_hour="2026-06-08T11",
+        issues_json=[{"number": 1, "key": "TEST-1", "summary": "Build bot"}],
+        applied_json={},
+        status="pending",
+    )
+
+    reply = await handle_standup_response(
+        _ResponseSession(poll),
+        team_id=team_id,
+        telegram_user_id=telegram_user_id,
+        text="done",
+        client_factory=lambda: _FakeTracker(),
+    )
+
+    assert reply is not None
+    assert poll.status == "ambiguous"
+    assert poll.applied_json["events"][0]["kind"] == "not_applied"

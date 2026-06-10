@@ -58,6 +58,8 @@ class ParsedAction:
     kind: str
     text: str
     issue_number: int | None = None
+    issue_key: str | None = None
+    all_issues: bool = False
 
 
 def _timezone(name: str) -> ZoneInfo:
@@ -442,9 +444,11 @@ async def send_team_standup_poll(
 
 _TASK_RE = re.compile(r"(?:задач[аиу]?|task)\s*#?\s*(\d+)", re.IGNORECASE)
 _NUMBERED_TASK_RE = re.compile(r"(?<!\S)(\d{1,3})\s*[\).:]", re.IGNORECASE)
+_ISSUE_KEY_RE = re.compile(r"\b(?P<issue_key>[A-Z][A-Z0-9_]+-\d+)\b", re.IGNORECASE)
 _ACTION_MARKER_RE = re.compile(
     r"(?P<task>(?:задач[аиу]?|task)\s*#?\s*(?P<task_num>\d+))"
     r"|(?P<numbered>(?<!\S)(?P<numbered_num>\d{1,3})\s*[\).:])"
+    r"|(?P<issue_key>\b(?P<issue_key_value>[A-Z][A-Z0-9_]+-\d+)\b)"
     r"|(?P<new>(?:новая\s+задача|new\s+task)\s*[:\-—]?\s*)",
     re.IGNORECASE,
 )
@@ -452,6 +456,7 @@ _NEW_TASK_RE = re.compile(
     r"(?:новая\s+задача|new\s+task)\s*[:\-—]\s*(.+)",
     re.IGNORECASE | re.DOTALL,
 )
+_ALL_TASKS_RE = re.compile(r"(?:все\s+задачи|all\s+tasks)", re.IGNORECASE)
 
 
 def is_standup_response(text: str) -> bool:
@@ -459,8 +464,13 @@ def is_standup_response(text: str) -> bool:
     return bool(
         _TASK_RE.search(text)
         or _NUMBERED_TASK_RE.search(text)
+        or _ISSUE_KEY_RE.search(text)
         or _NEW_TASK_RE.search(text)
         or "закры" in lowered
+        or "сделан" in lowered
+        or "сделал" in lowered
+        or "выполн" in lowered
+        or "done" in lowered
     )
 
 
@@ -468,7 +478,7 @@ def _action_kind(text: str) -> str:
     lowered = text.casefold()
     if any(
         token in lowered
-        for token in ("закры", "готов", "сделан", "done", "closed")
+        for token in ("закры", "готов", "сделан", "сделал", "выполн", "done", "closed")
     ):
         return "close"
     if any(token in lowered for token in ("отмен", "отмени", "cancel")):
@@ -490,11 +500,18 @@ def _action_kind(text: str) -> str:
     return "comment"
 
 
-def _iter_response_parts(text: str) -> list[tuple[str, int | None, str]]:
+def _all_tasks_kind(text: str) -> str | None:
+    if not _ALL_TASKS_RE.search(text):
+        return None
+    kind = _action_kind(text)
+    return kind if kind != "comment" else None
+
+
+def _iter_response_parts(text: str) -> list[tuple[str, int | None, str, str | None]]:
     matches = list(_ACTION_MARKER_RE.finditer(text))
     if not matches:
         return []
-    parts: list[tuple[str, int | None, str]] = []
+    parts: list[tuple[str, int | None, str, str | None]] = []
     for index, match in enumerate(matches):
         next_start = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         raw = text[match.start() : next_start].strip(" \n\r\t.;,")
@@ -502,22 +519,35 @@ def _iter_response_parts(text: str) -> list[tuple[str, int | None, str]]:
         if not raw:
             continue
         if match.group("new") is not None:
-            parts.append(("create", None, body))
+            parts.append(("create", None, body, None))
+            continue
+        if match.group("issue_key") is not None:
+            issue_key = str(match.group("issue_key_value") or "").upper()
+            parts.append(("issue_key", None, raw, issue_key))
             continue
         number = match.group("task_num") or match.group("numbered_num")
         if number is None:
             continue
-        parts.append(("issue", int(number), raw))
+        parts.append(("issue", int(number), raw, None))
     return parts
 
 
 def parse_standup_response(text: str) -> list[ParsedAction]:
     actions: list[ParsedAction] = []
-    for marker_kind, issue_number, text_part in _iter_response_parts(text):
+    for marker_kind, issue_number, text_part, issue_key in _iter_response_parts(text):
         if marker_kind == "create":
             summary = text_part.strip()
             if summary:
                 actions.append(ParsedAction(kind="create", text=summary))
+            continue
+        if marker_kind == "issue_key":
+            actions.append(
+                ParsedAction(
+                    kind=_action_kind(text_part),
+                    issue_key=issue_key,
+                    text=text_part,
+                )
+            )
             continue
         actions.append(
             ParsedAction(
@@ -526,6 +556,10 @@ def parse_standup_response(text: str) -> list[ParsedAction]:
                 text=text_part,
             )
         )
+    if not actions:
+        kind = _all_tasks_kind(text)
+        if kind is not None:
+            actions.append(ParsedAction(kind=kind, text=text.strip(), all_issues=True))
     return actions
 
 
@@ -559,6 +593,48 @@ def _issue_by_number(poll: TelegramStandupPoll) -> dict[int, dict[str, Any]]:
     return result
 
 
+def _issue_by_key(poll: TelegramStandupPoll) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for item in poll.issues_json or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip().upper()
+        if key:
+            result[key] = item
+    return result
+
+
+def _is_terminal_issue(item: dict[str, Any]) -> bool:
+    status = str(item.get("status") or "").casefold()
+    terminal_tokens = ("закры", "отмен", "closed", "cancel", "resolved")
+    return any(token in status for token in terminal_tokens)
+
+
+def _expanded_actions(actions: list[ParsedAction], poll: TelegramStandupPoll) -> list[ParsedAction]:
+    expanded: list[ParsedAction] = []
+    for action in actions:
+        if not action.all_issues:
+            expanded.append(action)
+            continue
+        for item in poll.issues_json or []:
+            if not isinstance(item, dict) or _is_terminal_issue(item):
+                continue
+            try:
+                issue_number = int(item.get("number"))
+            except (TypeError, ValueError):
+                issue_number = None
+            issue_key = str(item.get("key") or "").strip().upper() or None
+            expanded.append(
+                ParsedAction(
+                    kind=action.kind,
+                    text=action.text,
+                    issue_number=issue_number,
+                    issue_key=issue_key,
+                )
+            )
+    return expanded
+
+
 async def _try_transition(
     client: TrackerClient,
     issue_key: str,
@@ -588,6 +664,7 @@ async def _apply_action(
     action: ParsedAction,
     poll: TelegramStandupPoll,
     issue_map: dict[int, dict[str, Any]],
+    issue_key_map: dict[str, dict[str, Any]],
     queue: str,
 ) -> dict[str, Any]:
     if action.kind == "create":
@@ -600,19 +677,27 @@ async def _apply_action(
         return {
             "kind": "create",
             "summary": action.text,
+            "text": action.text,
             "issue_key": str(issue.get("key") or ""),
             "ok": True,
         }
 
-    if action.issue_number is None or action.issue_number not in issue_map:
+    issue_key = str(action.issue_key or "").strip().upper()
+    if issue_key:
+        issue_item = issue_key_map.get(issue_key, {"key": issue_key})
+    elif action.issue_number is not None and action.issue_number in issue_map:
+        issue_item = issue_map[action.issue_number]
+        issue_key = str(issue_item.get("key") or "").strip()
+    else:
         return {
             "kind": action.kind,
             "issue_number": action.issue_number,
+            "issue_key": action.issue_key,
+            "text": action.text,
             "ok": False,
             "error": "unknown_issue_number",
         }
 
-    issue_key = str(issue_map[action.issue_number].get("key") or "")
     if action.kind == "close":
         ok, error = await _try_transition(
             client,
@@ -627,8 +712,11 @@ async def _apply_action(
             "kind": "close",
             "issue_number": action.issue_number,
             "issue_key": issue_key,
+            "summary": issue_item.get("summary"),
+            "text": action.text,
             "ok": ok,
             "error": error,
+            "commented": not ok,
         }
     if action.kind == "cancel":
         await client.comment_issue(issue_key, action.text)
@@ -641,9 +729,12 @@ async def _apply_action(
             "kind": "cancel",
             "issue_number": action.issue_number,
             "issue_key": issue_key,
+            "summary": issue_item.get("summary"),
+            "text": action.text,
             "ok": True,
             "transitioned": ok,
             "error": error if not ok else None,
+            "commented": True,
         }
     if action.kind == "in_progress":
         ok, error = await _try_transition(
@@ -658,8 +749,11 @@ async def _apply_action(
             "kind": "in_progress",
             "issue_number": action.issue_number,
             "issue_key": issue_key,
+            "summary": issue_item.get("summary"),
+            "text": action.text,
             "ok": ok,
             "error": error,
+            "commented": not ok,
         }
     if action.kind == "blocked":
         await client.comment_issue(issue_key, action.text)
@@ -669,9 +763,12 @@ async def _apply_action(
             "kind": "blocked",
             "issue_number": action.issue_number,
             "issue_key": issue_key,
+            "summary": issue_item.get("summary"),
+            "text": action.text,
             "ok": True,
             "transitioned": ok,
             "error": error if not ok else None,
+            "commented": True,
         }
 
     await client.comment_issue(issue_key, action.text)
@@ -679,7 +776,10 @@ async def _apply_action(
         "kind": "comment",
         "issue_number": action.issue_number,
         "issue_key": issue_key,
+        "summary": issue_item.get("summary"),
+        "text": action.text,
         "ok": True,
+        "commented": True,
     }
 
 
@@ -714,6 +814,8 @@ def _format_apply_report(results: list[dict[str, Any]]) -> str:
                 lines.append(f"- {key}: добавил комментарий")
         elif item.get("error") == "unknown_issue_number":
             lines.append(f"- задача {item.get('issue_number')}: номера нет")
+        elif item.get("error") == "ambiguous":
+            lines.append("- не применил: не понял, к какой задаче относится сообщение")
         else:
             key = item.get("issue_key") or item.get("issue_number")
             lines.append(f"- {key}: не применил")
@@ -747,12 +849,33 @@ def _poll_response_history(poll: TelegramStandupPoll) -> list[dict[str, Any]]:
     return []
 
 
+def _event_from_result(action: ParsedAction | None, result: dict[str, Any]) -> dict[str, Any]:
+    event = {
+        "kind": result.get("kind") or (action.kind if action is not None else "not_applied"),
+        "issue_number": result.get(
+            "issue_number",
+            action.issue_number if action is not None else None,
+        ),
+        "issue_key": result.get("issue_key") or (action.issue_key if action is not None else None),
+        "summary": result.get("summary"),
+        "text": result.get("text") or (action.text if action is not None else ""),
+        "ok": bool(result.get("ok")),
+        "transitioned": result.get("transitioned"),
+        "commented": bool(result.get("commented")),
+        "error": result.get("error"),
+    }
+    if not event["ok"] and not event["commented"]:
+        event["kind"] = "not_applied"
+    return event
+
+
 def _append_poll_response(
     poll: TelegramStandupPoll,
     *,
     text: str,
     actions: list[ParsedAction],
     results: list[dict[str, Any]],
+    events: list[dict[str, Any]],
     responded_at: datetime,
 ) -> None:
     history = _poll_response_history(poll)
@@ -762,12 +885,14 @@ def _append_poll_response(
             "text": text,
             "actions": action_rows,
             "results": results,
+            "events": events,
             "responded_at": responded_at.isoformat(),
         }
     )
 
     all_actions: list[dict[str, Any]] = []
     all_results: list[dict[str, Any]] = []
+    all_events: list[dict[str, Any]] = []
     response_texts: list[str] = []
     for item in history:
         response_text = str(item.get("text") or "").strip()
@@ -775,12 +900,14 @@ def _append_poll_response(
             response_texts.append(response_text)
         all_actions.extend(_as_dict_list(item.get("actions")))
         all_results.extend(_as_dict_list(item.get("results")))
+        all_events.extend(_as_dict_list(item.get("events")))
 
     poll.response_text = "\n\n".join(response_texts)
     poll.applied_json = {
         "responses": history,
         "actions": all_actions,
         "results": all_results,
+        "events": all_events,
     }
 
 
@@ -803,9 +930,11 @@ async def handle_standup_response(
     if poll is None:
         return None
 
-    actions = parse_standup_response(text)
+    parsed_actions = parse_standup_response(text)
+    actions = _expanded_actions(parsed_actions, poll)
     queue = await _load_team_queue(session, team_id)
     issue_map = _issue_by_number(poll)
+    issue_key_map = _issue_by_key(poll)
     results: list[dict[str, Any]] = []
     if actions:
         async with client_factory() as client:
@@ -817,6 +946,7 @@ async def handle_standup_response(
                             action=action,
                             poll=poll,
                             issue_map=issue_map,
+                            issue_key_map=issue_key_map,
                             queue=queue,
                         )
                     )
@@ -826,20 +956,36 @@ async def handle_standup_response(
                         {
                             "kind": action.kind,
                             "issue_number": action.issue_number,
+                            "issue_key": action.issue_key,
+                            "text": action.text,
                             "ok": False,
                             "error": str(exc),
                         }
                     )
+    else:
+        results.append(
+            {
+                "kind": "not_applied",
+                "text": text,
+                "ok": False,
+                "error": "ambiguous",
+            }
+        )
 
     responded_at = datetime.now(timezone.utc)
+    events = [
+        _event_from_result(actions[index] if index < len(actions) else None, result)
+        for index, result in enumerate(results)
+    ]
     _append_poll_response(
         poll,
         text=text,
         actions=actions,
         results=results,
+        events=events,
         responded_at=responded_at,
     )
-    poll.status = "answered" if actions else "ambiguous"
+    poll.status = "answered" if any(event.get("ok") for event in events) else "ambiguous"
     poll.responded_at = responded_at
     await session.flush()
     return _format_apply_report(results)
