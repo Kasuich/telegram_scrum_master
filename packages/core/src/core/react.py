@@ -705,6 +705,74 @@ def _action_only_final_reply(
     return llm_text
 
 
+def _successful_tool_names(turn_steps: list[dict[str, Any]]) -> set[str]:
+    names: set[str] = set()
+    for step in turn_steps:
+        if step.get("kind") != "tool_result":
+            continue
+        result = step.get("result")
+        if isinstance(result, dict) and result.get("error"):
+            continue
+        names.add(str(step.get("tool_name") or ""))
+    return names
+
+
+def _freeform_unfinished_action(
+    user_message: str,
+    stage_id: StageId | None,
+    turn_steps: list[dict[str, Any]],
+) -> str | None:
+    """Return feedback when an explicit user action is still missing."""
+    successful = _successful_tool_names(turn_steps)
+    normalized = user_message.lower().replace("ё", "е")
+
+    if stage_id == StageId.QUERY and not successful.intersection(
+        {
+            "GetIssue",
+            "GetIssues",
+            "GetIssueLinks",
+            "GetProject",
+            "GetPortfolio",
+            "GetGoal",
+            "SearchEntities",
+            "tracker_board_snapshot",
+        }
+    ):
+        return (
+            "Запрос требует актуальных данных. Не отвечай из памяти или истории: "
+            "вызови подходящий read-инструмент."
+        )
+
+    create_done = bool(successful.intersection({"CreateIssue", "tracker_create_issue"}))
+    if not create_done:
+        return None
+
+    status_requested = "статус" in normalized and any(
+        marker in normalized
+        for marker in ("в работе", "в работу", "in progress", "inprogress")
+    )
+    if status_requested and not successful.intersection(
+        {"ChangeIssueStatus", "tracker_transition_issue"}
+    ):
+        return (
+            "Пользователь явно попросил перевести созданную задачу в работу. "
+            "Не описывай следующий вызов текстом: вызови ChangeIssueStatus сейчас."
+        )
+
+    deadline_requested = any(
+        marker in normalized
+        for marker in ("за 1 день", "за один день", "через день", "до завтра")
+    )
+    if deadline_requested and not successful.intersection(
+        {"UpdateIssue", "tracker_patch_issue", "tracker_update_issue"}
+    ):
+        return (
+            "Пользователь явно задал срок в один день. "
+            "Установи deadline через UpdateIssue, затем заверши ответ."
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # ReActRunner
 # ---------------------------------------------------------------------------
@@ -1539,6 +1607,16 @@ class ReActRunner:
                 )
 
                 if action_only:
+                    if freeform:
+                        unfinished = _freeform_unfinished_action(
+                            state.get("_turn_user_message", ""),
+                            StageId(state["_stage"]) if state.get("_stage") else None,
+                            turn_steps,
+                        )
+                        if unfinished:
+                            messages.append({"role": "user", "content": unfinished})
+                            await self._compact_session_history(state)
+                            continue
                     if not freeform:
                         question = clarification_needed(
                             state.get("_stage"),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import core.backlog_tools as _bt  # noqa: F401
+import core.tracker_tools as _tt  # noqa: F401
 from core.agent import BaseAgent, LLMSettings
 
 PROMPT = """Ты — автономный PM-агент для Яндекс Трекера. Работаешь через MCP-инструменты.
@@ -24,8 +25,12 @@ PROMPT = """Ты — автономный PM-агент для Яндекс Тр
 ## Принципы
 - Если ключ задачи известен, используй его напрямую.
 - Если объект неизвестен или неоднозначен, сначала найди его через GetIssues/SearchEntities.
+- Для агрегатов по всей доске («у кого больше задач», загрузка, просрочки, SP)
+  используй tracker_board_snapshot одним вызовом, а не GetIssues по каждому человеку.
 - Для чтения запрашивай только нужные fields и ограничивай comments_limit.
 - CreateIssue создаёт базовую карточку. Дополнительные поля меняй отдельным UpdateIssue.
+- Если пользователь попросил несколько действий, выполни весь каскад инструментами.
+  Не пиши «следующий вызов» и не описывай невыполненный tool call текстом.
 - Для нескольких однотипных изменений предпочитай bulk-инструменты и затем WaitForBulkChange.
 - После записи проверяй состояние чтением только при реальной неоднозначности ответа.
 - Не выдумывай ключи, статусы, логины и идентификаторы.
@@ -76,6 +81,7 @@ class PMAgent(BaseAgent):
         "BulkMove",
         "WaitForBulkChange",
         "BulkUpdateMetaEntities",
+        "tracker_board_snapshot",
         "backlog_plan",
         "call_agent",
         "schedule_task",

@@ -335,9 +335,12 @@ class TrackerMCPClient:
         if len(texts) != 1:
             return result
         try:
-            return json.loads(texts[0])
+            parsed = json.loads(texts[0])
         except (TypeError, json.JSONDecodeError):
             return texts[0]
+        if isinstance(parsed, dict) and parsed.get("error"):
+            raise TrackerMCPError(str(parsed["error"]))
+        return parsed
 
 
 def _content_text(result: dict[str, Any]) -> str:
@@ -349,6 +352,15 @@ def _content_text(result: dict[str, Any]) -> str:
         for block in content
         if isinstance(block, dict) and block.get("type") == "text"
     ).strip()
+
+
+def _normalize_tool_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(arguments)
+    if name == "CreateIssue":
+        queue = get_config().tracker.tracker_queue.strip()
+        if queue:
+            normalized["queue"] = queue
+    return normalized
 
 
 async def register_tracker_mcp_tools() -> list[str]:
@@ -368,7 +380,8 @@ async def register_tracker_mcp_tools() -> list[str]:
             continue
 
         async def invoke(_tool_name: str = name, **kwargs: Any) -> Any:
-            return await TrackerMCPClient().call_tool(_tool_name, kwargs)
+            arguments = _normalize_tool_arguments(_tool_name, kwargs)
+            return await TrackerMCPClient().call_tool(_tool_name, arguments)
 
         if registry.exists(name):
             registry.unregister(name)

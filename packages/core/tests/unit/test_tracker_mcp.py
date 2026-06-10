@@ -10,6 +10,7 @@ from core.tools import get_registry
 from core.tracker_mcp import (
     TrackerMCPClient,
     TrackerMCPError,
+    _normalize_tool_arguments,
     register_tracker_mcp_tools,
 )
 
@@ -96,6 +97,41 @@ async def test_call_tool_unwraps_json_text_content():
             "key": "TEST-1",
             "summary": "MCP",
         }
+
+
+@pytest.mark.asyncio
+async def test_call_tool_raises_for_error_inside_text_content():
+    client = TrackerMCPClient(
+        url="https://mcp.example.test/mcp",
+        token="secret-token",
+    )
+    result = {
+        "content": [
+            {
+                "type": "text",
+                "text": '{"error":"Failed to create issue: queue not found"}',
+            }
+        ]
+    }
+    with (
+        patch.object(client, "request", AsyncMock(return_value=result)),
+        pytest.raises(TrackerMCPError, match="queue not found"),
+    ):
+        await client.call_tool("CreateIssue", {"summary": "Presentation"})
+
+
+def test_create_issue_uses_configured_queue():
+    cfg = Config()
+    cfg.tracker.tracker_queue = "DARKHORSE"
+    set_config(cfg)
+
+    assert _normalize_tool_arguments(
+        "CreateIssue",
+        {"queue": "dark_horse", "summary": "Presentation"},
+    ) == {
+        "queue": "DARKHORSE",
+        "summary": "Presentation",
+    }
 
 
 def test_explicit_client_does_not_require_global_config():

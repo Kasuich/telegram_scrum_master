@@ -162,7 +162,12 @@ def _freeform_pm_agent():
         prompt = "Ты автономный PM-агент."
         action_only = True
         freeform_tool_planning = True
-        tools = ["CreateIssue"]
+        tools = [
+            "CreateIssue",
+            "ChangeIssueStatus",
+            "UpdateIssue",
+            "tracker_board_snapshot",
+        ]
         llm_configs = [LLMSettings(model="yandexgpt", max_retries=0)]
 
     return _FreeformPM()
@@ -365,6 +370,101 @@ class TestIntakeStage:
         first_request = post.call_args_list[0].kwargs["json"]
         assert "Уточни исполнителя" in str(first_request["input"])
         assert "Рабочая категория" not in first_request["instructions"]
+
+    @patch.dict("os.environ", ENV)
+    async def test_freeform_executes_full_create_status_deadline_cascade(self):
+        @platform_tool(name="CreateIssue", risk="medium", scopes=["tracker:write"])
+        async def create_issue(summary: str, queue: str, description: str = "") -> str:
+            return "DARKHORSE-271"
+
+        @platform_tool(name="ChangeIssueStatus", risk="high", scopes=["tracker:write"])
+        async def change_status(issue_key: str, status: str) -> dict:
+            return {"key": issue_key, "status": status}
+
+        @platform_tool(name="UpdateIssue", risk="medium", scopes=["tracker:write"])
+        async def update_issue(key: str, fields: dict[str, Any]) -> dict:
+            return {"key": key, **fields}
+
+        runner = _runner(_freeform_pm_agent())
+        post = AsyncMock(
+            side_effect=[
+                _http_ok(
+                    _tool_call_response(
+                        "CreateIssue",
+                        {
+                            "summary": "Создать презентацию",
+                            "description": "Подсветить сильные стороны",
+                            "queue": "DARKHORSE",
+                        },
+                    )
+                ),
+                _http_ok(
+                    _text_response(
+                        "Следующий вызов: ChangeIssueStatus("
+                        'issue_key="DARKHORSE-271", status="inProgress")'
+                    )
+                ),
+                _http_ok(
+                    _tool_call_response(
+                        "ChangeIssueStatus",
+                        {"issue_key": "DARKHORSE-271", "status": "inProgress"},
+                    )
+                ),
+                _http_ok(_text_response("Осталось установить срок.")),
+                _http_ok(
+                    _tool_call_response(
+                        "UpdateIssue",
+                        {
+                            "key": "DARKHORSE-271",
+                            "fields": {"deadline": "2026-06-11"},
+                        },
+                    )
+                ),
+                _http_ok(_text_response("Задача создана, взята в работу, срок установлен.")),
+            ]
+        )
+
+        with patch("httpx.AsyncClient.post", post):
+            result = await runner.invoke(
+                (
+                    "Нужно сделать задачу — создать презентацию, подсветить сильные стороны, "
+                    "поставь статус в работе, нужно за 1 день сделать."
+                ),
+                "create-cascade",
+            )
+
+        tool_results = [
+            step.get("tool_name")
+            for step in result.steps
+            if step.get("kind") == "tool_result"
+        ]
+        assert tool_results == ["CreateIssue", "ChangeIssueStatus", "UpdateIssue"]
+        assert "Следующий вызов" not in (result.reply or "")
+
+    @patch.dict("os.environ", ENV)
+    async def test_freeform_query_cannot_answer_without_read_tool(self):
+        @platform_tool(name="tracker_board_snapshot", risk="low", scopes=["tracker:read"])
+        async def board_snapshot() -> dict:
+            return {"by_assignee": {"Артём Цыканов": 13, "Roman Shinkarenko": 6}}
+
+        runner = _runner(_freeform_pm_agent())
+        post = AsyncMock(
+            side_effect=[
+                _http_ok(_text_response("У Артёма 13 задач.")),
+                _http_ok(_tool_call_response("tracker_board_snapshot", {})),
+                _http_ok(_text_response("У Артёма Цыканова больше всего задач: 13.")),
+            ]
+        )
+
+        with patch("httpx.AsyncClient.post", post):
+            result = await runner.invoke("У кого больше всего задач?", "query-live-data")
+
+        assert any(
+            step.get("kind") == "tool_result"
+            and step.get("tool_name") == "tracker_board_snapshot"
+            for step in result.steps
+        )
+        assert result.reply == "У Артёма Цыканова больше всего задач: 13."
 
     @patch.dict("os.environ", ENV)
     async def test_stage_frozen_not_rederived(self):
