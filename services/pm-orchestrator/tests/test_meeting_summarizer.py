@@ -17,6 +17,7 @@ os.environ.setdefault("YC_FOLDER_ID", "b1g0000000000000000")
 os.environ.setdefault("TRACKER_TOKEN", "stub_token_000000000000000000000")
 os.environ.setdefault("TRACKER_ORG_ID", "000000000000")
 os.environ.setdefault("TRACKER_ORG_TYPE", "cloud")
+os.environ.setdefault("OPENROUTER_API_KEY", "sk-or-v1-test-stub-key-0000000000")
 
 SAMPLE_SUMMARY = """## Краткое резюме
 Обсудили релиз MVP и блокеры по VPN.
@@ -39,16 +40,14 @@ SAMPLE_SUMMARY = """## Краткое резюме
 
 def _text_response(text: str) -> dict:
     return {
-        "output": [
+        "choices": [
             {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": text}],
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": text},
             }
         ],
-        "output_text": text,
-        "usage": {"input_tokens": 10, "output_tokens": 50, "total_tokens": 60},
-        "status": "completed",
+        "usage": {"prompt_tokens": 10, "completion_tokens": 50, "total_tokens": 60},
     }
 
 
