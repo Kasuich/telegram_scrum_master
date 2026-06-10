@@ -268,7 +268,7 @@ class OrchestratorService:
                 invocation_context=invocation_context,
             )
         self._index_confirms(agent_name, result)
-        self._log_actions(agent_name, result)
+        self._log_actions(agent_name, result, trace_label=message)
         return result
 
     async def resume(self, confirm_id: str, approved: bool) -> AgentResult:
@@ -386,6 +386,8 @@ class OrchestratorService:
                 "step_idx": event.get("step_idx"),
                 "duration_s": event.get("duration_s"),
                 "offset_s": event.get("offset_s"),
+                "end_ts": event.get("end_ts"),
+                "trace_label": event.get("trace_label"),
                 "truncated": True,
                 "preview": payload[:12_000],
             },
@@ -394,7 +396,7 @@ class OrchestratorService:
             separators=(",", ":"),
         )
 
-    def _log_actions(self, agent_name: str, result: AgentResult) -> None:
+    def _log_actions(self, agent_name: str, result: AgentResult, *, trace_label: str | None = None) -> None:
         loggable = {
             "stage",
             "tool_call",
@@ -506,6 +508,7 @@ class OrchestratorService:
             if step.get("kind") in loggable:
                 current_ts = step_timestamps[step_idx] if step_idx < len(step_timestamps) else None
                 prev_ts = step_timestamps[step_idx - 1] if step_idx > 0 and step_idx - 1 < len(step_timestamps) else None
+                next_ts = step_timestamps[step_idx + 1] if step_idx + 1 < len(step_timestamps) else None
                 duration_s = None
                 offset_s = None
                 if current_ts and trace_start:
@@ -521,10 +524,16 @@ class OrchestratorService:
                     "step_idx": step_idx,
                     **step,
                 }
+                if step_idx == 0 and trace_label:
+                    event["trace_label"] = trace_label
                 if duration_s is not None:
                     event["duration_s"] = round(duration_s, 3)
                 if offset_s is not None:
                     event["offset_s"] = round(offset_s, 3)
+                if current_ts and next_ts:
+                    event["end_ts"] = next_ts.isoformat()
+                elif current_ts and current_ts == step_timestamps[-1]:
+                    event["end_ts"] = current_ts.isoformat()
                 self.actions.append(event)
                 logger.info(self._event_json(event))
         if len(self.actions) > 500:

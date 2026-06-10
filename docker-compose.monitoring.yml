@@ -50,6 +50,8 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
       GF_SERVER_ROOT_URL: ${GRAFANA_URL:-http://localhost:3000}
       GF_UNIFIED_ALERTING_ENABLED: "true"
+      GF_ALLOW_LOADING_UNSIGNED_PLUGINS: "marcusolsson-gantt-panel,auxmoney-waterfall-panel"
+      GF_INSTALL_PLUGINS: "marcusolsson-gantt-panel,auxmoney-waterfall-panel"
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro

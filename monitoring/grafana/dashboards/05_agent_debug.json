@@ -1,9 +1,9 @@
 {
-  "title": "Agent Debug — Graph, Tools and Outputs",
-  "uid": "pm-agent-debug",
-  "tags": ["pm-agent", "debug", "tools", "graph"],
+  "title": "pm_agent",
+  "uid": "pm-agent",
+  "tags": ["pm-agent"],
   "schemaVersion": 38,
-  "version": 5,
+  "version": 6,
   "refresh": "10s",
   "time": {"from": "now-1h", "to": "now"},
   "timezone": "browser",
@@ -40,7 +40,7 @@
       },
       {
         "name": "session_id",
-        "label": "Session",
+        "label": "Trace",
         "type": "query",
         "datasource": {"type": "loki", "uid": "loki"},
         "query": {"query": "label_values(session_id)", "refId": "session"},
@@ -143,21 +143,64 @@
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 24}
     },
     {
-      "id": 20, "title": "Trace Timeline", "type": "logs",
-      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 25},
+      "id": 30, "title": "Gantt", "type": "marcusolsson-gantt-panel",
+      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 25},
       "datasource": {"type": "loki", "uid": "loki"},
-      "description": "Select a Session above to filter to a specific trace. Sorted ascending so steps appear in execution order.",
-      "options": {"showTime": true, "showLabels": true, "showCommonLabels": false, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Ascending", "dedupStrategy": "none"},
+      "description": "Select a Trace above (by session_id) to see step-by-step Gantt. Each bar = one agent step, width = how long it took.",
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {
+        "groupBy": "stage",
+        "sortBy": "startTime",
+        "tooltipContent": ["text", "start", "end"],
+        "showHeaders": true
+      },
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": {"source": "Line", "format": "json"}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {"Time 1": true, "tsNs": true, "id": true, "labels": true, "Line": true, "event": true, "agent_name": true, "content": true, "reason": true, "tool_args": true, "result": true, "truncated": true, "preview": true, "session_id": true, "step_idx": true, "offset_s": true, "duration_s": true, "trace_label": true},
+            "renameByName": {}
+          }
+        },
+        {
+          "id": "rename",
+          "options": {
+            "renameByName": {"ts": "start", "end_ts": "end", "kind": "_kind", "tool_name": "_tool", "stage": "stage"}
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "reduceRow",
+            "alias": "text",
+            "reduce": {"reducer": "lastNotNull"},
+            "binary": {"left": "_kind", "operator": "+", "right": "_tool"},
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {"_kind": true, "_tool": true, "Time": true},
+            "includeByName": {},
+            "renameByName": {}
+          }
+        }
+      ],
       "targets": [{
-        "expr": "{job=\"docker\",agent_name=~\"$agent\",session_id=~\"$session_id\"} |~ \"agent_step\" | line_format \"{{.stage}}/{{.kind}} {{.tool_name}} {{if .duration_s}}dur={{.duration_s}}s{{end}}{{if .offset_s}} (T+{{.offset_s}}s){{end}}\"",
+        "expr": "{job=\"docker\",agent_name=~\"$agent\",session_id=~\"$session_id\"} |~ \"agent_step\"",
         "refId": "A"
       }]
     },
     {
-      "id": 21, "title": "Step Durations", "type": "table",
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 37},
+      "id": 21, "title": "Step Details", "type": "table",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 39},
       "datasource": {"type": "loki", "uid": "loki"},
-      "description": "Per-step timing for the selected session. Duration = time since previous step, Offset = time since trace start. Fields appear after next deploy adds duration_s/offset_s to events.",
+      "description": "Per-step timing for the selected trace.",
       "fieldConfig": {
         "defaults": {"custom": {"align": null, "filterable": true, "inspect": true}},
         "overrides": [
@@ -168,6 +211,7 @@
           {"matcher": {"id": "byName", "options": "duration_s"}, "properties": [{"id": "displayName", "value": "Duration (s)"}, {"id": "custom.cellOptions", "value": {"type": "color-background", "mode": "gradient"}}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 3}, {"color": "red", "value": 10}]}}, {"id": "custom.width", "value": 120}]},
           {"matcher": {"id": "byName", "options": "offset_s"}, "properties": [{"id": "displayName", "value": "Offset (s)"}, {"id": "custom.width", "value": 100}]},
           {"matcher": {"id": "byName", "options": "step_idx"}, "properties": [{"id": "displayName", "value": "#"}, {"id": "custom.width", "value": 50}]},
+          {"matcher": {"id": "byName", "options": "trace_label"}, "properties": [{"id": "displayName", "value": "Input"}, {"id": "custom.width", "value": 250}]},
           {"matcher": {"id": "byName", "options": "Line"}, "properties": [{"id": "custom.hidden", "value": true}]},
           {"matcher": {"id": "byName", "options": "labels"}, "properties": [{"id": "custom.hidden", "value": true}]},
           {"matcher": {"id": "byName", "options": "tsNs"}, "properties": [{"id": "custom.hidden", "value": true}]},
@@ -176,37 +220,22 @@
       },
       "options": {"showHeader": true, "sortBy": [{"desc": false, "displayName": "Time"}]},
       "transformations": [
-        {
-          "id": "extractFields",
-          "options": {
-            "source": "Line",
-            "format": "json"
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {"Time 1": true, "tsNs": true, "id": true, "labels": true, "Line": true, "event": true, "agent_name": true, "content": true, "reason": true, "tool_args": true, "result": true, "truncated": true, "preview": true},
-            "renameByName": {"step_idx": "#", "duration_s": "Duration (s)", "offset_s": "Offset (s)"}
-          }
-        }
+        {"id": "extractFields", "options": {"source": "Line", "format": "json"}},
+        {"id": "organize", "options": {"excludeByName": {"Time 1": true, "tsNs": true, "id": true, "labels": true, "Line": true, "event": true, "agent_name": true, "content": true, "reason": true, "tool_args": true, "result": true, "truncated": true, "preview": true}, "renameByName": {"step_idx": "#", "duration_s": "Duration (s)", "offset_s": "Offset (s)", "trace_label": "Input"}}}
       ],
-      "targets": [{
-        "expr": "{job=\"docker\",agent_name=~\"$agent\",session_id=~\"$session_id\"} |~ \"agent_step\"",
-        "refId": "A"
-      }]
+      "targets": [{"expr": "{job=\"docker\",agent_name=~\"$agent\",session_id=~\"$session_id\"} |~ \"agent_step\"", "refId": "A"}]
     },
     {
-      "id": 10, "title": "Agent Walks — Raw Logs", "type": "logs",
-      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 45},
+      "id": 10, "title": "Raw Logs", "type": "logs",
+      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 47},
       "datasource": {"type": "loki", "uid": "loki"},
       "description": "Expand a row to inspect full tool_args, result, and error payloads.",
       "options": {"showTime": true, "showLabels": false, "showCommonLabels": false, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none"},
       "targets": [{"expr": "{job=\"docker\"} |= \"agent_step\" |~ \"$session_id\" |~ \"agent_name\" |~ \"stage\"", "refId": "A"}]
     },
     {
-      "id": 11, "title": "Errors and Rejections", "type": "logs",
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 45},
+      "id": 11, "title": "Errors", "type": "logs",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 47},
       "datasource": {"type": "loki", "uid": "loki"},
       "options": {"showTime": true, "showLabels": false, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none"},
       "targets": [{"expr": "{job=\"docker\"} |= \"agent_step\" |~ \"$session_id\" |~ \"tool_error|confirm_rejected\"", "refId": "A"}]
@@ -214,11 +243,11 @@
 
     {
       "id": 105, "type": "row", "title": "LLM & Latency",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 53}
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 55}
     },
     {
       "id": 14, "title": "LLM Latency (avg + p95)", "type": "timeseries",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 54},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 56},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "s", "min": 0, "color": {"mode": "palette-classic"}, "custom": {"lineWidth": 2, "fillOpacity": 10}}, "overrides": []},
       "options": {"tooltip": {"mode": "multi"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}},
@@ -229,7 +258,7 @@
     },
     {
       "id": 15, "title": "Token Usage", "type": "timeseries",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 54},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 56},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "short", "min": 0, "color": {"mode": "palette-classic"}, "custom": {"lineWidth": 2, "fillOpacity": 10, "stacking": {"mode": "normal", "group": "A"}}}, "overrides": []},
       "options": {"tooltip": {"mode": "multi"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["sum"]}},
@@ -237,7 +266,7 @@
     },
     {
       "id": 16, "title": "User → Agent Response Latency", "type": "timeseries",
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 62},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 64},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "s", "min": 0, "color": {"mode": "palette-classic"}, "custom": {"lineWidth": 2, "fillOpacity": 10}}, "overrides": []},
       "options": {"tooltip": {"mode": "multi"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}},

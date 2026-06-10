@@ -39,6 +39,8 @@ scrape_configs:
             duration_s: duration_s
             offset_s: offset_s
             step_idx: step_idx
+            end_ts: end_ts
+            trace_label: trace_label
       - labels:
           agent_name:
           session_id:
