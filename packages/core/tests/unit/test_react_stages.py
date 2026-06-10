@@ -155,6 +155,19 @@ def _pm_agent():
     return _PM()
 
 
+def _freeform_pm_agent():
+    class _FreeformPM(BaseAgent):
+        name = "freeform_pm_agent"
+        description = "Freeform PM"
+        prompt = "Ты автономный PM-агент."
+        action_only = True
+        freeform_tool_planning = True
+        tools = ["CreateIssue"]
+        llm_configs = [LLMSettings(model="yandexgpt", max_retries=0)]
+
+    return _FreeformPM()
+
+
 def _runner(agent):
     rc = RuntimeConfig(auto_risk=["low", "medium", "high"], confirm_risk=[])
     return ReActRunner(agent, runtime_config=rc, max_iterations=8)
@@ -287,6 +300,73 @@ class TestIntakeStage:
         assert "Предположения:" in (result.reply or "")
 
     @patch.dict("os.environ", ENV)
+    async def test_freeform_followup_bypasses_goal_gates_and_creates_issue(self):
+        @platform_tool(name="CreateIssue", risk="medium", scopes=["tracker:write"])
+        async def create_issue(summary: str, assignee: str, description: str = "") -> dict:
+            return {
+                "key": "DARKHORSE-8",
+                "summary": summary,
+                "assignee": assignee,
+                "description": description,
+            }
+
+        runner = _runner(_freeform_pm_agent())
+        runner._mem_sessions["followup-create"] = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Создай задачу Коле: продумать бэклог задач.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Уточни исполнителя и краткое название задачи.",
+                },
+            ],
+            "steps": [],
+        }
+        post = AsyncMock(
+            side_effect=[
+                _http_ok(
+                    _tool_call_response(
+                        "CreateIssue",
+                        {
+                            "summary": "Сформировать персональный бэклог задач",
+                            "description": (
+                                "Определить и кратко описать приоритетные задачи "
+                                "на ближайший рабочий период."
+                            ),
+                            "assignee": "nukolaus",
+                        },
+                    )
+                ),
+                _http_ok(_text_response("Задача создана.")),
+            ]
+        )
+
+        with (
+            patch("core.react.build_goal_plan", AsyncMock()) as build_plan,
+            patch("httpx.AsyncClient.post", post),
+        ):
+            result = await runner.invoke(
+                (
+                    "Николай Александров должен продумать себе бэклог задач, "
+                    "краткое описание и название придумай сам"
+                ),
+                "followup-create",
+            )
+
+        build_plan.assert_not_awaited()
+        assert result.clarification is None
+        assert "DARKHORSE-8" in (result.reply or "")
+        assert any(
+            step.get("kind") == "tool_result" and step.get("tool_name") == "CreateIssue"
+            for step in result.steps
+        )
+        first_request = post.call_args_list[0].kwargs["json"]
+        assert "Уточни исполнителя" in str(first_request["input"])
+        assert "Рабочая категория" not in first_request["instructions"]
+
+    @patch.dict("os.environ", ENV)
     async def test_stage_frozen_not_rederived(self):
         """Stage is STATUS for «Имя: …» even if a later tool looks backlog-ish."""
         _register_fake_tracker_tools()
@@ -409,8 +489,8 @@ class TestClarification:
 class TestMultiScenario:
     @patch.dict("os.environ", ENV)
     async def test_three_intents_run_three_scenarios(self):
-        from core.stage_graph import StageId
         from core.goal import GoalItem, GoalPlan
+        from core.stage_graph import StageId
 
         _register_fake_tracker_tools()
         runner = _runner(_pm_agent())

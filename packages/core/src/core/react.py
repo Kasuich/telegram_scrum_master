@@ -684,11 +684,17 @@ def _is_safety_filtered(text: str) -> bool:
     return any(phrase in text for phrase in _SAFETY_FILTER_PHRASES)
 
 
-def _action_only_final_reply(steps: list[dict[str, Any]], llm_text: str, had_tool: bool, *, stage_id: StageId | None = None) -> str:
+def _action_only_final_reply(
+    steps: list[dict[str, Any]],
+    llm_text: str,
+    had_tool: bool,
+    *,
+    stage_id: StageId | None = None,
+) -> str:
     if stage_id in _READ_VOICE_STAGES:
         if llm_text.strip() and not _is_safety_filtered(llm_text):
             return llm_text.strip()
-        # Safety filter fired or no text on read stage — neutral fallback so filter text never reaches user
+        # Use a neutral fallback so safety-filter text never reaches the user.
         if had_tool:
             return "Получил данные из трекера. Попробуй переформулировать запрос конкретнее."
     report = _build_action_report(steps)
@@ -816,6 +822,19 @@ class ReActRunner:
                 ctx, session_id, state, outcome, scenario_steps_before
             )
 
+        if getattr(self.agent, "freeform_tool_planning", False):
+            # Freeform agents receive the original request and session history directly.
+            # The stage is retained only as trace metadata; it does not gate tools,
+            # trigger missing-info clarification, or impose a deterministic plan.
+            stage = await detect_stage(message, use_llm=False)
+            goal_plan = GoalPlan.single(stage, message, rationale="freeform")
+            state["_plan"] = serialize_plan(goal_plan)
+            state["_plan_cursor"] = 0
+            state["_scenario_retries"] = {}
+            return await self._execute_turn_plan(
+                ctx, session_id, state, goal_plan, start_index=0
+            )
+
         goal_plan = await build_goal_plan(message, use_llm=True)
         state["_plan"] = serialize_plan(goal_plan)
         state["_plan_cursor"] = 0
@@ -850,7 +869,11 @@ class ReActRunner:
         ]
         import re as _re
         _key_re = _re.compile(r"[A-Z]+-\d+")
-        _hint_re = _re.compile(r"задач[уаеи]?\s+по\s+(\w+)|задач[уаеи]?\s+[«\"']?(\w[\w\s]*?)[»\"']?(?:\s|,|$)", _re.IGNORECASE)
+        _hint_re = _re.compile(
+            r"задач[уаеи]?\s+по\s+(\w+)|"
+            r"задач[уаеи]?\s+[«\"']?(\w[\w\s]*?)[»\"']?(?:\s|,|$)",
+            _re.IGNORECASE,
+        )
         history_task_mentions: list[str] = []
         for msg in recent_user_msgs:
             history_task_mentions += _key_re.findall(msg)
@@ -864,17 +887,30 @@ class ReActRunner:
             all_missing = [m for item in goal_plan.items for m in item.missing_info]
 
         # Resolve 1st-person ("мне/я/мои") from invocation context
-        actor_login = (ctx.invocation_context or self._active_invocation_context or InvocationContext()).actor_tracker_login
+        invocation = (
+            ctx.invocation_context
+            or self._active_invocation_context
+            or InvocationContext()
+        )
+        actor_login = invocation.actor_tracker_login
         user_msg = message
         from core.assignee_resolver import resolve_first_person
-        resolved_login = resolve_first_person(user_msg, tracker_login=actor_login) if actor_login else None
+        resolved_login = (
+            resolve_first_person(user_msg, tracker_login=actor_login)
+            if actor_login
+            else None
+        )
 
         if resolved_login:
             # Substitute 1st-person references in goal items and clear related missing_info
             for item in goal_plan.items:
                 if item.entities and "assignee" in item.entities:
                     item.entities["assignee"] = resolved_login
-                item.missing_info = [m for m in item.missing_info if "исполнител" not in m.lower() and "assignee" not in m.lower()]
+                item.missing_info = [
+                    m
+                    for m in item.missing_info
+                    if "исполнител" not in m.lower() and "assignee" not in m.lower()
+                ]
             all_missing = [m for item in goal_plan.items for m in item.missing_info]
 
         # Resolve team member names ("Коля" etc) from entities
@@ -894,7 +930,11 @@ class ReActRunner:
                 match = best_user_match(mention, _users)
                 if match and match.score >= 0.42:
                     item.entities["assignee"] = match.login
-                    item.missing_info = [m for m in item.missing_info if "исполнител" not in m.lower() and "assignee" not in m.lower()]
+                    item.missing_info = [
+                        m
+                        for m in item.missing_info
+                        if "исполнител" not in m.lower() and "assignee" not in m.lower()
+                    ]
             except Exception:
                 pass  # resolution is best-effort, don't block on failure
             all_missing = [m for item in goal_plan.items for m in item.missing_info]
@@ -932,11 +972,10 @@ class ReActRunner:
         state["_current_goal_item"] = item
         if getattr(self.agent, "freeform_tool_planning", False):
             state["stage_addendum"] = (
-                f"Рабочая категория: {item.stage.value}. "
-                "Это подсказка, не ограничение инструментов.\n"
-                f"Текущая цель: {item.intent or item.payload}\n"
-                "Критерий успеха: "
-                f"{item.success_criteria or 'выполнить запрос и проверить результат'}\n"
+                "Работай по исходному запросу пользователя и актуальной истории чата. "
+                "Сам определи цель, обязательные данные и критерий успеха. "
+                "Не проси уточнений, если название, описание или другие безопасные поля "
+                "можно разумно сформулировать из контекста.\n"
                 "Самостоятельно спланируй последовательность вызовов. После каждого результата "
                 "переоцени остаток плана; не следуй фиксированному сценарию, "
                 "если данные требуют другого пути."
@@ -1044,9 +1083,42 @@ class ReActRunner:
                 return self._clarification_result(
                     session_id, state, outcome.clarification, scenario_steps_before
                 )
+        if getattr(self.agent, "freeform_tool_planning", False):
+            return await self._finalize_freeform_turn(
+                ctx, session_id, state, outcomes, start_index=start_index
+            )
         return await self._reflect_and_finalize(
             ctx, session_id, state, goal_plan, outcomes, start_index=start_index
         )
+
+    async def _finalize_freeform_turn(
+        self,
+        ctx: _RunCtx,
+        session_id: str,
+        state: dict[str, Any],
+        outcomes: list[ScenarioOutcome],
+        *,
+        start_index: int,
+    ) -> AgentResult:
+        """Finish freeform execution without deterministic verdicts or retries."""
+        outcome = outcomes[0] if outcomes else ScenarioOutcome(kind="done")
+        turn_steps = list(outcome.turn_steps or [])
+        reply = outcome.reply or _build_action_report(turn_steps)
+        if not reply:
+            reply = outcome.clarification or "Не удалось выполнить запрос."
+
+        if not any(step.get("kind") == "final" for step in turn_steps):
+            steps_offset = len(state["steps"]) - len(turn_steps)
+            state["steps"].append(_step("final", content=reply, reason="freeform"))
+            state["messages"].append({"role": "assistant", "content": reply})
+            turn_steps = state["steps"][steps_offset:]
+
+        state.pop("_plan", None)
+        state.pop("_plan_cursor", None)
+        state.pop("_scenario_retries", None)
+        await self._compact_session_history(state)
+        await self._save_session(ctx, session_id, state)
+        return AgentResult(reply=reply, session_id=session_id, steps=turn_steps)
 
     def _build_multi_scenario_report(
         self,
