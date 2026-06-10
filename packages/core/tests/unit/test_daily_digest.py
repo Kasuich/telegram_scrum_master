@@ -176,15 +176,10 @@ async def test_build_report_groups_by_registered_telegram_members() -> None:
             team_id=uuid.uuid4(),
             now=datetime(2026, 6, 8, 15, 0, tzinfo=timezone.utc),
             client_factory=lambda: client,
-        )
+    )
 
     assert report.queue == "DARKHORSE"
-    alice = report.members[0]
-    bob = report.members[1]
-    assert alice.in_progress == []
-    assert alice.done_today == []
-    assert bob.in_progress == []
-    assert bob.done_today == []
+    assert report.members == []
     assert client.queries == []
 
 
@@ -250,10 +245,12 @@ async def test_build_report_uses_poll_tasks_when_tracker_sections_are_empty() ->
         )
 
     alice = report.members[0]
-    assert [issue.key for issue in alice.in_progress] == ["TEST-1"]
-    assert [issue.key for issue in alice.done_today] == ["TEST-2"]
-    assert "TEST-1: добавлен комментарий" in alice.applied_items
-    assert "TEST-2: закрыта" in alice.applied_items
+    assert alice.in_progress == []
+    assert alice.done_today == []
+    assert "Комментарии" in alice.sections
+    assert "Статусы" in alice.sections
+    assert any("TEST-1" in line for line in alice.sections["Комментарии"])
+    assert any("TEST-2" in line for line in alice.sections["Статусы"])
 
 
 async def test_build_report_uses_all_poll_history_actions_only() -> None:
@@ -370,9 +367,12 @@ async def test_build_report_uses_all_poll_history_actions_only() -> None:
         )
 
     alice = report.members[0]
-    assert [issue.key for issue in alice.in_progress] == ["TEST-1", "TEST-4"]
-    assert [issue.key for issue in alice.done_today] == ["TEST-2"]
-    assert "TEST-3" not in [issue.key for issue in alice.in_progress]
+    assert alice.in_progress == []
+    assert alice.done_today == []
+    assert set(alice.sections) == {"Комментарии", "Статусы", "Создано", "Не применено"}
+    assert any("TEST-1" in line for line in alice.sections["Комментарии"])
+    assert any("TEST-2" in line for line in alice.sections["Статусы"])
+    assert any("TEST-4" in line for line in alice.sections["Создано"])
     assert alice.standup_response == (
         "task 1 need more info\n\ntask 2 done new task: write release notes"
     )
@@ -380,7 +380,29 @@ async def test_build_report_uses_all_poll_history_actions_only() -> None:
     assert any("99" in item for item in alice.applied_items)
 
 
-def test_format_report_includes_empty_member_sections() -> None:
+async def test_build_report_ignores_reported_polls() -> None:
+    client = EmptyTrackerClient()
+    team_id = uuid.uuid4()
+
+    with (
+        patch("core.daily_digest.get_config", return_value=_cfg()),
+        patch(
+            "core.daily_digest.load_registered_participants",
+            AsyncMock(return_value=[SimpleNamespace(tracker_login="alice", display="Alice")]),
+        ),
+        patch("core.daily_digest._load_standup_polls_by_login", AsyncMock(return_value={})),
+    ):
+        report = await build_daily_digest_report(
+            FakeSession(team_queue="DARKHORSE"),
+            team_id=team_id,
+            now=datetime(2026, 6, 8, 15, 0, tzinfo=timezone.utc),
+            client_factory=lambda: client,
+        )
+
+    assert report.members == []
+
+
+def test_format_report_omits_empty_sections() -> None:
     report = DigestReport(
         team_id=uuid.uuid4(),
         queue="TEST",
@@ -391,17 +413,9 @@ def test_format_report_includes_empty_member_sections() -> None:
             DigestMember(
                 login="alice",
                 display="Alice",
-                in_progress=[
-                    DigestIssue(
-                        key="TEST-1",
-                        summary="Build bot",
-                        status="In Progress",
-                        assignee_login="alice",
-                        assignee_display="Alice",
-                        url="https://tracker.yandex.ru/TEST-1",
-                    )
-                ],
+                in_progress=[],
                 done_today=[],
+                sections={"Статусы": ["- TEST-1: закрыто. Текст: task 1 done"]},
             )
         ],
     )
@@ -410,8 +424,53 @@ def test_format_report_includes_empty_member_sections() -> None:
         text = format_daily_digest(report)
 
     assert "TEST-1" in text
-    assert "Сделано сегодня:" in text
-    assert "- нет задач" in text
+    assert "Статусы:" in text
+    assert "В работе:" not in text
+    assert "Сделано сегодня:" not in text
+    assert "нет задач" not in text
+
+
+def test_format_report_shows_single_empty_period_line() -> None:
+    report = DigestReport(
+        team_id=uuid.uuid4(),
+        queue="TEST",
+        local_date="2026-06-08",
+        local_hour="2026-06-08T18",
+        timezone="Europe/Moscow",
+        members=[],
+    )
+
+    with patch("core.daily_digest.get_config", return_value=_cfg()):
+        text = format_daily_digest(report)
+
+    assert "За период нет обновлений." in text
+
+
+async def test_mark_standup_polls_reported_closes_period() -> None:
+    from core.daily_digest import _mark_standup_polls_reported
+
+    poll = SimpleNamespace(status="answered")
+
+    class Session(FakeSession):
+        async def execute(self, stmt):
+            del stmt
+
+            class Result:
+                def scalars(self):
+                    return self
+
+                def all(self):
+                    return [poll]
+
+            return Result()
+
+    await _mark_standup_polls_reported(
+        Session(),
+        team_id=uuid.uuid4(),
+        local_hour="2026-06-08T18",
+    )
+
+    assert poll.status == "reported"
 
 
 def test_split_telegram_text_preserves_limit() -> None:
