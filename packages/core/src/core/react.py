@@ -2147,7 +2147,7 @@ class ReActRunner:
         prompt = "\n\n".join(user_parts)
 
         client = LLMClient(
-            model="yandexgpt-lite",
+            model="yandexgpt",
             temperature=0.0,
             max_tokens=1200,
             max_retries=0,
