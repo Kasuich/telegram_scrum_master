@@ -160,6 +160,13 @@ def _runner(agent):
     return ReActRunner(agent, runtime_config=rc, max_iterations=8)
 
 
+def test_freeform_planning_is_opt_in():
+    agent = _pm_agent()
+
+    assert agent.action_only is True
+    assert agent.freeform_tool_planning is False
+
+
 # ---------------------------------------------------------------------------
 # BOARD: backlog_plan -> apply forced edge, no second LLM call
 # ---------------------------------------------------------------------------
