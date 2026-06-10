@@ -13,6 +13,7 @@ from telegram_gateway.bridge import (
     MainBridgeClient,
     bridge_error_is_permanent,
 )
+from telegram_gateway.formatting import render_telegram_html
 from telegram_gateway.settings import GatewaySettings
 from telegram_gateway.spool import GatewaySpool
 
@@ -207,9 +208,7 @@ class GatewayRuntime:
                 provider_message_id=provider_id,
                 last_error=str(delivery_error) if delivery_error else None,
                 retry_after_seconds=(
-                    getattr(delivery_error, "retry_after", None)
-                    if delivery_error
-                    else None
+                    getattr(delivery_error, "retry_after", None) if delivery_error else None
                 ),
             )
             if status == "sent":
@@ -225,12 +224,14 @@ class GatewayRuntime:
 
         method = item.payload.get("method")
         if method == "sendMessage":
+            text = render_telegram_html(str(item.payload.get("text", "")))
             return await self.bot_client.send_message(
                 chat_id=item.target_chat_id or item.target_user_id,
-                text=item.payload.get("text", ""),
+                text=text,
                 reply_to_message_id=item.payload.get("reply_to_message_id"),
                 message_thread_id=item.payload.get("message_thread_id"),
                 reply_markup=item.payload.get("reply_markup"),
+                parse_mode="HTML",
             )
         elif method == "answerCallbackQuery":
             return await self.bot_client.answer_callback_query(

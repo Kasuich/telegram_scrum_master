@@ -13,6 +13,7 @@ def test_prompt_covers_composite_update_and_analytics_use_cases():
     assert "BulkUpdate или UpdateIssue" in PROMPT
     assert "У кого больше задач" in PROMPT
     assert "Не выводи пустые строки вместо пользователей" in PROMPT
+    assert "Не используй таблицы" in PROMPT
 
 
 def test_prompt_explains_tool_schema_and_bulk_completion():

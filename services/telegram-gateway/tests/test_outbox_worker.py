@@ -44,23 +44,27 @@ def make_runtime(tmp_path: Path) -> GatewayRuntime:
 async def test_deliver_once_leases_and_delivers_messages(tmp_path: Path) -> None:
     runtime = make_runtime(tmp_path)
 
-    lease_response = LeaseResponse(items=[
-        LeaseItem(
-            delivery_id="delivery-1",
-            team_id="team-1",
-            installation_id="inst-1",
-            category="agent_reply",
-            target_chat_id="-100123",
-            target_user_id="991",
-            payload={"method": "sendMessage", "text": "Hello!", "reply_to_message_id": "42"},
-            business_connection_id=None,
-            lease_expires_at=datetime.now(tz=timezone.utc),
-        )
-    ])
+    lease_response = LeaseResponse(
+        items=[
+            LeaseItem(
+                delivery_id="delivery-1",
+                team_id="team-1",
+                installation_id="inst-1",
+                category="agent_reply",
+                target_chat_id="-100123",
+                target_user_id="991",
+                payload={"method": "sendMessage", "text": "Hello!", "reply_to_message_id": "42"},
+                business_connection_id=None,
+                lease_expires_at=datetime.now(tz=timezone.utc),
+            )
+        ]
+    )
     runtime.bridge.lease_outbox = AsyncMock(return_value=lease_response)
-    runtime.bot_client.send_message = AsyncMock(return_value=SendResult(
-        message_id="43", chat_id="-100123", text="Hello!", sent_at=datetime.now(tz=timezone.utc)
-    ))
+    runtime.bot_client.send_message = AsyncMock(
+        return_value=SendResult(
+            message_id="43", chat_id="-100123", text="Hello!", sent_at=datetime.now(tz=timezone.utc)
+        )
+    )
 
     delivered = await runtime.deliver_once()
 
@@ -68,6 +72,7 @@ async def test_deliver_once_leases_and_delivers_messages(tmp_path: Path) -> None
     runtime.bridge.lease_outbox.assert_awaited_once()
     runtime.bot_client.send_message.assert_awaited_once()
     assert runtime.bot_client.send_message.await_args.kwargs["chat_id"] == "-100123"
+    assert runtime.bot_client.send_message.await_args.kwargs["parse_mode"] == "HTML"
     runtime.bridge.ack_outbox.assert_awaited_once_with(
         delivery_id="delivery-1",
         status="sent",
@@ -81,23 +86,25 @@ async def test_deliver_once_leases_and_delivers_messages(tmp_path: Path) -> None
 async def test_deliver_once_handles_429_retry(tmp_path: Path) -> None:
     runtime = make_runtime(tmp_path)
 
-    lease_response = LeaseResponse(items=[
-        LeaseItem(
-            delivery_id="delivery-1",
-            team_id="team-1",
-            installation_id="inst-1",
-            category="agent_reply",
-            target_chat_id="-100123",
-            target_user_id=None,
-            payload={"method": "sendMessage", "text": "Hello!"},
-            business_connection_id=None,
-            lease_expires_at=datetime.now(tz=timezone.utc),
-        )
-    ])
+    lease_response = LeaseResponse(
+        items=[
+            LeaseItem(
+                delivery_id="delivery-1",
+                team_id="team-1",
+                installation_id="inst-1",
+                category="agent_reply",
+                target_chat_id="-100123",
+                target_user_id=None,
+                payload={"method": "sendMessage", "text": "Hello!"},
+                business_connection_id=None,
+                lease_expires_at=datetime.now(tz=timezone.utc),
+            )
+        ]
+    )
     runtime.bridge.lease_outbox = AsyncMock(return_value=lease_response)
-    runtime.bot_client.send_message = AsyncMock(side_effect=BotAPIError(
-        status_code=429, retry_after=30, permanent=False
-    ))
+    runtime.bot_client.send_message = AsyncMock(
+        side_effect=BotAPIError(status_code=429, retry_after=30, permanent=False)
+    )
 
     delivered = await runtime.deliver_once()
 
@@ -112,23 +119,25 @@ async def test_deliver_once_handles_429_retry(tmp_path: Path) -> None:
 async def test_deliver_once_handles_permanent_error_dead_letter(tmp_path: Path) -> None:
     runtime = make_runtime(tmp_path)
 
-    lease_response = LeaseResponse(items=[
-        LeaseItem(
-            delivery_id="delivery-1",
-            team_id="team-1",
-            installation_id="inst-1",
-            category="agent_reply",
-            target_chat_id="invalid",
-            target_user_id=None,
-            payload={"method": "sendMessage", "text": "Hello!"},
-            business_connection_id=None,
-            lease_expires_at=datetime.now(tz=timezone.utc),
-        )
-    ])
+    lease_response = LeaseResponse(
+        items=[
+            LeaseItem(
+                delivery_id="delivery-1",
+                team_id="team-1",
+                installation_id="inst-1",
+                category="agent_reply",
+                target_chat_id="invalid",
+                target_user_id=None,
+                payload={"method": "sendMessage", "text": "Hello!"},
+                business_connection_id=None,
+                lease_expires_at=datetime.now(tz=timezone.utc),
+            )
+        ]
+    )
     runtime.bridge.lease_outbox = AsyncMock(return_value=lease_response)
-    runtime.bot_client.send_message = AsyncMock(side_effect=BotAPIError(
-        status_code=400, permanent=True
-    ))
+    runtime.bot_client.send_message = AsyncMock(
+        side_effect=BotAPIError(status_code=400, permanent=True)
+    )
 
     delivered = await runtime.deliver_once()
 
@@ -152,24 +161,26 @@ async def test_deliver_once_empty_when_no_items(tmp_path: Path) -> None:
 async def test_deliver_once_callback_answer(tmp_path: Path) -> None:
     runtime = make_runtime(tmp_path)
 
-    lease_response = LeaseResponse(items=[
-        LeaseItem(
-            delivery_id="delivery-cbq",
-            team_id="team-1",
-            installation_id="inst-1",
-            category="confirmation",
-            target_chat_id="-100123",
-            target_user_id=None,
-            payload={
-                "method": "answerCallbackQuery",
-                "callback_query_id": "cbq-1",
-                "text": "Approved",
-                "show_alert": True,
-            },
-            business_connection_id=None,
-            lease_expires_at=datetime.now(tz=timezone.utc),
-        )
-    ])
+    lease_response = LeaseResponse(
+        items=[
+            LeaseItem(
+                delivery_id="delivery-cbq",
+                team_id="team-1",
+                installation_id="inst-1",
+                category="confirmation",
+                target_chat_id="-100123",
+                target_user_id=None,
+                payload={
+                    "method": "answerCallbackQuery",
+                    "callback_query_id": "cbq-1",
+                    "text": "Approved",
+                    "show_alert": True,
+                },
+                business_connection_id=None,
+                lease_expires_at=datetime.now(tz=timezone.utc),
+            )
+        ]
+    )
     runtime.bridge.lease_outbox = AsyncMock(return_value=lease_response)
     runtime.bot_client.answer_callback_query = AsyncMock()
 
@@ -187,23 +198,25 @@ async def test_deliver_once_callback_answer(tmp_path: Path) -> None:
 async def test_deliver_once_edit_message_markup(tmp_path: Path) -> None:
     runtime = make_runtime(tmp_path)
 
-    lease_response = LeaseResponse(items=[
-        LeaseItem(
-            delivery_id="delivery-edit",
-            team_id="team-1",
-            installation_id="inst-1",
-            category="confirmation",
-            target_chat_id="-100123",
-            target_user_id=None,
-            payload={
-                "method": "editMessageReplyMarkup",
-                "message_id": "42",
-                "reply_markup": {"inline_keyboard": []},
-            },
-            business_connection_id=None,
-            lease_expires_at=datetime.now(tz=timezone.utc),
-        )
-    ])
+    lease_response = LeaseResponse(
+        items=[
+            LeaseItem(
+                delivery_id="delivery-edit",
+                team_id="team-1",
+                installation_id="inst-1",
+                category="confirmation",
+                target_chat_id="-100123",
+                target_user_id=None,
+                payload={
+                    "method": "editMessageReplyMarkup",
+                    "message_id": "42",
+                    "reply_markup": {"inline_keyboard": []},
+                },
+                business_connection_id=None,
+                lease_expires_at=datetime.now(tz=timezone.utc),
+            )
+        ]
+    )
     runtime.bridge.lease_outbox = AsyncMock(return_value=lease_response)
     runtime.bot_client.edit_message_reply_markup = AsyncMock()
 
