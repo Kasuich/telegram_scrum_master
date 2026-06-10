@@ -108,6 +108,43 @@ jobs:
           source: docker-compose.telegram-gateway.yml
           target: /opt/telegram-gateway
 
+      - name: Update WireGuard tunnel config
+        uses: appleboy/ssh-action@v1
+        if: ${{ vars.WG_MAIN_SERVER_PUBLIC_KEY != '' && vars.WG_MAIN_SERVER_ENDPOINT != '' }}
+        with:
+          host: ${{ secrets.TG_VPS_HOST || vars.TG_VPS_HOST }}
+          username: ${{ secrets.TG_VPS_USER || vars.TG_VPS_USER }}
+          key: ${{ secrets.TG_VPS_SSH_KEY }}
+          script: |
+            set -e
+            if [ ! -f /etc/wireguard/wg0.conf ]; then
+              echo "No WireGuard config found, skipping"
+              exit 0
+            fi
+
+            PEER_PUB='${{ vars.WG_MAIN_SERVER_PUBLIC_KEY }}'
+            PEER_EP='${{ vars.WG_MAIN_SERVER_ENDPOINT }}'
+
+            CURRENT_PUB=$(grep -oP 'PublicKey\s*=\s*\K\S+' /etc/wireguard/wg0.conf | head -1)
+            CURRENT_EP=$(grep -oP 'Endpoint\s*=\s*\K\S+' /etc/wireguard/wg0.conf | head -1)
+
+            if [ "$CURRENT_PUB" = "$PEER_PUB" ] && [ "$CURRENT_EP" = "$PEER_EP" ]; then
+              echo "WireGuard config already up-to-date"
+              exit 0
+            fi
+
+            echo "Updating WireGuard peer: PublicKey=$PEER_PUB Endpoint=$PEER_EP"
+            sed -i "s|PublicKey\s*=\s*\S*|PublicKey = $PEER_PUB|" /etc/wireguard/wg0.conf
+            sed -i "s|Endpoint\s*=\s*\S*|Endpoint = $PEER_EP|" /etc/wireguard/wg0.conf
+
+            if wg show wg0 >/dev/null 2>&1; then
+              wg-quick down wg0
+              wg-quick up wg0
+              echo "WireGuard restarted"
+            else
+              echo "WireGuard was not running, skip restart"
+            fi
+
       - name: Write .env and deploy
         uses: appleboy/ssh-action@v1
         with:

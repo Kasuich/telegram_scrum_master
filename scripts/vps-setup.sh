@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Запускать от root на свежем Ubuntu 22.04 / 24.04
-# Использование: bash vps-setup.sh <github_deploy_public_key>
-# Пример: bash vps-setup.sh "ssh-ed25519 AAAAC3... github-actions"
+# Использование: bash vps-setup.sh <github_deploy_public_key> [wg_peer_public_key] [wg_tunnel_endpoint]
+# Пример: bash vps-setup.sh "ssh-ed25519 AAAAC3... github-actions" \
+#           "/m/qcRTuJLhaaNcrKHVTWVVeeYiilrugFDSOLBkeSyQ=" \
+#           "46.8.229.19:51820"
 
 set -euo pipefail
 
@@ -9,9 +11,20 @@ DEPLOY_USER="deploy"
 APP_DIR="/opt/pm-agent"
 REPO_URL="https://github.com/Artem216/digital_breakthrough_2026.git"
 GITHUB_PUBKEY="${1:-}"
+WG_PEER_PUBLIC_KEY="${2:-}"
+WG_TUNNEL_ENDPOINT="${3:-}"
+WG_INTERNAL_IP="10.99.0.1"
+WG_PEER_INTERNAL_IP="10.99.0.2"
+WG_PORT=51820
 
 if [[ -z "$GITHUB_PUBKEY" ]]; then
-  echo "Usage: $0 <github_deploy_public_key>"
+  echo "Usage: $0 <github_deploy_public_key> [wg_peer_public_key] [wg_tunnel_endpoint]"
+  echo ""
+  echo "  github_deploy_public_key  — публичный SSH-ключ для деплоя через GitHub Actions"
+  echo "  wg_peer_public_key       — (опционально) публичный ключ WireGuard туннельного сервера"
+  echo "  wg_tunnel_endpoint       — (опционально) адрес:порт туннельного сервера (например 46.8.229.19:51820)"
+  echo ""
+  echo "Если WireGuard-параметры не указаны, туннель настроен не будет."
   exit 1
 fi
 
