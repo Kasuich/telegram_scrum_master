@@ -112,3 +112,4 @@ def test_internal_goal_message_is_filtered():
         stage_id=StageId.QUERY,
     )
     assert "Цель запроса" not in reply
+    assert "DARKHORSE" not in reply

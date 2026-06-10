@@ -166,6 +166,7 @@ def _freeform_pm_agent():
             "CreateIssue",
             "ChangeIssueStatus",
             "UpdateIssue",
+            "BulkUpdate",
             "GetIssues",
             "tracker_board_snapshot",
         ]
@@ -216,7 +217,7 @@ class TestBoardStage:
 
 class TestQueryStage:
     @patch.dict("os.environ", ENV)
-    async def test_freeform_get_issues_finishes_without_verbalization_call(self):
+    async def test_freeform_get_issues_finishes_after_model_ends_turn(self):
         @platform_tool(name="GetIssues", risk="low", scopes=["tracker:read"])
         async def get_issues(query: str = "") -> dict:
             return {
@@ -231,16 +232,105 @@ class TestQueryStage:
 
         runner = _runner(_freeform_pm_agent())
         post = AsyncMock(
-            return_value=_http_ok(
-                _tool_call_response("GetIssues", {"query": "Assignee: me"})
-            )
+            side_effect=[
+                _http_ok(_tool_call_response("GetIssues", {"query": "Assignee: me"})),
+                _http_ok(_text_response("У вас одна открытая задача: DARKHORSE-272.")),
+            ]
         )
         with patch("httpx.AsyncClient.post", post):
             result = await runner.invoke("Какие задачи у меня?", "query-my-issues")
 
-        assert post.await_count == 1
-        assert result.reply == "- DARKHORSE-272 «Проверить файлы» (В работе)"
+        assert post.await_count == 2
+        assert result.reply == "У вас одна открытая задача: DARKHORSE-272."
         assert "Цель запроса" not in (result.reply or "")
+
+    @patch.dict("os.environ", ENV)
+    async def test_freeform_read_result_does_not_stop_followup_bulk_update(self):
+        @platform_tool(name="GetIssues", risk="low", scopes=["tracker:read"])
+        async def get_issues(query: str = "") -> dict:
+            return {
+                "issues": [
+                    {"key": "DARKHORSE-250", "summary": "Связка tg и tracker"},
+                    {"key": "DARKHORSE-249", "summary": "Поиск по логину"},
+                ]
+            }
+
+        @platform_tool(name="BulkUpdate", risk="medium", scopes=["tracker:write"])
+        async def bulk_update(issue_keys: list[str], fields: dict[str, Any]) -> dict:
+            return {
+                "updated": issue_keys,
+                "fields": fields,
+            }
+
+        runner = _runner(_freeform_pm_agent())
+        post = AsyncMock(
+            side_effect=[
+                _http_ok(_tool_call_response("GetIssues", {"query": "Assignee: me"})),
+                _http_ok(
+                    _tool_call_response(
+                        "BulkUpdate",
+                        {
+                            "issue_keys": ["DARKHORSE-250", "DARKHORSE-249"],
+                            "fields": {"storyPoints": 5},
+                        },
+                    )
+                ),
+                _http_ok(_text_response("Оценил и обновил две задачи по 5 SP.")),
+            ]
+        )
+        with patch("httpx.AsyncClient.post", post):
+            result = await runner.invoke(
+                "Проставь story points на мои задачи, оцени сам",
+                "estimate-my-issues",
+            )
+
+        tool_results = [
+            step.get("tool_name")
+            for step in result.steps
+            if step.get("kind") == "tool_result"
+        ]
+        assert tool_results == ["GetIssues", "BulkUpdate"]
+        assert result.reply == "Оценил и обновил две задачи по 5 SP."
+
+    @patch.dict("os.environ", ENV)
+    async def test_freeform_read_result_allows_better_aggregate_read(self):
+        @platform_tool(name="GetIssues", risk="low", scopes=["tracker:read"])
+        async def get_issues(query: str = "") -> dict:
+            return {"issues": [{"status": {"key": "open"}}]}
+
+        @platform_tool(name="tracker_board_snapshot", risk="low", scopes=["tracker:read"])
+        async def board_snapshot(include_closed: bool = False) -> dict:
+            return {
+                "by_assignee": {"Roman": 7, "Nikolay": 5},
+                "by_status": {"open": 6, "closed": 4, "inProgress": 2},
+            }
+
+        runner = _runner(_freeform_pm_agent())
+        post = AsyncMock(
+            side_effect=[
+                _http_ok(_tool_call_response("GetIssues", {"query": "Queue: DARKHORSE"})),
+                _http_ok(
+                    _tool_call_response(
+                        "tracker_board_snapshot",
+                        {"include_closed": True},
+                    )
+                ),
+                _http_ok(_text_response("Roman: 4 открытых, 2 закрытых, 1 в работе.")),
+            ]
+        )
+        with patch("httpx.AsyncClient.post", post):
+            result = await runner.invoke(
+                "У кого больше задач? Сделай разбивку по статусам.",
+                "aggregate-by-user",
+            )
+
+        tool_results = [
+            step.get("tool_name")
+            for step in result.steps
+            if step.get("kind") == "tool_result"
+        ]
+        assert tool_results == ["GetIssues", "tracker_board_snapshot"]
+        assert result.reply.startswith("Roman:")
 
     @patch.dict("os.environ", ENV)
     async def test_query_terminates_on_snapshot(self):

@@ -737,7 +737,17 @@ def _action_only_final_reply(
     if stage_id in _READ_VOICE_STAGES:
         if llm_text.strip() and not _is_safety_filtered(llm_text):
             return llm_text.strip()
-        # Use a neutral fallback so safety-filter text never reaches the user.
+        # The model has explicitly ended the turn. Recover a useful answer from
+        # the latest simple read only when its final text is empty or internal.
+        for step in reversed(steps):
+            if step.get("kind") != "tool_result":
+                continue
+            reply = _format_read_tool_reply(
+                str(step.get("tool_name") or ""),
+                step.get("result"),
+            )
+            if reply:
+                return reply
         if had_tool:
             return "Получил данные из трекера. Попробуй переформулировать запрос конкретнее."
     report = _build_action_report(steps)
@@ -1866,7 +1876,6 @@ class ReActRunner:
             # --- Auto-execute ---
             exec_args = dict(tool_call.arguments)
             result: Any = None
-            tool_succeeded = False
             if not freeform and tool_call.name == "tracker_apply_backlog_plan":
                 from core.backlog_tools import plan_json_looks_invalid
 
@@ -1874,7 +1883,6 @@ class ReActRunner:
                     exec_args["plan_json"] = ""
             try:
                 result = await self._execute_tool(tool_call.name, exec_args)
-                tool_succeeded = True
                 steps.append(
                     _step(
                         "tool_result",
@@ -1937,19 +1945,6 @@ class ReActRunner:
                     status="failed",
                 )
                 feedback = _tool_error_message(tool_call.name, err_msg, action_only=action_only)
-
-            if (
-                freeform
-                and tool_succeeded
-                and state.get("_stage") == StageId.QUERY.value
-            ):
-                read_reply = _format_read_tool_reply(tool_call.name, result)
-                if read_reply:
-                    return ScenarioOutcome(
-                        kind="done",
-                        turn_steps=list(steps[steps_before_turn:]),
-                        reply=read_reply,
-                    )
 
             if freeform:
                 feedback += _progress_checkpoint(
