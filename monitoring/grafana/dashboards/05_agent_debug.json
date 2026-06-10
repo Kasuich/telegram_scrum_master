@@ -41,12 +41,9 @@
       {
         "name": "session_id",
         "label": "Session",
-        "type": "query",
-        "datasource": {"type": "loki", "uid": "loki"},
-        "query": {"query": "label_values(session_id)", "refId": "session"},
-        "includeAll": true,
-        "allValue": ".*",
-        "current": {"text": "All", "value": "$__all"}
+        "type": "textbox",
+        "current": {"text": ".*", "value": ".*"},
+        "options": [{"text": ".*", "value": ".*", "selected": true}]
       }
     ]
   },
@@ -151,7 +148,7 @@
       "gridPos": {"h": 12, "w": 16, "x": 0, "y": 21},
       "datasource": {"type": "loki", "uid": "loki"},
       "options": {"showTime": true, "showLabels": false, "showCommonLabels": false, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none"},
-      "targets": [{"expr": "{job=\"docker\",agent_name=~\"$agent\",stage=~\"$stage\"}", "refId": "A"}]
+      "targets": [{"expr": "{job=\"docker\"} |= \"agent_step\" | json | agent_name=~\"$agent\" | stage=~\"$stage\" | line_format \"{{.agent_name}} {{.stage}} {{.kind}}: {{.tool_name}}\"", "refId": "A"}]
     },
     {
       "id": 11,
@@ -160,7 +157,7 @@
       "gridPos": {"h": 12, "w": 8, "x": 16, "y": 21},
       "datasource": {"type": "loki", "uid": "loki"},
       "options": {"showTime": true, "showLabels": false, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none"},
-      "targets": [{"expr": "{job=\"docker\",agent_name=~\"$agent\",kind=~\"tool_error|confirm_rejected\"}", "refId": "A"}]
+      "targets": [{"expr": "{job=\"docker\"} |= \"agent_step\" | json | agent_name=~\"$agent\" | kind=~\"tool_error|confirm_rejected\" | line_format \"{{.agent_name}} {{.kind}}: {{.tool_name}} {{.error}}\"", "refId": "A"}]
     },
     {
       "id": 12,
