@@ -60,6 +60,51 @@ echo ">>> Cloning repository (test)..."
 sudo -u "$DEPLOY_USER" git clone -b develop "$REPO_URL" "${APP_DIR}/test" 2>/dev/null || \
   echo "  (репо пустое или ветка develop ещё не создана — склонируй вручную позже)"
 
+echo ">>> Installing WireGuard..."
+apt-get install -y -q wireguard-tools
+
+if [[ -n "$WG_PEER_PUBLIC_KEY" && -n "$WG_TUNNEL_ENDPOINT" ]]; then
+  echo ">>> Configuring WireGuard tunnel..."
+  WG_PRIVATE_KEY=$(wg genkey)
+  WG_PUBLIC_KEY=$(echo "$WG_PRIVATE_KEY" | wg pubkey)
+
+  mkdir -p /etc/wireguard
+  cat > /etc/wireguard/wg0.conf << EOF
+[Interface]
+PrivateKey = ${WG_PRIVATE_KEY}
+Address = ${WG_INTERNAL_IP}/24
+ListenPort = ${WG_PORT}
+
+[Peer]
+PublicKey = ${WG_PEER_PUBLIC_KEY}
+Endpoint = ${WG_TUNNEL_ENDPOINT}
+AllowedIPs = ${WG_PEER_INTERNAL_IP}/32
+PersistentKeepalive = 25
+EOF
+  chmod 600 /etc/wireguard/wg0.conf
+
+  wg-quick up wg0
+  systemctl enable wg-quick@wg0
+
+  echo ""
+  echo ">>> WireGuard tunnel configured!"
+  echo "  Local IP  : ${WG_INTERNAL_IP}"
+  echo "  Peer IP   : ${WG_PEER_INTERNAL_IP}"
+  echo "  Public key : ${WG_PUBLIC_KEY}"
+  echo ""
+  echo "  Укажи этот публичный ключ на туннельном сервере в /etc/wireguard/wg0.conf:"
+  echo "    PublicKey = ${WG_PUBLIC_KEY}"
+  echo "    Endpoint = <IP_этого_сервера>:${WG_PORT}"
+  echo ""
+  echo "  Также обнови GitHub Variables:"
+  echo "    WG_MAIN_SERVER_PUBLIC_KEY = ${WG_PUBLIC_KEY}"
+  echo "    WG_MAIN_SERVER_ENDPOINT = <IP_этого_сервера>:${WG_PORT}"
+else
+  echo ">>> WireGuard tunnel skipped (no peer key/endpoint provided)"
+  echo "  Для настройки туннеля запусти скрипт с параметрами:"
+  echo "    $0 <ssh_key> <wg_peer_public_key> <wg_tunnel_endpoint>"
+fi
+
 echo ""
 echo "=== Done ==="
 echo "  App dir : ${APP_DIR}/test"
