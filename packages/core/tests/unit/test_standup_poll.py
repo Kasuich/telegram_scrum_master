@@ -3,7 +3,6 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from core.models import (
     Team,
@@ -100,11 +99,7 @@ def test_format_standup_poll_message_numbers_tasks() -> None:
 
 
 def test_parse_standup_response() -> None:
-    text = (
-        "задача 1 закрыта\n"
-        "задача 2 задерживается: жду доступ\n"
-        "новая задача: подготовить демо"
-    )
+    text = "задача 1 закрыта\nзадача 2 задерживается: жду доступ\nновая задача: подготовить демо"
     actions = parse_standup_response(text)
 
     assert [action.kind for action in actions] == ["close", "blocked", "create"]
@@ -113,9 +108,7 @@ def test_parse_standup_response() -> None:
 
 
 def test_parse_multiple_task_markers_in_one_line() -> None:
-    actions = parse_standup_response(
-        "задача 5 закрыта задача 11 нужно больше информации"
-    )
+    actions = parse_standup_response("задача 5 закрыта задача 11 нужно больше информации")
 
     assert [(action.kind, action.issue_number) for action in actions] == [
         ("close", 5),
@@ -298,9 +291,7 @@ async def test_handle_standup_response_applies_changes() -> None:
         team_id=team_id,
         telegram_user_id=telegram_user_id,
         text=(
-            "задача 1 закрыта\n"
-            "задача 2 задерживается: жду доступ\n"
-            "новая задача: подготовить демо"
+            "задача 1 закрыта\nзадача 2 задерживается: жду доступ\nновая задача: подготовить демо"
         ),
         client_factory=lambda: tracker,
     )
@@ -308,9 +299,7 @@ async def test_handle_standup_response_applies_changes() -> None:
     assert reply is not None
     assert poll.status == "answered"
     assert tracker.transitions[0][0] == "TEST-1"
-    assert tracker.comments == [
-        ("TEST-2", "задача 2 задерживается: жду доступ")
-    ]
+    assert tracker.comments == [("TEST-2", "задача 2 задерживается: жду доступ")]
     assert tracker.created == [("TEST", "подготовить демо", "alice")]
     assert "TEST-3" in reply
 

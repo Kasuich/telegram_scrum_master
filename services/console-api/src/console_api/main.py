@@ -406,13 +406,17 @@ async def request_login_code(
 
         user, telegram_user, installation = row
         recent = (
-            await session.execute(
-                select(LoginChallenge).where(
-                    LoginChallenge.user_id == user.id,
-                    LoginChallenge.created_at >= now - timedelta(minutes=10),
+            (
+                await session.execute(
+                    select(LoginChallenge).where(
+                        LoginChallenge.user_id == user.id,
+                        LoginChallenge.created_at >= now - timedelta(minutes=10),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if len(recent) >= 3:
             return CodeLoginChallengeResponse(challenge_id=str(challenge_id))
 

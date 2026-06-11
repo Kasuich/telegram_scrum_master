@@ -188,3 +188,47 @@ def test_map_speakers_no_overlap_sets_none() -> None:
     timeline = [{"start_ms": 5000, "end_ms": 6000, "display_name": "Алиса"}]
     result = map_speakers_to_names(segments, timeline)
     assert result[0]["speaker_name"] is None
+
+
+def test_deduplicate_mirror_segments_collapses_diverging_tail() -> None:
+    """Real mono-mix case: same phrase with a trailing laugh on one label."""
+    segments = [
+        {
+            "start_ms": 9000,
+            "end_ms": 9500,
+            "speaker_label": "SPEAKER_01",
+            "text": "9000",
+        },
+        {
+            "start_ms": 9000,
+            "end_ms": 9800,
+            "speaker_label": "SPEAKER_02",
+            "text": "9000 ха ха ха",
+        },
+    ]
+    result = deduplicate_mirror_segments(segments)
+    assert len(result) == 1
+    assert result[0]["text"] == "9000 ха ха ха"
+
+
+def test_map_speakers_roster_fallback_when_label_count_mismatches_roster() -> None:
+    """When label count != roster count, map dominant labels to roster order."""
+    segments = [
+        {"start_ms": 0, "end_ms": 5000, "speaker_label": "SPEAKER_01", "text": "длинная речь"},
+        {"start_ms": 5000, "end_ms": 5500, "speaker_label": "SPEAKER_02", "text": "коротко"},
+        {"start_ms": 5500, "end_ms": 5600, "speaker_label": "SPEAKER_03", "text": "эхо"},
+    ]
+    roster = [
+        {"display_name": "Алиса", "source": "telemost_ui"},
+        {"display_name": "Боб", "source": "telemost_ui"},
+    ]
+    result = map_speakers_to_names(
+        segments,
+        [],
+        participants_observed=roster,
+        bot_display_name="PM Assistant (recording)",
+    )
+    by_label = {seg["speaker_label"]: seg["speaker_name"] for seg in result}
+    assert by_label["SPEAKER_01"] == "Алиса"
+    assert by_label["SPEAKER_02"] == "Боб"
+    assert by_label["SPEAKER_03"] is None

@@ -11,6 +11,7 @@ from core.turn_guards import (
     message_has_close_intent,
     message_has_create_intent,
     message_has_create_sprint_intent,
+    message_has_meeting_sync_intent,
     message_has_status_update_intent,
 )
 
@@ -18,6 +19,13 @@ from core.turn_guards import (
 def test_create_intent():
     assert message_has_create_intent("Создай Коле задачу MCP")
     assert not message_has_close_intent("Создай Коле задачу MCP")
+
+
+def test_meeting_sync_intent():
+    assert message_has_meeting_sync_intent("Синхронизируй доску по итогам встречи:\n...")
+    assert message_has_meeting_sync_intent("итоги встречи: обсудили")
+    assert not message_has_meeting_sync_intent("Оформи доску из саммари")
+    assert not message_has_meeting_sync_intent("Создай задачу MCP")
 
 
 def test_create_sprint_intent():

@@ -84,9 +84,7 @@ class Tool(BaseModel):
             required = self.input_schema.get("required", [])
             missing = [name for name in required if name not in arguments]
             if missing:
-                raise ToolValidationError(
-                    f"Missing required argument: {', '.join(missing)}"
-                )
+                raise ToolValidationError(f"Missing required argument: {', '.join(missing)}")
             return dict(arguments)
         validated = {}
         for param in self.parameters:

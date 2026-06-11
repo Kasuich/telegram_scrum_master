@@ -38,4 +38,4 @@ def test_plan_json_valid_with_ellipsis_inside_string():
 
 def test_plan_json_empty_or_unparseable_is_invalid():
     assert plan_json_looks_invalid("") is True
-    assert plan_json_looks_invalid("{\"epic\": …}") is True
+    assert plan_json_looks_invalid('{"epic": …}') is True

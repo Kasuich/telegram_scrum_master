@@ -149,7 +149,9 @@ def deserialize_plan(data: dict[str, Any] | None) -> GoalPlan | None:
                 intent=str(raw.get("intent") or ""),
                 entities=raw.get("entities") if isinstance(raw.get("entities"), dict) else {},
                 success_criteria=str(raw.get("success_criteria") or ""),
-                missing_info=raw.get("missing_info") if isinstance(raw.get("missing_info"), list) else [],
+                missing_info=(
+                    raw.get("missing_info") if isinstance(raw.get("missing_info"), list) else []
+                ),
                 rationale=raw.get("rationale"),
             )
         )
@@ -195,7 +197,9 @@ def _parse_decompose_json(raw: str, message: str) -> GoalPlan | None:
                 intent=str(entry.get("intent") or ""),
                 entities=entry.get("entities") if isinstance(entry.get("entities"), dict) else {},
                 success_criteria=str(entry.get("success_criteria") or ""),
-                missing_info=entry.get("missing_info") if isinstance(entry.get("missing_info"), list) else [],
+                missing_info=(
+                    entry.get("missing_info") if isinstance(entry.get("missing_info"), list) else []
+                ),
                 rationale=entry.get("rationale"),
             )
         )
@@ -219,7 +223,13 @@ async def decompose_goal_llm(message: str) -> GoalPlan:
     """One LLM call with structured JSON output. Falls back to rules on failure."""
     from core.llm import LLMClient, Message
 
-    client = LLMClient(model="google/gemini-3.1-flash-lite", provider="openrouter", temperature=0.0, max_tokens=512, max_retries=0)
+    client = LLMClient(
+        model="google/gemini-3.1-flash-lite",
+        provider="openrouter",
+        temperature=0.0,
+        max_tokens=512,
+        max_retries=0,
+    )
     try:
         resp = await client.complete(
             [

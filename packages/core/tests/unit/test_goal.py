@@ -228,18 +228,20 @@ def test_deserialize_full_roundtrip():
 
 
 def test_parse_valid_json():
-    raw = json.dumps({
-        "goals": [
-            {
-                "stage": "INTAKE",
-                "payload": "создай задачу",
-                "intent": "create",
-                "entities": {},
-                "success_criteria": "ok",
-                "missing_info": [],
-            }
-        ]
-    })
+    raw = json.dumps(
+        {
+            "goals": [
+                {
+                    "stage": "INTAKE",
+                    "payload": "создай задачу",
+                    "intent": "create",
+                    "entities": {},
+                    "success_criteria": "ok",
+                    "missing_info": [],
+                }
+            ]
+        }
+    )
     plan = _parse_decompose_json(raw, "создай задачу")
     assert plan is not None
     assert len(plan.items) == 1
@@ -327,14 +329,18 @@ def test_parse_completely_invalid_json():
 
 
 def test_parse_entities_not_dict():
-    raw = json.dumps({"goals": [{"stage": "QUERY", "payload": "hi", "intent": "", "entities": "bad"}]})
+    raw = json.dumps(
+        {"goals": [{"stage": "QUERY", "payload": "hi", "intent": "", "entities": "bad"}]}
+    )
     plan = _parse_decompose_json(raw, "hi")
     assert plan is not None
     assert plan.items[0].entities == {}
 
 
 def test_parse_missing_info_not_list():
-    raw = json.dumps({"goals": [{"stage": "QUERY", "payload": "hi", "intent": "", "missing_info": "bad"}]})
+    raw = json.dumps(
+        {"goals": [{"stage": "QUERY", "payload": "hi", "intent": "", "missing_info": "bad"}]}
+    )
     plan = _parse_decompose_json(raw, "hi")
     assert plan is not None
     assert plan.items[0].missing_info == []

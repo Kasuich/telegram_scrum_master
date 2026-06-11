@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from core.goal import GoalItem, GoalPlan
+import pytest
+from core.goal import GoalItem
+from core.react import GoalVerdict, _goal_met, _goal_terminal_for_stage
 from core.stage_graph import StageId
-from core.react import _goal_met, GoalVerdict, _goal_terminal_for_stage
 
 
 def test_goal_verdict_dataclass():

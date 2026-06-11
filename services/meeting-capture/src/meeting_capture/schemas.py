@@ -86,6 +86,7 @@ class TranscriptSegmentDTO(BaseModel):
     start_ms: int
     end_ms: int
     speaker_label: str
+    speaker_name: str | None = None
     text: str
 
 

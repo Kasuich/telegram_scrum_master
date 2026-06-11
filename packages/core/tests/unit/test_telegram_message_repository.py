@@ -1,9 +1,10 @@
 from __future__ import annotations
+
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from sqlalchemy import select
 from core.models import TelegramMessage
 from core.repositories.telegram_message import (
     MessageCursor,
@@ -103,7 +104,9 @@ class TestTelegramMessageRepository:
         return TelegramMessageRepository(mock_session)
 
     @pytest.mark.asyncio
-    async def test_list_messages_returns_empty(self, repo: TelegramMessageRepository, mock_session: AsyncMock) -> None:
+    async def test_list_messages_returns_empty(
+        self, repo: TelegramMessageRepository, mock_session: AsyncMock
+    ) -> None:
         mock_result = MagicMock()
         mock_result.scalars.return_value.all.return_value = []
         mock_session.execute.return_value = mock_result
@@ -116,7 +119,9 @@ class TestTelegramMessageRepository:
         mock_session.execute.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_list_messages_returns_results(self, repo: TelegramMessageRepository, mock_session: AsyncMock) -> None:
+    async def test_list_messages_returns_results(
+        self, repo: TelegramMessageRepository, mock_session: AsyncMock
+    ) -> None:
         team_id = uuid.uuid4()
         msg1 = _msg(id=uuid.uuid4(), team_id=team_id, external_message_id="1", text="First")
         msg2 = _msg(id=uuid.uuid4(), team_id=team_id, external_message_id="2", text="Second")
@@ -133,7 +138,9 @@ class TestTelegramMessageRepository:
         assert messages[1].text == "Second"
 
     @pytest.mark.asyncio
-    async def test_list_messages_respects_limit(self, repo: TelegramMessageRepository, mock_session: AsyncMock) -> None:
+    async def test_list_messages_respects_limit(
+        self, repo: TelegramMessageRepository, mock_session: AsyncMock
+    ) -> None:
         team_id = uuid.uuid4()
         msgs = [_msg(id=uuid.uuid4(), team_id=team_id) for _ in range(10)]
 
@@ -151,7 +158,9 @@ class TestTelegramMessageRepository:
             assert next_cursor.id == msgs[2].id  # Last returned
 
     @pytest.mark.asyncio
-    async def test_list_messages_no_cursor_when_fewer_than_limit(self, repo: TelegramMessageRepository, mock_session: AsyncMock) -> None:
+    async def test_list_messages_no_cursor_when_fewer_than_limit(
+        self, repo: TelegramMessageRepository, mock_session: AsyncMock
+    ) -> None:
         team_id = uuid.uuid4()
         msgs = [_msg(id=uuid.uuid4(), team_id=team_id) for _ in range(2)]
 
@@ -166,7 +175,9 @@ class TestTelegramMessageRepository:
         assert next_cursor is None  # No more results
 
     @pytest.mark.asyncio
-    async def test_list_messages_with_cursor(self, repo: TelegramMessageRepository, mock_session: AsyncMock) -> None:
+    async def test_list_messages_with_cursor(
+        self, repo: TelegramMessageRepository, mock_session: AsyncMock
+    ) -> None:
         team_id = uuid.uuid4()
         cursor_id = uuid.uuid4()
         cursor_ts = datetime.now(tz=timezone.utc)
@@ -187,7 +198,9 @@ class TestTelegramMessageRepository:
         assert call_args is not None
 
     @pytest.mark.asyncio
-    async def test_list_messages_filters_deleted(self, repo: TelegramMessageRepository, mock_session: AsyncMock) -> None:
+    async def test_list_messages_filters_deleted(
+        self, repo: TelegramMessageRepository, mock_session: AsyncMock
+    ) -> None:
         team_id = uuid.uuid4()
 
         mock_result = MagicMock()
@@ -201,7 +214,9 @@ class TestTelegramMessageRepository:
         assert options.include_deleted is False
 
     @pytest.mark.asyncio
-    async def test_list_messages_includes_deleted_when_flag(self, repo: TelegramMessageRepository, mock_session: AsyncMock) -> None:
+    async def test_list_messages_includes_deleted_when_flag(
+        self, repo: TelegramMessageRepository, mock_session: AsyncMock
+    ) -> None:
         team_id = uuid.uuid4()
 
         mock_result = MagicMock()
@@ -215,7 +230,9 @@ class TestTelegramMessageRepository:
         assert options.include_deleted is True
 
     @pytest.mark.asyncio
-    async def test_get_message_found(self, repo: TelegramMessageRepository, mock_session: AsyncMock) -> None:
+    async def test_get_message_found(
+        self, repo: TelegramMessageRepository, mock_session: AsyncMock
+    ) -> None:
         msg_id = uuid.uuid4()
         msg = _msg(id=msg_id)
 
@@ -229,7 +246,9 @@ class TestTelegramMessageRepository:
         assert result.id == msg_id
 
     @pytest.mark.asyncio
-    async def test_get_message_not_found(self, repo: TelegramMessageRepository, mock_session: AsyncMock) -> None:
+    async def test_get_message_not_found(
+        self, repo: TelegramMessageRepository, mock_session: AsyncMock
+    ) -> None:
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_session.execute.return_value = mock_result
@@ -239,7 +258,9 @@ class TestTelegramMessageRepository:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_list_messages_filters_by_direction(self, repo: TelegramMessageRepository, mock_session: AsyncMock) -> None:
+    async def test_list_messages_filters_by_direction(
+        self, repo: TelegramMessageRepository, mock_session: AsyncMock
+    ) -> None:
         team_id = uuid.uuid4()
 
         mock_result = MagicMock()
@@ -253,7 +274,9 @@ class TestTelegramMessageRepository:
         assert options.direction == "inbound"
 
     @pytest.mark.asyncio
-    async def test_list_messages_filters_by_access_mode(self, repo: TelegramMessageRepository, mock_session: AsyncMock) -> None:
+    async def test_list_messages_filters_by_access_mode(
+        self, repo: TelegramMessageRepository, mock_session: AsyncMock
+    ) -> None:
         team_id = uuid.uuid4()
 
         mock_result = MagicMock()

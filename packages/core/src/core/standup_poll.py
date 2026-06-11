@@ -97,8 +97,7 @@ def _and_yql(*parts: str) -> str:
     if not cleaned:
         return ""
     wrapped = [
-        part if part.startswith("(") and part.endswith(")") else f"({part})"
-        for part in cleaned
+        part if part.startswith("(") and part.endswith(")") else f"({part})" for part in cleaned
     ]
     return " AND ".join(wrapped)
 
@@ -281,10 +280,7 @@ def format_standup_poll_message(
 ) -> str:
     board = f" ({participant.board_name})" if participant.board_name else ""
     lines = [
-        (
-            f"{participant.display}, короткий статус перед дайджестом "
-            f"{local_hour}{board}:"
-        ),
+        (f"{participant.display}, короткий статус перед дайджестом {local_hour}{board}:"),
         "",
     ]
     if issues:
@@ -431,8 +427,7 @@ async def send_team_standup_poll(
                 text=text,
                 category=STANDUP_POLL_CATEGORY,
                 dedupe_key=(
-                    f"standup-poll:{team_uuid}:{local_hour}:"
-                    f"{participant.telegram_user_id}:question"
+                    f"standup-poll:{team_uuid}:{local_hour}:{participant.telegram_user_id}:question"
                 ),
             )
             poll_ids.append(str(poll.id))
@@ -496,10 +491,7 @@ def _action_kind(text: str) -> str:
     )
     if any(token in lowered for token in blocked_tokens):
         return "blocked"
-    if any(
-        token in lowered
-        for token in ("в работе", "начал", "продолжа", "in progress")
-    ):
+    if any(token in lowered for token in ("в работе", "начал", "продолжа", "in progress")):
         return "in_progress"
     return "comment"
 
@@ -809,9 +801,7 @@ def _format_apply_report(results: list[dict[str, Any]]) -> str:
                 if item.get("transitioned"):
                     lines.append(f"- {key}: отменил")
                 else:
-                    lines.append(
-                        f"- {key}: комментарий, статус не изменил"
-                    )
+                    lines.append(f"- {key}: комментарий, статус не изменил")
             elif item.get("kind") == "in_progress":
                 lines.append(f"- {key}: перевел в работу")
             else:

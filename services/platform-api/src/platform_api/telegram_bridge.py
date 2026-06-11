@@ -1135,9 +1135,7 @@ async def _upsert_business_connection(
     )
     bc = (await session.execute(stmt)).scalar_one_or_none()
 
-    user_stmt = select(TelegramUser).where(
-        TelegramUser.external_user_id == user_external_id
-    )
+    user_stmt = select(TelegramUser).where(TelegramUser.external_user_id == user_external_id)
     telegram_user = (await session.execute(user_stmt)).scalar_one_or_none()
 
     if bc is None:
@@ -1336,9 +1334,7 @@ async def lease_outbox(session: AsyncSession, data: LeaseRequest) -> list[LeaseI
             )
             bc = (await session.execute(bc_stmt)).scalar_one_or_none()
 
-            if bc is None or not _can_send_via_business_connection(
-                bc, row.target_chat_id
-            ):
+            if bc is None or not _can_send_via_business_connection(bc, row.target_chat_id):
                 # Skip this item, mark as cancelled
                 row.status = "cancelled"
                 row.last_error = "business_connection_revoked"
@@ -1447,12 +1443,15 @@ async def resolve_installation_by_token(
 
     from core.models import TelegramInstallation
 
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    _token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     # For now, resolve by external_bot_id pattern or return first active installation
     # In production this would look up a separate onboarding_tokens table
-    stmt = select(TelegramInstallation).where(
-        TelegramInstallation.status == "active"
-    ).order_by(TelegramInstallation.created_at.desc()).limit(1)
+    stmt = (
+        select(TelegramInstallation)
+        .where(TelegramInstallation.status == "active")
+        .order_by(TelegramInstallation.created_at.desc())
+        .limit(1)
+    )
 
     installation = (await session.execute(stmt)).scalar_one_or_none()
     if installation is None:
@@ -1507,17 +1506,13 @@ async def business_connection_connect(
     Stores the connection and permissions.
     """
 
-    stmt = select(TelegramInstallation).where(
-        TelegramInstallation.status == "active"
-    ).limit(1)
+    stmt = select(TelegramInstallation).where(TelegramInstallation.status == "active").limit(1)
     installation = (await session.execute(stmt)).scalar_one_or_none()
 
     if installation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No active installation")
 
-    user_stmt = select(TelegramUser).where(
-        TelegramUser.external_user_id == payload.user_id
-    )
+    user_stmt = select(TelegramUser).where(TelegramUser.external_user_id == payload.user_id)
     telegram_user = (await session.execute(user_stmt)).scalar_one_or_none()
 
     if telegram_user is None:
@@ -1675,10 +1670,7 @@ async def list_messages(
     """Query normalized message corpus with cursor-based pagination."""
     from core.repositories import MessageCursor, MessageQueryOptions, TelegramMessageRepository
 
-    if not _verify_hmac(request):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature"
-        )
+    await verify_bridge_request(request)
 
     try:
         team_uuid = uuid.UUID(team_id)
@@ -1686,9 +1678,7 @@ async def list_messages(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid team_id")
 
     if direction and direction not in ("inbound", "outbound"):
-        raise HTTPException(
-            status_code=400, detail="direction must be 'inbound' or 'outbound'"
-        )
+        raise HTTPException(status_code=400, detail="direction must be 'inbound' or 'outbound'")
 
     if access_mode and access_mode not in ("workspace_bot", "secretary", "import"):
         raise HTTPException(status_code=400, detail="Invalid access_mode")
@@ -1727,8 +1717,7 @@ async def create_import(
     session: AsyncSession = Depends(_db_session),
 ) -> ImportReport:
     """Create a new Telegram Desktop import job."""
-    if not _verify_hmac(request):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature")
+    await verify_bridge_request(request)
 
     try:
         team_uuid = uuid.UUID(body.team_id)
@@ -1777,8 +1766,7 @@ async def presign_upload(
     body: PresignedUploadRequest,
 ) -> dict:
     """Generate presigned URL for gateway to upload Telegram media to S3."""
-    if not _verify_hmac(request):
-        raise HTTPException(status_code=401, detail="Invalid signature")
+    await verify_bridge_request(request)
 
     installation_id = request.headers.get("X-Installation-Id", "")
     if not installation_id:
@@ -1786,6 +1774,7 @@ async def presign_upload(
 
     try:
         from platform_api.telegram_media import generate_presigned_upload
+
         result = generate_presigned_upload(body, installation_id)
         return result.model_dump()
     except ValueError as exc:
@@ -1801,8 +1790,7 @@ async def get_import(
     session: AsyncSession = Depends(_db_session),
 ) -> ImportReport:
     """Get import job status and report."""
-    if not _verify_hmac(request):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature")
+    await verify_bridge_request(request)
 
     try:
         job_uuid = uuid.UUID(job_id)
@@ -1845,12 +1833,11 @@ async def replay_dead_letter(
     Admin-only — requires valid HMAC signature. Use to recover from permanent
     failures after the underlying issue (bad token, banned bot, etc.) is fixed.
     """
-    if not _verify_hmac(request):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature")
+    await verify_bridge_request(request)
 
-    stmt: Select = select(TelegramOutbox).where(
-        TelegramOutbox.status == "dead_letter"
-    ).limit(body.limit)
+    stmt: Select = (
+        select(TelegramOutbox).where(TelegramOutbox.status == "dead_letter").limit(body.limit)
+    )
 
     if body.team_id:
         try:

@@ -136,9 +136,10 @@ class MeetingDispatcher:
                 recording_started_at=utcnow(),
                 metadata_update={"participants_observed": join_result.participants_observed},
             )
+            # Anchor the speaker timeline to audio capture start, not post-await drift.
+            record_start_monotonic = asyncio.get_running_loop().time()
             await recorder.start()
             recorder_started = True
-            record_start_monotonic = asyncio.get_running_loop().time()
             # Sample the active speaker from the DOM in parallel with the call so
             # SpeechKit's anonymous labels can later be mapped to real names.
             speaker_stop = asyncio.Event()
@@ -628,7 +629,7 @@ class MeetingDispatcher:
                         "method": "invoke",
                         "params": {
                             "agent": "pm_agent",
-                            "message": f"Оформи доску\n{summary}",
+                            "message": f"Синхронизируй доску по итогам встречи:\n{summary}",
                             "session_id": f"meeting-board:{meeting_id}",
                             "context": context,
                         },

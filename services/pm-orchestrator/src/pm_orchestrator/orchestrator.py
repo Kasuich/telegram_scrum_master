@@ -398,7 +398,13 @@ class OrchestratorService:
             separators=(",", ":"),
         )
 
-    def _log_actions(self, agent_name: str, result: AgentResult, *, trace_label: str | None = None) -> None:
+    def _log_actions(
+        self,
+        agent_name: str,
+        result: AgentResult,
+        *,
+        trace_label: str | None = None,
+    ) -> None:
         loggable = {
             "stage",
             "tool_call",
@@ -412,7 +418,7 @@ class OrchestratorService:
         stage = "unknown"
         tool_risks = {tool.name: tool.risk for tool in get_registry().list()}
 
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         step_timestamps: list[datetime | None] = []
         for step in result.steps:
@@ -509,8 +515,14 @@ class OrchestratorService:
 
             if step.get("kind") in loggable:
                 current_ts = step_timestamps[step_idx] if step_idx < len(step_timestamps) else None
-                prev_ts = step_timestamps[step_idx - 1] if step_idx > 0 and step_idx - 1 < len(step_timestamps) else None
-                next_ts = step_timestamps[step_idx + 1] if step_idx + 1 < len(step_timestamps) else None
+                prev_ts = (
+                    step_timestamps[step_idx - 1]
+                    if step_idx > 0 and step_idx - 1 < len(step_timestamps)
+                    else None
+                )
+                next_ts = (
+                    step_timestamps[step_idx + 1] if step_idx + 1 < len(step_timestamps) else None
+                )
                 duration_s = None
                 offset_s = None
                 if current_ts and trace_start:

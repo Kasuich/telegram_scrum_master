@@ -7,28 +7,41 @@ the telegram_messages table with dedupe by (installation_id, chat_id, external_m
 
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
-from core.db import get_session
-from core.models import TelegramChat, TelegramImportJob, TelegramInstallation, TelegramMessage, TelegramUser
-from pydantic import BaseModel, Field
+from core.models import (
+    TelegramChat,
+    TelegramImportJob,
+    TelegramMessage,
+)
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _CHUNK_SIZE = 500
 _MAX_TEXT_LENGTH = 4096
 _MAX_CAPTION_LENGTH = 1024
-_SUPPORTED_TYPES = frozenset({
-    "message", "service",
-    "photo", "video", "document", "audio", "voice",
-    "sticker", "video_note", "contact", "location", "poll", "game",
-    "migration",
-})
+_SUPPORTED_TYPES = frozenset(
+    {
+        "message",
+        "service",
+        "photo",
+        "video",
+        "document",
+        "audio",
+        "voice",
+        "sticker",
+        "video_note",
+        "contact",
+        "location",
+        "poll",
+        "game",
+        "migration",
+    }
+)
 
 
 @dataclass
@@ -150,12 +163,15 @@ def parse_export_messages(chat_data: dict[str, Any]) -> AsyncIterator[ParsedMess
 
         actor_external_id = None
         actor_name = None
-        reply_to = str(raw_msg["reply_to_message_id"]) if raw_msg.get("reply_to_message_id") else None
+        reply_to = (
+            str(raw_msg["reply_to_message_id"]) if raw_msg.get("reply_to_message_id") else None
+        )
 
         if msg_type not in ("service", "migration"):
             actor_external_id = str(raw_msg.get("from_id", ""))
             actor_name = raw_msg.get("from")
-            caption = text if message_kind in ("photo", "video", "document", "audio", "voice") else None
+            media_kinds = ("photo", "video", "document", "audio", "voice")
+            caption = text if message_kind in media_kinds else None
 
         media_json = _build_media_json(raw_msg)
 

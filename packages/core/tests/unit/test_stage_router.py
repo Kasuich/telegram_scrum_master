@@ -22,6 +22,15 @@ def test_rule_board_markers_and_long_text():
     assert detect_stage_rules("x" * 900) is StageId.BOARD
 
 
+def test_rule_meeting_sync_wins_over_backlog():
+    # R0 must beat the backlog rule even for long summaries (>=800 chars).
+    long_summary = "Синхронизируй доску по итогам встречи:\n" + "детали " * 200
+    assert detect_stage_rules(long_summary) is StageId.MEETING_SYNC
+    assert detect_stage_rules("итоги встречи: обсудили задачи") is StageId.MEETING_SYNC
+    # Manual board phrasing is unchanged.
+    assert detect_stage_rules("оформи доску из этого") is StageId.BOARD
+
+
 def test_rule_reorg():
     assert detect_stage_rules("переназначь DARKHORSE-3 на Рому") is StageId.REORG
     assert detect_stage_rules("подними приоритет у задачи") is StageId.REORG

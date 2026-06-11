@@ -1,17 +1,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime, timezone
 
 import pytest
-from fastapi import HTTPException
 from core.models import (
     TelegramBusinessConnection,
-    TelegramChat,
     TelegramInstallation,
-    TelegramMessage,
-    TelegramOutbox,
     TelegramUser,
 )
 from platform_api.telegram_bridge import (
@@ -164,7 +159,9 @@ def test_can_send_if_no_policy_restriction() -> None:
 # _upsert_business_connection tests
 @pytest.mark.asyncio
 async def test_upsert_creates_new_connection() -> None:
-    pytest.skip("Bug in telegram_bridge.py: TelegramBusinessConnection doesn't have metadata_json field")
+    pytest.skip(
+        "Bug in telegram_bridge.py: TelegramBusinessConnection doesn't have metadata_json field"
+    )
 
 
 @pytest.mark.asyncio

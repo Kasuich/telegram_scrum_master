@@ -25,6 +25,15 @@ def test_get_stage_by_enum_str_and_none():
     assert get_stage("NOPE") is None
 
 
+def test_meeting_sync_stage_registered_with_addendum():
+    stage = get_stage(StageId.MEETING_SYNC)
+    assert stage is not None
+    assert stage.id is StageId.MEETING_SYNC
+    # Carries reconcile steering and exposes both create and update tools.
+    assert "MEETING_SYNC" in stage.prompt_addendum
+    assert {"tracker_create_issue", "tracker_comment_issue"} <= stage.allowed_tools
+
+
 # ---------------------------------------------------------------------------
 # STATUS stage
 # ---------------------------------------------------------------------------

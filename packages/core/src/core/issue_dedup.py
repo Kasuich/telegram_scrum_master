@@ -184,9 +184,11 @@ async def find_duplicate_issue(
             ):
                 continue
             cand_norm = normalize_summary(str(issue.get("summary") or ""))
-            score = 1.0 if cand_norm == planned_norm else difflib.SequenceMatcher(
-                None, planned_norm, cand_norm
-            ).ratio()
+            score = (
+                1.0
+                if cand_norm == planned_norm
+                else difflib.SequenceMatcher(None, planned_norm, cand_norm).ratio()
+            )
             if score > best_score:
                 best_score = score
                 best = issue
@@ -196,6 +198,60 @@ async def find_duplicate_issue(
     return best
 
 
+async def find_duplicate_issues(
+    client: TrackerClient,
+    queue: str,
+    *,
+    summary: str,
+    issue_type: str = "",
+    parent_key: str | None = None,
+    threshold: float | None = None,
+) -> list[dict[str, Any]]:
+    """
+    All non-cancelled issues matching summary, type and parent — best score first.
+
+    Like find_duplicate_issue but returns every match (deduplicated by key) so the
+    caller can surface the full list of similar issues, not just the best one.
+    """
+    if not summary.strip():
+        return []
+
+    thresh = threshold if threshold is not None else dedup_similarity_threshold()
+    planned_norm = normalize_summary(summary)
+    scored: list[tuple[float, dict[str, Any]]] = []
+    seen: set[str] = set()
+
+    for yql in build_dedup_find_queries(summary=summary, issue_type=issue_type):
+        try:
+            issues = await client.search_issues(yql, queue=queue, limit=10)
+        except TrackerError:
+            continue
+        for issue in filter_out_cancelled(issues):
+            key = str(issue.get("key") or "")
+            if key and key in seen:
+                continue
+            if not issues_match_duplicate(
+                summary,
+                issue,
+                type_key=issue_type,
+                parent_key=parent_key,
+                threshold=thresh,
+            ):
+                continue
+            if key:
+                seen.add(key)
+            cand_norm = normalize_summary(str(issue.get("summary") or ""))
+            score = (
+                1.0
+                if cand_norm == planned_norm
+                else difflib.SequenceMatcher(None, planned_norm, cand_norm).ratio()
+            )
+            scored.append((score, issue))
+
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [issue for _, issue in scored]
+
+
 __all__ = [
     "build_dedup_status_exclusions",
     "cancelled_status_names",
@@ -203,6 +259,7 @@ __all__ = [
     "dedup_enabled_for_create",
     "filter_out_cancelled",
     "find_duplicate_issue",
+    "find_duplicate_issues",
     "is_cancelled_issue",
     "issues_match_duplicate",
     "normalize_summary",

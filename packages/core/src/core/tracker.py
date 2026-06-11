@@ -220,9 +220,7 @@ class TrackerClient:
 
     async def list_comments(self, issue_key: str, *, per_page: int = 50) -> list[dict[str, Any]]:
         """Return comments of an issue (oldest first)."""
-        result = await self._request(
-            "GET", f"/issues/{issue_key}/comments?perPage={per_page}"
-        )
+        result = await self._request("GET", f"/issues/{issue_key}/comments?perPage={per_page}")
         return result if isinstance(result, list) else []
 
     # ------------------------------------------------------------------
@@ -318,7 +316,7 @@ class TrackerClient:
         max_pages: int = 50,
     ) -> list[dict[str, Any]]:
         """Fetch ALL issues matching a YQL query, paginating automatically.
-        
+
         Uses perPage + page to iterate. Stops when a page returns fewer
         than page_size results or max_pages is reached.
         """
@@ -393,11 +391,7 @@ class TrackerClient:
             )
 
         match = next(
-            (
-                t
-                for t in transitions
-                if matches_transition(t)
-            ),
+            (t for t in transitions if matches_transition(t)),
             None,
         )
         if match is None:
