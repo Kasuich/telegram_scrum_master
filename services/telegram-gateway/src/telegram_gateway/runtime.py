@@ -387,6 +387,7 @@ class GatewayRuntime:
             cps=self.settings.stream_cps,
             interval=self.settings.stream_interval,
             max_steps=self.settings.stream_max_steps,
+            min_duration=self.settings.stream_min_duration,
             max_duration=self.settings.stream_max_duration,
         )
         draft_id = self._next_draft_id()
@@ -400,6 +401,12 @@ class GatewayRuntime:
                 await self.bot_client.send_message_draft(
                     chat_id=chat_id, draft_id=draft_id, text=accumulated
                 )
+            # Clear the plain draft so the final send commits as a clean,
+            # formatted message — a draft left active otherwise finalizes the
+            # reply as its plain text, stripping links/formatting.
+            await self.bot_client.send_message_draft(
+                chat_id=chat_id, draft_id=draft_id, text=""
+            )
         except BotAPIError:
             # Draft stream failed (e.g. group chat) — fall through and commit.
             pass

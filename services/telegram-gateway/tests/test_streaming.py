@@ -45,20 +45,39 @@ def test_thinking_html_cycles_the_sequence() -> None:
     assert thinking_html(0, rng) == f"<i>{STAGE_PHRASES[THINKING_SEQUENCE[0]]}</i>"
 
 
-def test_plan_pacing_targets_cps() -> None:
-    chunk, delay = plan_pacing(30, cps=6, interval=0.8, max_steps=10, max_duration=6)
-    assert delay == 0.8
-    assert chunk == round(6 * 0.8)  # ~5 chars per draft update
+_PACE = dict(cps=60, interval=0.4, max_steps=20, min_duration=0.8, max_duration=7)
 
 
-def test_plan_pacing_caps_steps_by_duration() -> None:
-    chunk, delay = plan_pacing(5000, cps=6, interval=0.8, max_steps=100, max_duration=6)
-    steps = -(-5000 // chunk)  # ceil
-    assert steps <= int(6 / 0.8)
+def test_plan_pacing_short_message_is_quick_not_draggy() -> None:
+    # A 30-char message should reveal in ~min_duration, not crawl.
+    chunk, delay = plan_pacing(30, **_PACE)
+    steps = -(-30 // chunk)  # ceil
+    total_time = steps * delay
+    assert total_time <= 1.2  # ≈ min_duration, snappy
+    assert steps <= 3
+
+
+def test_plan_pacing_long_message_capped_but_smooth() -> None:
+    # A long message caps at max_duration but in many small steps (not 1 jump).
+    chunk, delay = plan_pacing(2000, **_PACE)
+    steps = -(-2000 // chunk)  # ceil
+    total_time = steps * delay
+    assert total_time <= 7.0 + 1e-9  # never longer than max_duration
+    assert steps >= 10  # smooth, not a couple of huge chunks
+    assert chunk < 300  # no giant single reveals
+
+
+def test_plan_pacing_duration_scales_with_length() -> None:
+    def total_time(n: int) -> float:
+        chunk, delay = plan_pacing(n, **_PACE)
+        return -(-n // chunk) * delay
+
+    # Mid-size reveals take longer than tiny ones, up to the cap.
+    assert total_time(40) < total_time(400) <= 7.0 + 1e-9
 
 
 def test_plan_pacing_empty() -> None:
-    assert plan_pacing(0, cps=6, interval=0.8, max_steps=10, max_duration=6) == (1, 0.8)
+    assert plan_pacing(0, **_PACE) == (1, 0.4)
 
 
 @pytest.mark.asyncio

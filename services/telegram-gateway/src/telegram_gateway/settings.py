@@ -43,10 +43,11 @@ class GatewaySettings:
     webhook_secret_header: str = "X-Telegram-Bot-Api-Secret-Token"
     # Cosmetic streaming for pm_agent replies (status line + mocked typing).
     stream_enabled: bool = True
-    stream_cps: float = 6.0
-    stream_interval: float = 0.8
-    stream_max_steps: int = 10
-    stream_max_duration: float = 6.0
+    stream_cps: float = 60.0
+    stream_interval: float = 0.4
+    stream_max_steps: int = 20
+    stream_min_duration: float = 0.8
+    stream_max_duration: float = 7.0
     stream_status_interval: float = 1.4
     stream_status_max_frames: int = 12
     stream_min_chars: int = 16
@@ -76,10 +77,11 @@ class GatewaySettings:
             bridge_timeout_seconds=float(os.getenv("GATEWAY_BRIDGE_TIMEOUT", "10")),
             stream_enabled=os.getenv("TELEGRAM_STREAM_ENABLED", "true").strip().lower()
             not in {"0", "false", "no", "off"},
-            stream_cps=float(os.getenv("TELEGRAM_STREAM_CPS", "6")),
-            stream_interval=float(os.getenv("TELEGRAM_STREAM_INTERVAL", "0.8")),
-            stream_max_steps=int(os.getenv("TELEGRAM_STREAM_MAX_STEPS", "10")),
-            stream_max_duration=float(os.getenv("TELEGRAM_STREAM_MAX_DURATION", "6")),
+            stream_cps=float(os.getenv("TELEGRAM_STREAM_CPS", "60")),
+            stream_interval=float(os.getenv("TELEGRAM_STREAM_INTERVAL", "0.4")),
+            stream_max_steps=int(os.getenv("TELEGRAM_STREAM_MAX_STEPS", "20")),
+            stream_min_duration=float(os.getenv("TELEGRAM_STREAM_MIN_DURATION", "0.8")),
+            stream_max_duration=float(os.getenv("TELEGRAM_STREAM_MAX_DURATION", "7")),
             stream_status_interval=float(os.getenv("TELEGRAM_STREAM_STATUS_INTERVAL", "1.4")),
             stream_status_max_frames=int(os.getenv("TELEGRAM_STREAM_STATUS_MAX_FRAMES", "12")),
             stream_min_chars=int(os.getenv("TELEGRAM_STREAM_MIN_CHARS", "16")),

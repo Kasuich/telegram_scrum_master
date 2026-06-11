@@ -415,12 +415,15 @@ async def test_private_reply_clears_status_then_streams_draft(tmp_path: Path) ->
     )
     assert "-100123" not in runtime.status_messages
     # The answer streams as a native draft (animated dots), growing text.
-    assert runtime.bot_client.send_message_draft.await_count >= 1
     draft_calls = runtime.bot_client.send_message_draft.await_args_list
+    assert len(draft_calls) >= 2
     draft_id = draft_calls[0].kwargs["draft_id"]
     assert all(c.kwargs["draft_id"] == draft_id for c in draft_calls)  # one stream
-    assert len(draft_calls[-1].kwargs["text"]) >= len(draft_calls[0].kwargs["text"])
-    # The reply is committed with a real sendMessage carrying HTML.
+    growing = [c.kwargs["text"] for c in draft_calls if c.kwargs["text"]]
+    assert [len(t) for t in growing] == sorted(len(t) for t in growing)  # monotonic
+    # The final draft clears the bubble so the commit keeps HTML/links intact.
+    assert draft_calls[-1].kwargs["text"] == ""
+    # The reply is committed with a real sendMessage carrying HTML (links).
     final_send = runtime.bot_client.send_message.await_args_list[-1]
     assert final_send.kwargs["parse_mode"] == "HTML"
 

@@ -84,24 +84,24 @@ def plan_pacing(
     interval: float,
     max_steps: int,
     max_duration: float,
+    min_duration: float,
 ) -> tuple[int, float]:
     """Pick a ``(chunk_size, delay)`` for revealing ``total`` characters.
 
-    Targets roughly ``cps`` characters per second with one draft update every
-    ``delay`` seconds, but never more than ``max_steps`` updates nor longer than
-    ``max_duration`` seconds — long answers simply stream in bigger chunks so
-    the effect stays snappy and well within the draft's ~30 s lifetime.
+    The total reveal time scales with length — ``total / cps`` — but is clamped
+    to ``[min_duration, max_duration]`` so a one-liner doesn't crawl and a wall
+    of text doesn't blast by in one jump. That window is then split into evenly
+    paced updates (~``interval`` apart, capped by ``max_steps``), and ``delay``
+    is back-computed so the whole reveal lands exactly on the target duration.
     """
     if total <= 0:
         return (1, interval)
 
-    chunk = max(1, round(cps * interval))
-    steps = math.ceil(total / chunk)
-    steps = min(steps, max_steps)
-    if steps * interval > max_duration:
-        steps = max(1, int(max_duration / interval))
+    duration = max(min_duration, min(max_duration, total / cps))
+    steps = max(1, min(max_steps, total, round(duration / interval)))
     chunk = math.ceil(total / steps)
-    return (chunk, interval)
+    delay = duration / steps
+    return (chunk, delay)
 
 
 async def stream_output(
