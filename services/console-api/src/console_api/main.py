@@ -246,6 +246,14 @@ class StatsDTO(BaseModel):
     note: str | None = None
 
 
+class PetSpeciesDTO(BaseModel):
+    id: str
+    name: str
+    rarity: str
+    rarity_rank: int = 0
+    desc: str = ""
+
+
 class PetDTO(BaseModel):
     available: bool
     level: int = 1
@@ -256,7 +264,32 @@ class PetDTO(BaseModel):
     mood: int = 100
     tier: int = 0
     tier_name: str = "Яйцо"
+    species: PetSpeciesDTO | None = None
+    stats: dict[str, int] = Field(default_factory=dict)
+    stat_labels: dict[str, str] = Field(default_factory=dict)
+    coins: int = 0
+    equipped: dict[str, str] = Field(default_factory=dict)
+    owner_name: str | None = None
     note: str | None = None
+
+
+class ShopItemDTO(BaseModel):
+    id: str
+    name: str
+    slot: str
+    rarity: str
+    price: int
+    owned: bool = False
+    equipped: bool = False
+    affordable: bool = False
+
+
+class ShopDTO(BaseModel):
+    coins: int = 0
+    earned: int = 0
+    spent: int = 0
+    equipped: dict[str, str] = Field(default_factory=dict)
+    items: list[ShopItemDTO] = Field(default_factory=list)
 
 
 class ScheduleDTO(BaseModel):
@@ -1053,45 +1086,253 @@ async def my_stats(
     )
 
 
-@app.get("/me/pet", response_model=PetDTO)
-async def my_pet(user: User = Depends(current_user)) -> PetDTO:
-    """«Скрамик» — pet state derived from board activity, persisted as a snapshot."""
+def _pet_dev_tools_enabled() -> bool:
+    return os.getenv("PET_DEV_TOOLS", "false").strip().lower() in ("1", "true", "yes")
+
+
+def _pet_dto_from_state(state: PetState, *, owner_name: str | None) -> PetDTO:
+    """Build a PetDTO from the persisted snapshot (no Tracker call)."""
+    snap = dict(state.state_json or {})
+    cos = snap.pop("_cosmetics", {}) or {}
+    earned = int(cos.get("coins_earned", 0))
+    spent = int(cos.get("coins_spent", 0))
+    return PetDTO(
+        available=True,
+        owner_name=owner_name,
+        stat_labels=pet_lib.stat_labels(),
+        coins=max(0, earned - spent),
+        equipped=cos.get("equipped", {}) or {},
+        **snap,
+    )
+
+
+async def _recalc_pet(target: User) -> PetDTO:
+    """«Скрамик» — recompute pet from the board and persist a snapshot.
+
+    XP is the *lifetime* closed-issue count (monotonic). A dev-granted XP override
+    stored on the row is honoured if it exceeds real progress. Species is rolled
+    once (deterministically) and frozen. Cosmetics (owned/equipped/coins) are
+    preserved across recalcs; only ``coins_earned`` is recomputed.
+    """
     async with get_session() as session:
-        membership = await _primary_membership(session, user)
+        membership = await _primary_membership(session, target)
         if membership is None or not membership.tracker_login:
             return PetDTO(available=False, note="Tracker-логин не привязан")
         queue = await _team_queue(session, membership.team_id)
         login = membership.tracker_login
 
     now = datetime.now(timezone.utc)
-    since = (now - timedelta(days=30)).date().isoformat()
     try:
-        open_issues, resolved = await _fetch_assignee_issues(login, queue, since_date=since)
+        # Far-back date → lifetime closed-issue count (idempotent XP source).
+        open_issues, resolved = await _fetch_assignee_issues(
+            login, queue, since_date="2000-01-01"
+        )
     except Exception:  # noqa: BLE001 — Tracker is best-effort
         return PetDTO(available=False, note="Tracker недоступен")
 
-    counts = board_metrics.personal_stats(
-        open_issues, resolved, window_days=30, now=now
-    )["counts"]
-    snapshot = pet_lib.compute_pet(
-        resolved=counts["resolved"],
-        overdue=counts["overdue"],
-        in_progress=counts["in_progress"],
-    )
+    counts = board_metrics.personal_stats(open_issues, resolved, window_days=30, now=now)["counts"]
+    lifetime_xp = counts["resolved"] * pet_lib.xp_per_resolved()
 
+    async with get_session() as session:
+        state = await session.get(PetState, target.id)
+        if state is None:
+            state = PetState(user_id=target.id)
+            session.add(state)
+        prev_cos = dict((state.state_json or {}).get("_cosmetics", {}) or {})
+        species_id = state.species_id or pet_lib.roll_species(str(target.id))
+        effective_xp = max(lifetime_xp, state.xp or 0)  # honour dev grants
+        snapshot = pet_lib.snapshot_from_xp(
+            xp=effective_xp,
+            resolved=counts["resolved"],
+            overdue=counts["overdue"],
+            in_progress=counts["in_progress"],
+            streak_days=state.streak_days,
+            species_id=species_id,
+        )
+        prev_cos["coins_earned"] = pet_lib.coins_earned(
+            lifetime_resolved=counts["resolved"], level=snapshot["level"]
+        )
+        prev_cos.setdefault("coins_spent", 0)
+        prev_cos.setdefault("owned", [])
+        prev_cos.setdefault("equipped", {})
+        state.species_id = species_id
+        state.xp = effective_xp
+        state.level = snapshot["level"]
+        state.mood = snapshot["mood"]
+        state.evolution_tier = snapshot["tier"]
+        state.state_json = {**snapshot, "_cosmetics": prev_cos}
+        state.last_recalc_at = now
+        return _pet_dto_from_state(state, owner_name=target.display_name)
+
+
+@app.get("/me/pet", response_model=PetDTO)
+async def my_pet(user: User = Depends(current_user)) -> PetDTO:
+    return await _recalc_pet(user)
+
+
+@app.get("/users/{user_id}/pet", response_model=PetDTO)
+async def get_user_pet(
+    user_id: uuid.UUID, _: User = Depends(current_user)
+) -> PetDTO:
+    """View another teammate's Скрамик."""
+    async with get_session() as session:
+        target = await session.get(User, user_id)
+        if target is None or not target.active:
+            raise HTTPException(status_code=404, detail="User not found")
+    return await _recalc_pet(target)
+
+
+class GrantXpRequest(BaseModel):
+    amount: int | None = None
+    level: int | None = None
+
+
+@app.post("/me/pet/grant-xp", response_model=PetDTO)
+async def dev_grant_xp(
+    payload: GrantXpRequest, user: User = Depends(current_user)
+) -> PetDTO:
+    """DEV: bump XP / jump to a level for fast testing (gated by PET_DEV_TOOLS)."""
+    if not _pet_dev_tools_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    async with get_session() as session:
+        state = await session.get(PetState, user.id)
+        if state is None:
+            state = PetState(user_id=user.id, species_id=pet_lib.roll_species(str(user.id)))
+            session.add(state)
+        if payload.level is not None:
+            state.xp = pet_lib.xp_for_level(max(1, payload.level))
+        elif payload.amount is not None:
+            state.xp = max(0, (state.xp or 0) + payload.amount)
+    return await _recalc_pet(user)
+
+
+@app.post("/me/pet/set-species", response_model=PetDTO)
+async def dev_set_species(
+    payload: PetSpeciesDTO, user: User = Depends(current_user)
+) -> PetDTO:
+    """DEV: try on any of the 10 species (gated by PET_DEV_TOOLS)."""
+    if not _pet_dev_tools_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    if payload.id not in pet_lib.SPECIES_BY_ID:
+        raise HTTPException(status_code=400, detail="Unknown species")
     async with get_session() as session:
         state = await session.get(PetState, user.id)
         if state is None:
             state = PetState(user_id=user.id)
             session.add(state)
-        state.xp = snapshot["xp"]
-        state.level = snapshot["level"]
-        state.mood = snapshot["mood"]
-        state.evolution_tier = snapshot["tier"]
-        state.state_json = snapshot
-        state.last_recalc_at = now
+        state.species_id = payload.id
+    return await _recalc_pet(user)
 
-    return PetDTO(available=True, **snapshot)
+
+@app.post("/me/pet/reset", response_model=PetDTO)
+async def dev_reset_pet(user: User = Depends(current_user)) -> PetDTO:
+    """DEV: reset pet state (gated by PET_DEV_TOOLS)."""
+    if not _pet_dev_tools_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    async with get_session() as session:
+        state = await session.get(PetState, user.id)
+        if state is not None:
+            await session.delete(state)
+    return await _recalc_pet(user)
+
+
+# ---------------------------------------------------------------------------
+# Скрамик shop — buy cosmetics with скрамкоины earned from closed tasks
+# ---------------------------------------------------------------------------
+
+
+def _cosmetics_of(state: PetState | None) -> dict[str, Any]:
+    return dict((state.state_json or {}).get("_cosmetics", {})) if state else {}
+
+
+def _save_cosmetics(state: PetState, cos: dict[str, Any]) -> None:
+    sj = dict(state.state_json or {})
+    sj["_cosmetics"] = cos
+    state.state_json = sj  # reassign so SQLAlchemy detects the JSONB change
+
+
+class BuyRequest(BaseModel):
+    item_id: str
+
+
+class EquipRequest(BaseModel):
+    slot: str
+    item_id: str | None = None
+
+
+@app.get("/me/pet/shop", response_model=ShopDTO)
+async def pet_shop(user: User = Depends(current_user)) -> ShopDTO:
+    pet = await _recalc_pet(user)  # refresh coins_earned from the board
+    if not pet.available:
+        raise HTTPException(status_code=400, detail=pet.note or "Питомец недоступен")
+    async with get_session() as session:
+        cos = _cosmetics_of(await session.get(PetState, user.id))
+    owned = set(cos.get("owned", []))
+    equipped = cos.get("equipped", {}) or {}
+    earned, spent = int(cos.get("coins_earned", 0)), int(cos.get("coins_spent", 0))
+    balance = max(0, earned - spent)
+    items = [
+        ShopItemDTO(
+            **c,
+            owned=c["id"] in owned,
+            equipped=equipped.get(c["slot"]) == c["id"],
+            affordable=balance >= c["price"],
+        )
+        for c in pet_lib.COSMETICS
+    ]
+    return ShopDTO(coins=balance, earned=earned, spent=spent, equipped=equipped, items=items)
+
+
+@app.post("/me/pet/buy", response_model=PetDTO)
+async def pet_buy(payload: BuyRequest, user: User = Depends(current_user)) -> PetDTO:
+    item = pet_lib.COSMETICS_BY_ID.get(payload.item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Предмет не найден")
+    pet = await _recalc_pet(user)  # ensure state + fresh coins
+    if not pet.available:
+        raise HTTPException(status_code=400, detail=pet.note or "Питомец недоступен")
+    async with get_session() as session:
+        state = await session.get(PetState, user.id)
+        cos = _cosmetics_of(state)
+        owned = list(cos.get("owned", []))
+        if item["id"] in owned:
+            raise HTTPException(status_code=400, detail="Уже куплено")
+        earned, spent = int(cos.get("coins_earned", 0)), int(cos.get("coins_spent", 0))
+        if earned - spent < item["price"]:
+            raise HTTPException(status_code=400, detail="Не хватает скрамкоинов")
+        owned.append(item["id"])
+        equipped = dict(cos.get("equipped", {}))
+        equipped[item["slot"]] = item["id"]  # auto-equip on purchase
+        cos.update(owned=owned, coins_spent=spent + item["price"], equipped=equipped)
+        _save_cosmetics(state, cos)
+        return _pet_dto_from_state(state, owner_name=user.display_name)
+
+
+@app.put("/me/pet/equip", response_model=PetDTO)
+async def pet_equip(payload: EquipRequest, user: User = Depends(current_user)) -> PetDTO:
+    pet = await _recalc_pet(user)  # ensure the pet is initialised
+    if not pet.available:
+        raise HTTPException(status_code=400, detail=pet.note or "Питомец недоступен")
+    async with get_session() as session:
+        state = await session.get(PetState, user.id)
+        if state is None:
+            raise HTTPException(status_code=400, detail="Питомец недоступен")
+        cos = _cosmetics_of(state)
+        equipped = dict(cos.get("equipped", {}))
+        if payload.item_id is None:
+            equipped.pop(payload.slot, None)
+        else:
+            item = pet_lib.COSMETICS_BY_ID.get(payload.item_id)
+            if item is None:
+                raise HTTPException(status_code=404, detail="Предмет не найден")
+            if item["slot"] != payload.slot:
+                raise HTTPException(status_code=400, detail="Предмет не для этого слота")
+            if payload.item_id not in cos.get("owned", []):
+                raise HTTPException(status_code=400, detail="Предмет не куплен")
+            equipped[payload.slot] = payload.item_id
+        cos["equipped"] = equipped
+        _save_cosmetics(state, cos)
+        return _pet_dto_from_state(state, owner_name=user.display_name)
 
 
 # ---------------------------------------------------------------------------

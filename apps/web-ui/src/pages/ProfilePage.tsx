@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { api, type Contact, type Profile, type UiRole } from "../lib/api";
+import { PixelSprite } from "../lib/scrumiks/PixelSprite";
+import { RARITY, type Rarity } from "../lib/scrumiks/sprites";
 
 const ROLE_LABEL: Record<UiRole, string> = {
   developer: "разработчик",
@@ -52,7 +54,39 @@ export function ProfilePage({ selfId }: { selfId: string }) {
   return (
     <div className="page-grid">
       {profile.data.is_self ? <OwnProfile profile={profile.data} /> : <PublicProfile profile={profile.data} />}
+      {!isOwn && userId && <PetMiniCard userId={userId} />}
     </div>
+  );
+}
+
+function PetMiniCard({ userId }: { userId: string }) {
+  const pet = useQuery({ queryKey: ["user-pet", userId], queryFn: () => api.userPet(userId) });
+  if (!pet.data?.available || !pet.data.species) return null;
+  const species = pet.data.species;
+  const rar = RARITY[species.rarity as Rarity];
+  return (
+    <section className="surface wide">
+      <div className="section-head">
+        <div>
+          <h2>Скрамик</h2>
+          <p>питомец этого человека</p>
+        </div>
+      </div>
+      <div className="pet-view">
+        <div className="pet-avatar">
+          <PixelSprite speciesId={species.id} size={112} equipped={pet.data.equipped} />
+          <span className="pet-tier">{pet.data.tier_name}</span>
+        </div>
+        <div className="pet-stats">
+          <div className="pet-species-head">
+            <strong className="pet-species-name">{species.name}</strong>
+            <span className="pet-rarity" style={{ background: rar.color }}>{rar.label}</span>
+            <span className="pet-level">Уровень <strong>{pet.data.level}</strong></span>
+          </div>
+          {species.desc && <p className="pet-desc">«{species.desc}»</p>}
+        </div>
+      </div>
+    </section>
   );
 }
 

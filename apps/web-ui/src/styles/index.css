@@ -951,6 +951,125 @@
     text-align: right;
     color: #64748b;
   }
+
+  .pet-species-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .pet-species-name {
+    font-size: 18px;
+    color: #1f2937;
+  }
+
+  .pet-rarity {
+    font-size: 11px;
+    font-weight: 700;
+    color: #0f1117;
+    border-radius: 999px;
+    padding: 2px 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .pet-desc {
+    font-size: 13px;
+    font-style: italic;
+    color: #64748b;
+    margin: -2px 0 2px;
+  }
+
+  .pet-dev .pet-dev-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .pet-dev-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .pet-dev-input {
+    height: 36px;
+    border: 1px solid #d7dde8;
+    border-radius: 8px;
+    padding: 4px 8px;
+    background: #ffffff;
+    color: #1f2937;
+    max-width: 150px;
+  }
+
+  .pet-dev-error {
+    margin-top: 10px;
+    font-size: 12px;
+    color: #be123c;
+  }
+
+  .pet-coins {
+    font-size: 13px;
+    font-weight: 700;
+    color: #b45309;
+  }
+
+  .pet-coins-lg {
+    font-size: 18px;
+  }
+
+  .shop-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+  }
+
+  .shop-card {
+    display: grid;
+    justify-items: center;
+    gap: 6px;
+    padding: 12px;
+    border: 1px solid #d7dde8;
+    border-radius: 12px;
+    background: #ffffff;
+  }
+
+  .shop-card.equipped {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 1px #2563eb inset;
+  }
+
+  .shop-preview {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 84px;
+    height: 84px;
+    border-radius: 10px;
+    background: radial-gradient(circle at 50% 40%, #eef2ff, #e6ecf6);
+  }
+
+  .shop-card-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #1f2937;
+    text-align: center;
+  }
+
+  .shop-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .shop-card .primary-button,
+  .shop-card .secondary-button {
+    width: 100%;
+    justify-content: center;
+    min-height: 32px;
+  }
 }
 
 @media (max-width: 960px) {

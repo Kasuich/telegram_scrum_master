@@ -229,6 +229,14 @@ export interface TeamHealth {
   note: string | null;
 }
 
+export interface PetSpecies {
+  id: string;
+  name: string;
+  rarity: "common" | "uncommon" | "rare" | "epic" | "legendary";
+  rarity_rank: number;
+  desc: string;
+}
+
 export interface Pet {
   available: boolean;
   level: number;
@@ -239,7 +247,32 @@ export interface Pet {
   mood: number;
   tier: number;
   tier_name: string;
+  species: PetSpecies | null;
+  stats: Record<string, number>;
+  stat_labels: Record<string, string>;
+  coins: number;
+  equipped: Record<string, string>;
+  owner_name: string | null;
   note: string | null;
+}
+
+export interface ShopItem {
+  id: string;
+  name: string;
+  slot: string;
+  rarity: "common" | "uncommon" | "rare" | "epic" | "legendary";
+  price: number;
+  owned: boolean;
+  equipped: boolean;
+  affordable: boolean;
+}
+
+export interface Shop {
+  coins: number;
+  earned: number;
+  spent: number;
+  equipped: Record<string, string>;
+  items: ShopItem[];
 }
 
 export interface AgentTool {
@@ -324,6 +357,20 @@ export const api = {
   myBoard: () => request<Board>("/me/board"),
   myStats: (window = 14) => request<Stats>(`/me/stats?window=${window}`),
   myPet: () => request<Pet>("/me/pet"),
+  userPet: (userId: string) => request<Pet>(`/users/${userId}/pet`),
+  petGrantXp: (body: { amount?: number; level?: number }) =>
+    request<Pet>("/me/pet/grant-xp", { method: "POST", body: JSON.stringify(body) }),
+  petSetSpecies: (id: string) =>
+    request<Pet>("/me/pet/set-species", {
+      method: "POST",
+      body: JSON.stringify({ id, name: "", rarity: "common" }),
+    }),
+  petReset: () => request<Pet>("/me/pet/reset", { method: "POST" }),
+  petShop: () => request<Shop>("/me/pet/shop"),
+  petBuy: (itemId: string) =>
+    request<Pet>("/me/pet/buy", { method: "POST", body: JSON.stringify({ item_id: itemId }) }),
+  petEquip: (slot: string, itemId: string | null) =>
+    request<Pet>("/me/pet/equip", { method: "PUT", body: JSON.stringify({ slot, item_id: itemId }) }),
   scheduledJobs: () => request<ScheduledJob[]>("/scheduled-jobs"),
   patchScheduledJob: (id: string, body: PatchScheduledJobBody) =>
     request<ScheduledJob>(`/scheduled-jobs/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
