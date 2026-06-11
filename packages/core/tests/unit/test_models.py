@@ -384,9 +384,7 @@ class TestTelegramStandupPoll:
         assert TelegramStandupPoll.__tablename__ == "telegram_standup_polls"
 
     def test_team_user_hour_unique_constraint(self) -> None:
-        assert "uq_telegram_standup_polls_team_user_hour" in _constraint_names(
-            TelegramStandupPoll
-        )
+        assert "uq_telegram_standup_polls_team_user_hour" in _constraint_names(TelegramStandupPoll)
 
     def test_default_status(self) -> None:
         assert _get_column(TelegramStandupPoll, "status").default.arg == "pending"

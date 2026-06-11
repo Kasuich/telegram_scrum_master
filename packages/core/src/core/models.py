@@ -1226,9 +1226,7 @@ class TelegramImportJob(Base):
     """Import job for historical Telegram data."""
 
     __tablename__ = "telegram_import_jobs"
-    __table_args__ = (
-        Index("idx_telegram_import_jobs_team_status", "team_id", "status"),
-    )
+    __table_args__ = (Index("idx_telegram_import_jobs_team_status", "team_id", "status"),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

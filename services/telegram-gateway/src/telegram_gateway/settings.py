@@ -54,9 +54,7 @@ class GatewaySettings:
             bridge_key_id=os.environ["TELEGRAM_BRIDGE_HMAC_KEY_ID"],
             bridge_key_secret=_bridge_key_secret_from_env(),
             transport_mode=transport_mode,
-            spool_path=Path(
-                os.getenv("GATEWAY_SPOOL_PATH", "/var/lib/telegram-gateway/spool.db")
-            ),
+            spool_path=Path(os.getenv("GATEWAY_SPOOL_PATH", "/var/lib/telegram-gateway/spool.db")),
             gateway_id=os.getenv("GATEWAY_ID", "telegram-gateway"),
             version=os.getenv("GATEWAY_VERSION", "0.1.0"),
             webhook_path=os.getenv("TELEGRAM_WEBHOOK_PATH", "/webhook"),

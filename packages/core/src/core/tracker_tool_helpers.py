@@ -92,6 +92,7 @@ def filter_terminal_issues(
         out.append(issue)
     return out
 
+
 _RU_MONTHS: dict[str, int] = {
     "января": 1,
     "февраля": 2,

@@ -298,8 +298,14 @@ class TestTextReply:
             {"role": "assistant", "content": "Запомнил роли и текущий фокус команды."},
         ]
 
-        with patch("core.react.LLMClient.complete", AsyncMock(side_effect=RuntimeError("boom"))):
-            summary = await runner._summarize_session_context("Команда ведет PM-платформу.", older_messages)
+        with patch(
+            "core.react.LLMClient.complete",
+            AsyncMock(side_effect=RuntimeError("boom")),
+        ):
+            summary = await runner._summarize_session_context(
+                "Команда ведет PM-платформу.",
+                older_messages,
+            )
 
         assert "Команда ведет PM-платформу." in summary
         assert "Roman ведет backend и Telegram-интеграцию." in summary

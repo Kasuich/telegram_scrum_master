@@ -74,12 +74,6 @@ from core.daily_digest import (
     format_daily_digest,
     send_team_daily_digest,
 )
-from core.standup_poll import (
-    STANDUP_POLL_JOB_NAME,
-    STANDUP_POLL_PAYLOAD_TYPE,
-    handle_standup_response,
-    send_team_standup_poll,
-)
 from core.db import (
     Checkpointer,
     close_engine,
@@ -197,6 +191,12 @@ from core.repositories import (
 )
 from core.scheduler import SchedulerDaemon, compute_next_run
 from core.seed import ensure_default_team
+from core.standup_poll import (
+    STANDUP_POLL_JOB_NAME,
+    STANDUP_POLL_PAYLOAD_TYPE,
+    handle_standup_response,
+    send_team_standup_poll,
+)
 from core.tools import (
     Tool,
     ToolParameter,

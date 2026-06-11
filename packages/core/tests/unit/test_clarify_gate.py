@@ -92,13 +92,18 @@ def test_missing_info_cleared_after_first_person_resolution():
     )
     plan = GoalPlan(items=[item])
     from core.assignee_resolver import resolve_first_person
+
     resolved = resolve_first_person("создай мне задачу", tracker_login="kolya")
     assert resolved == "kolya"
     if resolved:
         for g in plan.items:
             if g.entities and "assignee" in g.entities:
                 g.entities["assignee"] = resolved
-            g.missing_info = [m for m in g.missing_info if "исполнител" not in m.lower() and "assignee" not in m.lower()]
+            g.missing_info = [
+                m
+                for m in g.missing_info
+                if "исполнител" not in m.lower() and "assignee" not in m.lower()
+            ]
     collected = [info for g in plan.items for info in g.missing_info]
     assert collected == []
 
@@ -112,6 +117,7 @@ def test_missing_info_preserved_when_no_first_person():
     )
     plan = GoalPlan(items=[item])
     from core.assignee_resolver import resolve_first_person
+
     resolved = resolve_first_person("создай задачу", tracker_login="kolya")
     assert resolved is None
     collected = [info for g in plan.items for info in g.missing_info]

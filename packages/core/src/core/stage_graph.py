@@ -43,6 +43,7 @@ class StageId(str, Enum):
     INTAKE = "INTAKE"
     STATUS = "STATUS"
     BOARD = "BOARD"
+    MEETING_SYNC = "MEETING_SYNC"
     TRANSITION = "TRANSITION"
     QUERY = "QUERY"
     REORG = "REORG"
@@ -88,11 +89,7 @@ ToolGuardRule = Callable[[str, dict, TurnSteps], Optional[GuardDecision]]
 
 
 def _tool_results(turn_steps: TurnSteps) -> list[dict[str, Any]]:
-    return [
-        s
-        for s in turn_steps
-        if s.get("kind") == "tool_result" and s.get("tool_name")
-    ]
+    return [s for s in turn_steps if s.get("kind") == "tool_result" and s.get("tool_name")]
 
 
 def comment_succeeded(turn_steps: TurnSteps) -> bool:
@@ -206,9 +203,7 @@ class Stage:
     terminal: TurnPredicate
     prompt_addendum: str = ""
     ordered_guards: tuple[ToolGuardRule, ...] = ()
-    forced_next: Callable[[TurnSteps], Optional[ToolCallSpec]] = field(
-        default=lambda steps: None
-    )
+    forced_next: Callable[[TurnSteps], Optional[ToolCallSpec]] = field(default=lambda steps: None)
 
     def check_tool(
         self, tool_name: str, tool_args: dict[str, Any], turn_steps: TurnSteps
@@ -232,9 +227,7 @@ class Stage:
     def _blocked_message(self, tool_name: str) -> str:
         return _BLOCK_MESSAGES.get(
             (self.id, tool_name),
-            _STAGE_BLOCK_DEFAULT.get(
-                self.id, f"«{tool_name}» не разрешён на текущей стадии."
-            ),
+            _STAGE_BLOCK_DEFAULT.get(self.id, f"«{tool_name}» не разрешён на текущей стадии."),
         )
 
 
@@ -371,10 +364,12 @@ _BLOCK_MESSAGES: dict[tuple[StageId, str], str] = {
 
 _STAGE_BLOCK_DEFAULT: dict[StageId, str] = {
     StageId.QUERY: "Стадия QUERY — только чтение доски, мутации запрещены.",
-    StageId.STATUS: (
-        "Статус из чата: find → call_agent(meeting_summarizer) → comment."
-    ),
+    StageId.STATUS: ("Статус из чата: find → call_agent(meeting_summarizer) → comment."),
     StageId.BOARD: "Оформление доски: backlog_plan → tracker_apply_backlog_plan.",
+    StageId.MEETING_SYNC: (
+        "Синхронизация доски по итогам встречи: по каждому пункту find → "
+        "обнови существующую (comment/status/patch) ИЛИ создай новую."
+    ),
     StageId.INTAKE: "Создание задачи: resolve_assignee → tracker_create_issue.",
     StageId.TRANSITION: (
         "Смена статуса: find → list_transitions → transition_issue / close_issue."
@@ -385,9 +380,7 @@ _STAGE_BLOCK_DEFAULT: dict[StageId, str] = {
     StageId.PROACTIVE: (
         "Проактивная проверка: snapshot/search → comment (low) или patch (через confirm)."
     ),
-    StageId.HYGIENE: (
-        "Гигиена доски: snapshot/search → patch / comment по чеклисту."
-    ),
+    StageId.HYGIENE: ("Гигиена доски: snapshot/search → patch / comment по чеклисту."),
 }
 
 
@@ -414,6 +407,21 @@ _BOARD_ADDENDUM = (
     "Активная стадия: BOARD (оформление доски). Цепочка: backlog_plan(полный текст) → "
     "tracker_apply_backlog_plan(пустой plan_json). После apply проверь полноту карточек "
     "(оценка/владелец/дедлайн) и допиши пропуски; перечисли допущения в отчёте."
+)
+_MEETING_SYNC_ADDENDUM = (
+    "Активная стадия: MEETING_SYNC (синхронизация доски по итогам встречи). "
+    "Это НЕ оформление бэклога с нуля — обсуждали и новые, и уже существующие задачи.\n"
+    "1) Сначала прочитай доску (tracker_board_snapshot или GetIssues) — что уже есть.\n"
+    "2) Разбей саммари на пункты: решения, action items, статусы, риски.\n"
+    "3) Для КАЖДОГО пункта реши — это про существующую задачу или новая работа:\n"
+    "   - Существующая (совпадает по смыслу/названию с задачей на доске) → НЕ создавай. "
+    "Обнови: ChangeIssueStatus (если изменился статус — по воркфлоу очереди), "
+    "UpdateIssue (assignee/приоритет/дедлайн/SP — только если явно прозвучало), "
+    "CreateComment (суть обсуждения).\n"
+    "   - Новая → tracker_create_issue. Если вернулось skipped_duplicate — задача всё-таки "
+    "есть: обнови её (коммент/статус), пользователя НЕ спрашивай (режим авто).\n"
+    "4) Меняй только то, что явно прозвучало на встрече. Ничего не выдумывай.\n"
+    "5) В конце отчёт: создано (ключи), обновлено (ключи + что именно), пропущено."
 )
 _TRANSITION_ADDENDUM = (
     "Активная стадия: TRANSITION. Порядок: find_issues → list_transitions → "
@@ -457,8 +465,9 @@ INTAKE = Stage(
         "tracker_create_sprint",
         "tracker_link_issues",
     },
-    terminal=lambda steps: bool(created_issue_keys_in_turn(steps, 0))
-    or create_sprint_succeeded(steps),
+    terminal=lambda steps: (
+        bool(created_issue_keys_in_turn(steps, 0)) or create_sprint_succeeded(steps)
+    ),
     prompt_addendum=_INTAKE_ADDENDUM,
     ordered_guards=_create_guards(),
 )
@@ -493,6 +502,23 @@ BOARD = Stage(
     terminal=apply_backlog_succeeded,
     prompt_addendum=_BOARD_ADDENDUM,
     forced_next=_board_forced_next,
+)
+
+MEETING_SYNC = Stage(
+    id=StageId.MEETING_SYNC,
+    allowed_tools=_READ_TOOLS
+    | {
+        "tracker_board_snapshot",
+        "tracker_create_issue",
+        "tracker_patch_issue",
+        "tracker_update_issue",
+        "tracker_transition_issue",
+        "tracker_comment_issue",
+    },
+    # Goal-based terminal (как QUERY): freeform-агент завершает ход сам, когда
+    # все пункты обработаны. Стадия для pm_agent не гейтит тулзы — несёт addendum.
+    terminal=lambda steps: False,
+    prompt_addendum=_MEETING_SYNC_ADDENDUM,
 )
 
 TRANSITION = Stage(
@@ -572,7 +598,18 @@ DIALOG = Stage(
 
 STAGES: dict[StageId, Stage] = {
     s.id: s
-    for s in (INTAKE, STATUS, BOARD, TRANSITION, QUERY, REORG, PROACTIVE, HYGIENE, DIALOG)
+    for s in (
+        INTAKE,
+        STATUS,
+        BOARD,
+        MEETING_SYNC,
+        TRANSITION,
+        QUERY,
+        REORG,
+        PROACTIVE,
+        HYGIENE,
+        DIALOG,
+    )
 }
 
 

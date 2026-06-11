@@ -375,10 +375,7 @@ def _is_terminal_status(status: str) -> bool:
         "решен",
         "решён",
     )
-    return any(
-        token in normalized
-        for token in terminal_tokens
-    )
+    return any(token in normalized for token in terminal_tokens)
 
 
 def _poll_done_issues(poll: TelegramStandupPoll, *, display: str) -> list[DigestIssue]:
@@ -473,19 +470,12 @@ def _poll_applied_items(poll: TelegramStandupPoll) -> list[str]:
             if row.get("transitioned"):
                 items.append(f"{issue_key}: отменена")
             else:
-                message = (
-                    "добавлен комментарий, "
-                    "статус не изменен"
-                )
+                message = "добавлен комментарий, статус не изменен"
                 items.append(f"{issue_key}: {message}")
         elif row.get("kind") == "in_progress" and issue_key:
             items.append(f"{issue_key}: в работе")
         elif row.get("kind") == "blocked" and issue_key:
-            suffix = (
-                "статус обновлен"
-                if row.get("transitioned")
-                else "добавлен комментарий"
-            )
+            suffix = "статус обновлен" if row.get("transitioned") else "добавлен комментарий"
             items.append(f"{issue_key}: задержка, {suffix}")
         elif issue_key:
             items.append(f"{issue_key}: добавлен комментарий")

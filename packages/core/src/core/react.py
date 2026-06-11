@@ -304,9 +304,7 @@ def _progress_checkpoint(
         elif kind == "tool_error" and name:
             errors.append(f"{name}: {str(step.get('error') or '')[:160]}")
 
-    intent = (goal_item.intent if goal_item else "") or (
-        goal_item.payload if goal_item else ""
-    )
+    intent = (goal_item.intent if goal_item else "") or (goal_item.payload if goal_item else "")
     success = goal_item.success_criteria if goal_item else ""
     return (
         "\n\nREFLECTION CHECKPOINT\n"
@@ -600,7 +598,13 @@ async def _goal_met(
         return GoalVerdict(met=False, reason="no_data", tier=1)
 
     try:
-        client = LLMClient(model="google/gemini-3.1-flash-lite", provider="openrouter", temperature=0.0, max_tokens=32, max_retries=0)
+        client = LLMClient(
+            model="google/gemini-3.1-flash-lite",
+            provider="openrouter",
+            temperature=0.0,
+            max_tokens=32,
+            max_retries=0,
+        )
         results_summary = str(turn_steps)[:2000]
         judge_prompt = (
             f"Цель: {goal_item.success_criteria or goal_item.intent}\n"
@@ -832,8 +836,7 @@ def _freeform_unfinished_action(
         return None
 
     status_requested = "статус" in normalized and any(
-        marker in normalized
-        for marker in ("в работе", "в работу", "in progress", "inprogress")
+        marker in normalized for marker in ("в работе", "в работу", "in progress", "inprogress")
     )
     if status_requested and not successful.intersection(
         {"ChangeIssueStatus", "tracker_transition_issue"}
@@ -844,8 +847,7 @@ def _freeform_unfinished_action(
         )
 
     deadline_requested = any(
-        marker in normalized
-        for marker in ("за 1 день", "за один день", "через день", "до завтра")
+        marker in normalized for marker in ("за 1 день", "за один день", "через день", "до завтра")
     )
     if deadline_requested and not successful.intersection(
         {"UpdateIssue", "tracker_patch_issue", "tracker_update_issue"}
@@ -983,9 +985,7 @@ class ReActRunner:
             state["_plan"] = serialize_plan(goal_plan)
             state["_plan_cursor"] = 0
             state["_scenario_retries"] = {}
-            return await self._execute_turn_plan(
-                ctx, session_id, state, goal_plan, start_index=0
-            )
+            return await self._execute_turn_plan(ctx, session_id, state, goal_plan, start_index=0)
 
         goal_plan = await build_goal_plan(message, use_llm=True)
         state["_plan"] = serialize_plan(goal_plan)
@@ -999,27 +999,37 @@ class ReActRunner:
 
         # Strip non-blocking optional fields — deadline/SP/priority never stop execution
         _OPTIONAL_MISSING = (
-            "дата", "дедлайн", "deadline", "срок", "завершен",
-            "story point", " sp", "приоритет", "priority",
-            "описани", "description", "спринт", "sprint",
+            "дата",
+            "дедлайн",
+            "deadline",
+            "срок",
+            "завершен",
+            "story point",
+            " sp",
+            "приоритет",
+            "priority",
+            "описани",
+            "description",
+            "спринт",
+            "sprint",
         )
         all_missing = [
-            m for m in all_missing
-            if not any(kw in m.lower() for kw in _OPTIONAL_MISSING)
+            m for m in all_missing if not any(kw in m.lower() for kw in _OPTIONAL_MISSING)
         ]
         for item in goal_plan.items:
             item.missing_info = [
-                m for m in item.missing_info
-                if not any(kw in m.lower() for kw in _OPTIONAL_MISSING)
+                m for m in item.missing_info if not any(kw in m.lower() for kw in _OPTIONAL_MISSING)
             ]
 
         # Resolve "which task" from recent session history before asking user
         _TASK_MISSING_KW = ("задач", "ключ", "issue", "какую", "задан")
         recent_user_msgs = [
-            m["content"] for m in state["messages"][-6:]
+            m["content"]
+            for m in state["messages"][-6:]
             if m.get("role") == "user" and m.get("content") != message
         ]
         import re as _re
+
         _key_re = _re.compile(r"[A-Z]+-\d+")
         _hint_re = _re.compile(
             r"задач[уаеи]?\s+по\s+(\w+)|"
@@ -1033,24 +1043,22 @@ class ReActRunner:
         if history_task_mentions:
             for item in goal_plan.items:
                 item.missing_info = [
-                    m for m in item.missing_info
+                    m
+                    for m in item.missing_info
                     if not any(kw in m.lower() for kw in _TASK_MISSING_KW)
                 ]
             all_missing = [m for item in goal_plan.items for m in item.missing_info]
 
         # Resolve 1st-person ("мне/я/мои") from invocation context
         invocation = (
-            ctx.invocation_context
-            or self._active_invocation_context
-            or InvocationContext()
+            ctx.invocation_context or self._active_invocation_context or InvocationContext()
         )
         actor_login = invocation.actor_tracker_login
         user_msg = message
         from core.assignee_resolver import resolve_first_person
+
         resolved_login = (
-            resolve_first_person(user_msg, tracker_login=actor_login)
-            if actor_login
-            else None
+            resolve_first_person(user_msg, tracker_login=actor_login) if actor_login else None
         )
 
         if resolved_login:
@@ -1075,6 +1083,7 @@ class ReActRunner:
             try:
                 from core.config import get_config as _get_cfg
                 from core.tracker import TrackerClient as _TrackerClient
+
                 _cfg = _get_cfg()
                 _qkey = _cfg.tracker.tracker_queue
                 async with _TrackerClient() as _tc:
@@ -1431,7 +1440,13 @@ class ReActRunner:
         from core.llm import LLMClient, Message
 
         scenarios_text = "\n".join(f"- {item.stage.value}: {item.payload[:200]}" for item in items)
-        client = LLMClient(model="google/gemini-3.1-flash-lite", provider="openrouter", temperature=0.0, max_tokens=256, max_retries=0)
+        client = LLMClient(
+            model="google/gemini-3.1-flash-lite",
+            provider="openrouter",
+            temperature=0.0,
+            max_tokens=256,
+            max_retries=0,
+        )
         try:
             resp = await client.complete(
                 [
@@ -1659,9 +1674,7 @@ class ReActRunner:
         stage = get_stage(state.get("_stage")) if action_only else None
         if stage is not None and not freeform:
             tool_schemas = [
-                schema
-                for schema in tool_schemas
-                if schema.get("name") in stage.allowed_tools
+                schema for schema in tool_schemas if schema.get("name") in stage.allowed_tools
             ] or tool_schemas
 
         for iteration in range(self.max_iterations):
@@ -1718,9 +1731,7 @@ class ReActRunner:
                         turn_steps,
                         llm_text,
                         had_tool,
-                        stage_id=(
-                            StageId(state["_stage"]) if state.get("_stage") else None
-                        ),
+                        stage_id=(StageId(state["_stage"]) if state.get("_stage") else None),
                     )
                 else:
                     reply = llm_text
@@ -1938,10 +1949,7 @@ class ReActRunner:
                     and isinstance(result, dict)
                     and result.get("plan")
                     and not result.get("error")
-                    and (
-                        result.get("tasks_count", 0) > 0
-                        or result.get("stories_count", 0) > 0
-                    )
+                    and (result.get("tasks_count", 0) > 0 or result.get("stories_count", 0) > 0)
                 ):
                     from core.backlog_context import set_pending_backlog_plan
 
@@ -1986,8 +1994,10 @@ class ReActRunner:
             messages.append({"role": "user", "content": feedback})
             await self._compact_session_history(state)
 
-            if not freeform and action_only and self._turn_is_done(
-                stage, steps[steps_before_turn:]
+            if (
+                not freeform
+                and action_only
+                and self._turn_is_done(stage, steps[steps_before_turn:])
             ):
                 turn_steps = steps[steps_before_turn:]
                 if state.get("_plan"):

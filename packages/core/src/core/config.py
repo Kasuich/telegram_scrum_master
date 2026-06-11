@@ -284,7 +284,7 @@ class BacklogConfig(BaseSettings):
     )
 
     dedup_similarity: float = Field(
-        default=0.88,
+        default=0.65,
         ge=0.5,
         le=1.0,
         description="Summary similarity threshold for duplicate detection (0-1)",

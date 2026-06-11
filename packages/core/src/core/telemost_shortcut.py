@@ -32,10 +32,7 @@ def extract_telemost_url(text: str) -> str | None:
 
 def format_meeting_capture_reply(data: dict[str, Any]) -> str:
     meeting_id = data.get("meeting_id")
-    return (
-        "🤖 Иду на встречу и включаю запись. Итоги пришлю сюда."
-        f" (id: {meeting_id})"
-    )
+    return f"🤖 Иду на встречу и включаю запись. Итоги пришлю сюда. (id: {meeting_id})"
 
 
 async def schedule_meeting_capture(

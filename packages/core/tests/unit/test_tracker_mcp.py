@@ -174,17 +174,23 @@ def test_create_issue_allows_epic_for_lead_mcp_actor():
 
 
 def test_change_status_normalizes_model_resolution_alias():
-    assert _normalize_tool_arguments(
-        "ChangeIssueStatus",
-        {"issue_key": "DARKHORSE-272", "status": "closed", "resolution": "done"},
-    )["resolution"] == "fixed"
+    assert (
+        _normalize_tool_arguments(
+            "ChangeIssueStatus",
+            {"issue_key": "DARKHORSE-272", "status": "closed", "resolution": "done"},
+        )["resolution"]
+        == "fixed"
+    )
 
 
 def test_change_status_adds_default_resolution_when_closing():
-    assert _normalize_tool_arguments(
-        "ChangeIssueStatus",
-        {"issue_key": "DARKHORSE-272", "status": "closed"},
-    )["resolution"] == "fixed"
+    assert (
+        _normalize_tool_arguments(
+            "ChangeIssueStatus",
+            {"issue_key": "DARKHORSE-272", "status": "closed"},
+        )["resolution"]
+        == "fixed"
+    )
 
 
 def test_explicit_client_does_not_require_global_config():

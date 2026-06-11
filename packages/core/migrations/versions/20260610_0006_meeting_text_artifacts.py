@@ -14,8 +14,7 @@ branch_labels: Union[str, list[str], None] = None
 depends_on: Union[str, list[str], None] = None
 
 _ARTIFACT_KINDS = (
-    "'recording', 'audio', 'screenshot', 'log', "
-    "'transcript', 'transcript_json', 'summary'"
+    "'recording', 'audio', 'screenshot', 'log', 'transcript', 'transcript_json', 'summary'"
 )
 
 

@@ -118,8 +118,8 @@ class TestMeetingSummarizerDiscovery:
         assert "meeting_summarizer" in r.json()["agents"]
 
     def test_rpc_invoke_meeting_summarizer(self):
-        from pm_orchestrator.agents.meeting_summarizer import MeetingSummarizerAgent
         from pm_orchestrator import rpc
+        from pm_orchestrator.agents.meeting_summarizer import MeetingSummarizerAgent
 
         rpc._svc._runners.clear()
         rpc._svc._register(MeetingSummarizerAgent())

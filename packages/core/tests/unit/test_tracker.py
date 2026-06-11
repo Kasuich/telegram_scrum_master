@@ -380,18 +380,14 @@ class TestTransitionIssue:
 
     async def test_executes_matching_target_status_display(self):
         c = _client()
-        transitions = [
-            {"id": "start", "display": "Взять в работу", "to": {"display": "В работе"}}
-        ]
+        transitions = [{"id": "start", "display": "Взять в работу", "to": {"display": "В работе"}}]
         with _patch_request(side_effect=[_ok(transitions), _ok({"status": "inProgress"})]):
             result = await c.transition_issue("TEST-1", "в работе")
         assert result == {"status": "inProgress"}
 
     async def test_executes_close_by_target_status_display(self):
         c = _client()
-        transitions = [
-            {"id": "finish", "display": "Завершить", "to": {"display": "Закрыто"}}
-        ]
+        transitions = [{"id": "finish", "display": "Завершить", "to": {"display": "Закрыто"}}]
         with _patch_request(side_effect=[_ok(transitions), _ok({"status": "closed"})]) as mock_req:
             await c.transition_issue("TEST-1", "closed", resolution="fixed")
         assert mock_req.call_args_list[1][0][1].endswith(
@@ -509,7 +505,33 @@ class TestTrackerTools:
 
         assert result["key"] == "TEST-99"
         assert result.get("skipped_duplicate") is True
+        assert result.get("duplicates") == [
+            {"key": "TEST-99", "summary": "Fix login bug", "status": "Закрыт"}
+        ]
         client.create_issue.assert_not_called()
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_create_issue_allow_duplicate_bypasses_dedup(self):
+        from core.tracker_tools import tracker_create_issue
+
+        existing = {
+            **ISSUE_RESPONSE,
+            "key": "TEST-99",
+            "summary": "Fix login bug",
+            "status": {"display": "Закрыт", "key": "closed"},
+            "type": {"key": "task"},
+        }
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.search_issues.return_value = [existing]
+            client.create_issue.return_value = ISSUE_RESPONSE
+            result = await tracker_create_issue("Fix login bug", queue="TEST", allow_duplicate=True)
+
+        assert result["key"] == "TEST-1"
+        assert result.get("skipped_duplicate") is None
+        client.search_issues.assert_not_called()
+        client.create_issue.assert_called_once()
 
     @patch.dict("os.environ", ENV)
     async def test_tracker_create_sprint_tool(self):

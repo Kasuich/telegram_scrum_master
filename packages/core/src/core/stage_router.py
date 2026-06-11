@@ -21,6 +21,7 @@ from core.turn_guards import (
     message_has_backlog_intent,
     message_has_close_intent,
     message_has_create_intent,
+    message_has_meeting_sync_intent,
     message_has_status_update_intent,
     normalize_text,
 )
@@ -94,6 +95,8 @@ _VALID_STAGES = {s.value for s in StageId}
 
 def detect_stage_rules(message: str) -> StageId | None:
     """First-match-wins rule classifier. Returns None when ambiguous (-> LLM)."""
+    if message_has_meeting_sync_intent(message):  # R0: «синхронизируй доску» / итоги встречи
+        return StageId.MEETING_SYNC
     if message_has_status_update_intent(message):  # R1: «Имя: …»
         return StageId.STATUS
     if message_has_backlog_intent(message):  # R2: long text / "оформи доску"
@@ -117,10 +120,12 @@ def detect_stage_rules(message: str) -> StageId | None:
 _CLASSIFIER_SYSTEM = (
     "Ты — классификатор намерения для PM-агента над доской Яндекс Трекера. "
     "Верни СТРОГО ОДНО слово, без знаков и пояснений, из набора: "
-    "INTAKE STATUS BOARD TRANSITION QUERY REORG PROACTIVE HYGIENE DIALOG.\n"
+    "INTAKE STATUS BOARD MEETING_SYNC TRANSITION QUERY REORG PROACTIVE HYGIENE DIALOG.\n"
     "INTAKE — создать новую задачу. "
     "STATUS — обновить задачу / комментарий-статус «Имя: …». "
     "BOARD — оформить доску из длинного саммари (эпик/стори/таски). "
+    "MEETING_SYNC — синхронизировать доску по итогам встречи: по каждому пункту "
+    "обновить существующую задачу или создать новую. "
     "TRANSITION — закрыть / сменить статус. "
     "QUERY — спросить о состоянии доски (только чтение). "
     "REORG — переназначить / сменить родителя / спринт / приоритет. "
@@ -135,7 +140,13 @@ async def classify_stage_llm(message: str) -> StageId:
     """Strict-enum LLM fallback. Defaults to QUERY (read-only) on any failure."""
     from core.llm import LLMClient, Message
 
-    client = LLMClient(model="google/gemini-3.1-flash-lite", provider="openrouter", temperature=0.0, max_tokens=8, max_retries=0)
+    client = LLMClient(
+        model="google/gemini-3.1-flash-lite",
+        provider="openrouter",
+        temperature=0.0,
+        max_tokens=8,
+        max_retries=0,
+    )
     try:
         resp = await client.complete(
             [

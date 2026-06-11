@@ -4,7 +4,12 @@ import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from core.models import TelegramBusinessConnection, TelegramChat, TelegramInstallation, TelegramMessage, TelegramUser
+from core.models import (
+    TelegramBusinessConnection,
+    TelegramChat,
+    TelegramInstallation,
+    TelegramUser,
+)
 from platform_api.telegram_bridge import _message_payload_kind, ingest_event
 
 
@@ -22,6 +27,7 @@ class _FakeSession:
         class FakeResult:
             def scalar_one_or_none(self):
                 return None
+
         return FakeResult()
 
     def get(self, model, id):
@@ -56,7 +62,9 @@ def _chat() -> TelegramChat:
     )
 
 
-def _business_connection(installation_id: uuid.UUID, telegram_user_id: uuid.UUID) -> TelegramBusinessConnection:
+def _business_connection(
+    installation_id: uuid.UUID, telegram_user_id: uuid.UUID
+) -> TelegramBusinessConnection:
     return TelegramBusinessConnection(
         id=uuid.uuid4(),
         installation_id=installation_id,
@@ -162,43 +170,33 @@ async def test_ingest_business_message_creates_message_with_secretary_access_mod
         payload=payload,
     )
 
-    with patch("platform_api.telegram_bridge._get_installation", new_callable=AsyncMock) as mock_get_inst:
-        with patch("platform_api.telegram_bridge._upsert_chat", new_callable=AsyncMock) as mock_upsert_chat:
-            with patch("platform_api.telegram_bridge._upsert_user", new_callable=AsyncMock) as mock_upsert_user:
-                with patch("platform_api.telegram_bridge._find_business_connection", new_callable=AsyncMock) as mock_find_bc:
-                    mock_get_inst.return_value = installation
-                    mock_upsert_chat.return_value = chat
-                    mock_upsert_user.return_value = _telegram_user()
-                    
-                    # Mock returns a business connection → access_mode should be "secretary"
-                    bc = _business_connection(
-                        installation_id=installation.id,
-                        telegram_user_id=uuid.uuid4(),
-                    )
-                    mock_find_bc.return_value = bc
+    bridge = "platform_api.telegram_bridge"
+    with (
+        patch(f"{bridge}._get_installation", new_callable=AsyncMock) as mock_get_inst,
+        patch(f"{bridge}._upsert_chat", new_callable=AsyncMock) as mock_upsert_chat,
+        patch(f"{bridge}._upsert_user", new_callable=AsyncMock) as mock_upsert_user,
+        patch(f"{bridge}._find_business_connection", new_callable=AsyncMock) as mock_find_bc,
+    ):
+        mock_get_inst.return_value = installation
+        mock_upsert_chat.return_value = chat
+        mock_upsert_user.return_value = _telegram_user()
 
-                    with patch("platform_api.telegram_bridge.rpc_client.invoke", new_callable=AsyncMock) as mock_invoke:
-                        from unittest.mock import MagicMock
-                        mock_invoke.return_value = MagicMock(reply=None, pending_confirm=None)
+        # Mock returns a business connection → access_mode should be "secretary"
+        bc = _business_connection(
+            installation_id=installation.id,
+            telegram_user_id=uuid.uuid4(),
+        )
+        mock_find_bc.return_value = bc
 
-                        result = await ingest_event(session, request)
+        with patch(f"{bridge}.rpc_client.invoke", new_callable=AsyncMock) as mock_invoke:
+            from unittest.mock import MagicMock
 
-                        # Should have created TelegramMessage with access_mode="secretary"
-                        assert len(session.added) >= 2  # Update + Message
-                        msg = next((a for a in session.added if hasattr(a, "access_mode")), None)
-                        if msg:
-                            assert msg.access_mode == "secretary"
+            mock_invoke.return_value = MagicMock(reply=None, pending_confirm=None)
 
+            await ingest_event(session, request)
 
-def _telegram_user() -> TelegramUser:
-    return TelegramUser(
-        id=uuid.uuid4(),
-        external_user_id="999",
-        username="alice",
-        first_name="Alice",
-        last_name="Smith",
-        language_code="en",
-        is_bot=False,
-        is_blocked=False,
-        metadata_json={},
-    )
+            # Should have created TelegramMessage with access_mode="secretary"
+            assert len(session.added) >= 2  # Update + Message
+            msg = next((a for a in session.added if hasattr(a, "access_mode")), None)
+            if msg:
+                assert msg.access_mode == "secretary"

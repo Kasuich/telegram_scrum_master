@@ -16,7 +16,10 @@ from core.telemost_shortcut import (
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("https://telemost.yandex.ru/j/12345678901234567", "https://telemost.yandex.ru/j/12345678901234567"),
+        (
+            "https://telemost.yandex.ru/j/12345678901234567",
+            "https://telemost.yandex.ru/j/12345678901234567",
+        ),
         (
             "заходи https://telemost.yandex.ru/j/abc123.",
             "https://telemost.yandex.ru/j/abc123",

@@ -1,4 +1,5 @@
 """Tests for QUERY-voice: read-questions return LLM text, not action reports."""
+
 from __future__ import annotations
 
 from core.react import (

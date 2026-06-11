@@ -20,13 +20,13 @@ from core.assignee_resolver import (
     resolve_assignee as match_assignee,
 )
 from core.config import get_config
-from core.issue_dedup import dedup_enabled_for_create, find_duplicate_issue
+from core.issue_dedup import dedup_enabled_for_create, find_duplicate_issues
 from core.invocation import get_current_invocation_context
 from core.tools import platform_tool
 from core.tracker import TrackerClient, TrackerError
 from core.tracker_tool_helpers import (
-    build_find_fallback_queries,
     apply_open_status_filter_to_yql,
+    build_find_fallback_queries,
     build_find_yql,
     build_patch_body,
     filter_issues_by_hint,
@@ -284,9 +284,13 @@ async def _resolve_sprint_id(
             "board": board.get("display") or board_meta.get("board_name"),
         }
     if len(matches) > 1:
+        match_summaries = [
+            {"id": s.get("id"), "name": s.get("name"), "board_id": s.get("board_id")}
+            for s in matches
+        ]
         raise TrackerError(
             f"Sprint name {sprint_name!r} is ambiguous. Provide board_id/board_name. "
-            f"Matches: {[{'id': s.get('id'), 'name': s.get('name'), 'board_id': s.get('board_id')} for s in matches]}"
+            f"Matches: {match_summaries}"
         )
     raise TrackerError(f"Sprint {sprint_name!r} not found")
 
@@ -545,6 +549,7 @@ async def tracker_create_issue(
     components: str = "",
     followers: str = "",
     custom_fields: str = "",
+    allow_duplicate: bool = False,
 ) -> dict[str, Any]:
     """
     Create a new issue in Yandex Tracker.
@@ -552,7 +557,8 @@ async def tracker_create_issue(
     Use when the user asks to CREATE/ADD a task (создай, заведи, поставь задачу).
     assignee: login or display name — matched to nearest queue team member.
     Optional: description, priority, issue_type, tags, deadline, story_points, sprint, parent, …
-    Returns existing issue if a duplicate is found (closed counts; cancelled does not).
+    By default returns similar issues (field `duplicates`) without creating, when found.
+    Set allow_duplicate=true ONLY on explicit user request to create despite duplicates.
     """
     extra = parse_custom_fields_json(custom_fields)
     if "error" in extra:
@@ -590,20 +596,32 @@ async def tracker_create_issue(
             deadline_val = normalized
 
         resolved_type = issue_type or None
-        if dedup_enabled_for_create():
-            dup = await find_duplicate_issue(
+        if dedup_enabled_for_create() and not allow_duplicate:
+            dups = await find_duplicate_issues(
                 client,
                 q,
                 summary=summary,
                 issue_type=issue_type or "",
                 parent_key=parent.strip() or None,
             )
-            if dup:
-                out = issue_summary(dup, detailed=True)
+            if dups:
+                best = dups[0]
+                out = issue_summary(best, detailed=True)
                 out.update(assignee_meta)
-                key = out.get("key", "")
+                out.get("key", "")
                 out["skipped_duplicate"] = True
-                out["message"] = f"Уже существует: {key}"
+                out["message"] = (
+                    f"Не создавал — нашёл похожие ({len(dups)}). "
+                    "Покажи их пользователю и спроси, что делать."
+                )
+                out["duplicates"] = [
+                    {
+                        "key": d.get("key"),
+                        "summary": d.get("summary"),
+                        "status": (d.get("status") or {}).get("display"),
+                    }
+                    for d in dups
+                ]
                 return out
 
         issue = await client.create_issue(

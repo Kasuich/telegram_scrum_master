@@ -110,10 +110,14 @@ class LLMClient:
             self.folder_id = ""
         else:
             self.model = model if model is not None else llm_cfg.yandexgpt_model
-            self.temperature = temperature if temperature is not None else llm_cfg.yandexgpt_temperature
+            self.temperature = (
+                temperature if temperature is not None else llm_cfg.yandexgpt_temperature
+            )
             self.max_tokens = max_tokens if max_tokens is not None else llm_cfg.yandexgpt_max_tokens
             self.timeout = timeout if timeout is not None else llm_cfg.yandexgpt_timeout
-            self.max_retries = max_retries if max_retries is not None else llm_cfg.yandexgpt_max_retries
+            self.max_retries = (
+                max_retries if max_retries is not None else llm_cfg.yandexgpt_max_retries
+            )
             self.api_key = config.yandex.yc_api_key
             self.folder_id = config.yandex.yc_folder_id
             self.base_url = ""
@@ -157,12 +161,8 @@ class LLMClient:
         for attempt in range(self.max_retries + 1):
             try:
                 if self.provider == "openrouter":
-                    return await self._complete_openrouter(
-                        messages, tools, start_time, **kwargs
-                    )
-                return await self._complete_yandex(
-                    messages, tools, stream, start_time, **kwargs
-                )
+                    return await self._complete_openrouter(messages, tools, start_time, **kwargs)
+                return await self._complete_yandex(messages, tools, stream, start_time, **kwargs)
             except httpx.TimeoutException as e:
                 if attempt == self.max_retries:
                     llm_requests_total.labels(model=self.model, status="error").inc()

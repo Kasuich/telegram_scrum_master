@@ -30,10 +30,7 @@ def test_tool_labels_falls_back_to_tool_name():
 def test_confirm_prompt_russian_format():
     label = _TOOL_LABELS.get("tracker_create_issue", "tracker_create_issue")
     prompt = (
-        f"Запрос на действие: {label}\n"
-        f"Риск: medium\n"
-        f"Параметры: queue=TEST, summary=bug\n"
-        f"Разрешить?"
+        f"Запрос на действие: {label}\nРиск: medium\nПараметры: queue=TEST, summary=bug\nРазрешить?"
     )
     assert "Создание задачи в Трекере" in prompt
     assert "Риск:" in prompt
