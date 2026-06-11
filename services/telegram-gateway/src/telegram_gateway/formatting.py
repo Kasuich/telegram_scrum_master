@@ -11,6 +11,7 @@ _FENCE_RE = re.compile(r"```(?:[A-Za-z0-9_+.-]+)?\n?(.*?)```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _LINK_RE = re.compile(r"\[([^\]]+)]\((https?://[^)\s]+)\)")
 _BARE_URL_RE = re.compile(r"(?<!\()" r"https?://[^\s<>\)\]]+")
+_TRACKER_KEY_RE = re.compile(r"\b([A-Z][A-Z0-9_]+-\d+)\b")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
 _ITALIC_RE = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)")
@@ -114,6 +115,14 @@ def render_telegram_html(text: str) -> str:
         source,
         protected,
         lambda match: f'<a href="{html.escape(match.group(0), quote=True)}">{html.escape(match.group(0))}</a>',
+    )
+    source = _stash(
+        _TRACKER_KEY_RE,
+        source,
+        protected,
+        lambda match: (
+            f'<a href="https://tracker.yandex.ru/{match.group(1)}">{match.group(1)}</a>'
+        ),
     )
 
     escaped = html.escape(source)

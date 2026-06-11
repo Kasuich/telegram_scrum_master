@@ -242,8 +242,7 @@ def format_member_reminder(
         lines.append(f"🔴 Просрочено ({len(overdue)}):")
         for issue in overdue:
             lines.append(
-                f"- [{issue.key}]({issue.url}) [{issue.deadline}]:"
-                f" {issue.summary or '(без названия)'}"
+                f"- {issue.key} [{issue.deadline}]: {issue.summary or '(без названия)'}"
             )
     if overdue and soon:
         lines.append("")
@@ -251,8 +250,7 @@ def format_member_reminder(
         lines.append(f"🟡 Скоро дедлайн ({len(soon)}):")
         for issue in soon:
             lines.append(
-                f"- [{issue.key}]({issue.url}) [{issue.deadline}]:"
-                f" {issue.summary or '(без названия)'}"
+                f"- {issue.key} [{issue.deadline}]: {issue.summary or '(без названия)'}"
             )
     return "\n".join(lines)
 
@@ -273,15 +271,13 @@ def format_lead_summary(
             lines.append(f"  🔴 Просрочено ({len(overdue)}):")
             for issue in overdue:
                 lines.append(
-                    f"    • [{issue.key}]({issue.url}) [{issue.deadline}]:"
-                    f" {issue.summary or '(без названия)'}"
+                    f"    • {issue.key} [{issue.deadline}]: {issue.summary or '(без названия)'}"
                 )
         if soon:
             lines.append(f"  🟡 Скоро ({len(soon)}):")
             for issue in soon:
                 lines.append(
-                    f"    • [{issue.key}]({issue.url}) [{issue.deadline}]:"
-                    f" {issue.summary or '(без названия)'}"
+                    f"    • {issue.key} [{issue.deadline}]: {issue.summary or '(без названия)'}"
                 )
         lines.append("")
     return "\n".join(lines).rstrip()
