@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Literal
 
 import httpx
+from core import board_metrics
+from core import pet as pet_lib
 from core.config import get_config
+from core.cron_schedule import cron_to_schedule, describe_cron, schedule_to_cron
 from core.db import create_all_tables, get_session
 from core.models import (
     Action,
@@ -21,7 +26,9 @@ from core.models import (
     Confirm,
     ConsoleSession,
     LoginChallenge,
+    PetState,
     ScheduledJob,
+    Team,
     TeamMembership,
     TelegramInstallation,
     TelegramOutbox,
@@ -29,10 +36,14 @@ from core.models import (
     TelegramUserLink,
     Trace,
     User,
+    UserProfile,
 )
+from core.scheduler import compute_next_run
 from core.seed import ensure_default_team
+from core.tracker import TrackerClient, TrackerError
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import Select, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -98,6 +109,21 @@ def _cors_origins() -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+# Avatars are stored on a local volume (see CONSOLE_AVATAR_DIR / docker-compose).
+AVATAR_MAX_BYTES = 2 * 1024 * 1024
+AVATAR_CONTENT_TYPES = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+}
+
+
+def _avatar_dir() -> Path:
+    path = Path(os.getenv("CONSOLE_AVATAR_DIR", "/data/avatars"))
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 async def _ensure_default_console_user(session: AsyncSession) -> None:
     email = os.getenv("CONSOLE_ADMIN_EMAIL", "admin@example.com").lower()
     password = os.getenv("CONSOLE_ADMIN_PASSWORD", "admin")
@@ -141,11 +167,142 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 
+UiRole = Literal["developer", "teamlead", "user"]
+
+
 class UserDTO(BaseModel):
     id: str
     email: str
     display_name: str
     role: ConsoleRole
+    ui_role: UiRole = "user"
+    team_id: str | None = None
+    team_role: str | None = None
+    tracker_login: str | None = None
+    default_board_id: str | None = None
+
+
+class ContactDTO(BaseModel):
+    type: str = Field(min_length=1, max_length=32)
+    value: str = Field(min_length=1, max_length=255)
+    label: str | None = Field(default=None, max_length=64)
+
+
+class ProfileDTO(BaseModel):
+    user_id: str
+    display_name: str
+    ui_role: UiRole
+    title: str | None = None
+    bio: str | None = None
+    contacts: list[ContactDTO] = Field(default_factory=list)
+    avatar_url: str | None = None
+    is_self: bool
+    # Owner-only fields — omitted in the public view.
+    email: str | None = None
+    team_role: str | None = None
+    tracker_login: str | None = None
+    private: dict[str, Any] | None = None
+
+
+class PatchProfileRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=255)
+    bio: str | None = Field(default=None, max_length=4000)
+    contacts: list[ContactDTO] | None = Field(default=None, max_length=20)
+    private: dict[str, Any] | None = None
+
+
+class BoardIssueDTO(BaseModel):
+    key: str
+    summary: str
+    status: str
+    status_key: str
+    deadline: str | None = None
+    overdue: bool = False
+    updated_at: str | None = None
+
+
+class BoardColumnDTO(BaseModel):
+    status: str
+    issues: list[BoardIssueDTO]
+
+
+class BoardDTO(BaseModel):
+    available: bool
+    queue: str | None = None
+    tracker_login: str | None = None
+    total: int = 0
+    columns: list[BoardColumnDTO] = Field(default_factory=list)
+    note: str | None = None
+
+
+class StatsDTO(BaseModel):
+    available: bool
+    window_days: int
+    tracker_login: str | None = None
+    counts: dict[str, int] = Field(default_factory=dict)
+    throughput: list[dict[str, Any]] = Field(default_factory=list)
+    status_distribution: list[dict[str, Any]] = Field(default_factory=list)
+    lead_time: dict[str, Any] = Field(default_factory=dict)
+    note: str | None = None
+
+
+class PetDTO(BaseModel):
+    available: bool
+    level: int = 1
+    xp: int = 0
+    xp_into_level: int = 0
+    xp_for_next: int = 1
+    progress: float = 0.0
+    mood: int = 100
+    tier: int = 0
+    tier_name: str = "Яйцо"
+    note: str | None = None
+
+
+class ScheduleDTO(BaseModel):
+    preset: Literal["daily", "weekdays", "weekly"]
+    time: str = Field(pattern=r"^\d{2}:\d{2}$")
+    days: list[int] | None = None
+
+
+class ScheduledJobDTO(BaseModel):
+    id: str
+    agent_name: str | None
+    name: str
+    cron_expr: str
+    schedule: dict[str, Any]
+    human: str
+    payload_type: str | None = None
+    enabled: bool
+    run_count: int
+    max_runs: int | None
+    next_run: str | None
+    created_at: str
+
+
+class PatchScheduledJobRequest(BaseModel):
+    enabled: bool | None = None
+    schedule: ScheduleDTO | None = None
+
+
+class TeamMemberDTO(BaseModel):
+    user_id: str
+    display_name: str
+    tracker_login: str | None = None
+    role: str
+    avatar_url: str | None = None
+
+
+class TeamHealthDTO(BaseModel):
+    available: bool
+    window_days: int
+    health_index: int | None = None
+    breakdown: list[dict[str, Any]] = Field(default_factory=list)
+    drags: list[str] = Field(default_factory=list)
+    totals: dict[str, int] = Field(default_factory=dict)
+    throughput: list[dict[str, Any]] = Field(default_factory=list)
+    members: list[dict[str, Any]] = Field(default_factory=list)
+    note: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -225,6 +382,36 @@ class PatchOverlayRequest(BaseModel):
     autonomy: AutonomyDTO | None = None
 
 
+class AgentToolDTO(BaseModel):
+    name: str
+    description: str = ""
+    risk: RiskLevel
+    enabled: bool = True
+    # Per-tool confirm override: True=always confirm, False=auto-run, None=by risk.
+    confirm: bool | None = None
+
+
+class ToolOverrideDTO(BaseModel):
+    name: str
+    enabled: bool = True
+    confirm: bool | None = None
+
+
+class PatchAgentToolsRequest(BaseModel):
+    tools: list[ToolOverrideDTO] = Field(default_factory=list)
+
+
+class UserSummaryDTO(BaseModel):
+    user_id: str
+    display_name: str
+    email: str
+    role: ConsoleRole
+    ui_role: UiRole
+    team_role: str | None = None
+    tracker_login: str | None = None
+    avatar_url: str | None = None
+
+
 class ActionListItem(BaseModel):
     id: str
     created_at: str
@@ -291,12 +478,56 @@ class PlaygroundChatRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _user_dto(user: User) -> UserDTO:
+async def _primary_membership(
+    session: AsyncSession, user: User
+) -> TeamMembership | None:
+    """Pick the user's primary confirmed team membership.
+
+    Prefers the default team, otherwise the first confirmed membership.
+    """
+    rows = (
+        await session.execute(
+            select(TeamMembership)
+            .where(
+                TeamMembership.user_id == user.id,
+                TeamMembership.tracker_match_status == "confirmed",
+            )
+            .order_by(TeamMembership.created_at)
+        )
+    ).scalars().all()
+    if not rows:
+        return None
+    default_team = _default_team_id()
+    for membership in rows:
+        if membership.team_id == default_team:
+            return membership
+    return rows[0]
+
+
+def _resolve_ui_role(user: User, membership: TeamMembership | None) -> UiRole:
+    if user.role in ("dev", "admin"):
+        return "developer"
+    if membership is not None and membership.role == "lead":
+        return "teamlead"
+    return "user"
+
+
+async def _build_user_dto(session: AsyncSession, user: User) -> UserDTO:
+    membership = await _primary_membership(session, user)
+    # Developers without a membership still operate on the default team.
+    team_id: str | None = str(membership.team_id) if membership else None
+    if team_id is None and user.role in ("dev", "admin"):
+        team_id = str(_default_team_id())
     return UserDTO(
         id=str(user.id),
         email=user.email,
         display_name=user.display_name,
         role=user.role,  # type: ignore[arg-type]
+        ui_role=_resolve_ui_role(user, membership),
+        team_id=team_id,
+        team_role=membership.role if membership else None,
+        tracker_login=membership.tracker_login if membership else None,
+        default_board_id=membership.default_board_id if membership else None,
     )
 
 
@@ -343,6 +574,26 @@ def require_roles(*roles: ConsoleRole):
     return _dependency
 
 
+async def current_teamlead(user: User = Depends(current_user)) -> User:
+    """Allow team leads and developers (developers manage every team)."""
+    async with get_session() as session:
+        membership = await _primary_membership(session, user)
+        if _resolve_ui_role(user, membership) not in ("developer", "teamlead"):
+            raise HTTPException(status_code=403, detail="Insufficient role")
+    return user
+
+
+async def _assert_team_access(
+    session: AsyncSession, user: User, team_id: uuid.UUID
+) -> None:
+    """Developers manage any team; a lead only their own."""
+    if user.role in ("dev", "admin"):
+        return
+    membership = await _primary_membership(session, user)
+    if membership is None or membership.team_id != team_id or membership.role != "lead":
+        raise HTTPException(status_code=403, detail="Недостаточно прав для этой команды")
+
+
 @app.post("/auth/login", response_model=LoginResponse)
 async def login(request: LoginRequest, response: Response) -> LoginResponse:
     async with get_session() as session:
@@ -365,9 +616,10 @@ async def login(request: LoginRequest, response: Response) -> LoginResponse:
                 expires_at=datetime.now(timezone.utc) + _session_ttl(),
             )
         )
+        user_dto = await _build_user_dto(session, user)
 
     _set_session_cookie(response, raw_token)
-    return LoginResponse(user=_user_dto(user))
+    return LoginResponse(user=user_dto)
 
 
 @app.post("/auth/code/request", response_model=CodeLoginChallengeResponse)
@@ -517,9 +769,10 @@ async def verify_login_code(
                 expires_at=now + _session_ttl(),
             )
         )
+        user_dto = await _build_user_dto(session, user)
 
     _set_session_cookie(response, raw_token)
-    return LoginResponse(user=_user_dto(user))
+    return LoginResponse(user=user_dto)
 
 
 @app.post("/auth/logout")
@@ -545,7 +798,296 @@ async def logout(
 
 @app.get("/auth/me", response_model=UserDTO)
 async def me(user: User = Depends(current_user)) -> UserDTO:
-    return _user_dto(user)
+    async with get_session() as session:
+        return await _build_user_dto(session, user)
+
+
+# ---------------------------------------------------------------------------
+# Profiles
+# ---------------------------------------------------------------------------
+
+
+def _avatar_url(user_id: uuid.UUID, profile: UserProfile | None) -> str | None:
+    if profile is None or not profile.avatar_path:
+        return None
+    return f"/users/{user_id}/avatar"
+
+
+def _contacts_from_profile(profile: UserProfile | None) -> list[ContactDTO]:
+    if profile is None:
+        return []
+    return [ContactDTO(**item) for item in (profile.contacts_json or [])]
+
+
+async def _get_profile(session: AsyncSession, user_id: uuid.UUID) -> UserProfile | None:
+    return await session.get(UserProfile, user_id)
+
+
+async def _profile_dto(
+    session: AsyncSession, user: User, *, is_self: bool
+) -> ProfileDTO:
+    profile = await _get_profile(session, user.id)
+    membership = await _primary_membership(session, user)
+    dto = ProfileDTO(
+        user_id=str(user.id),
+        display_name=user.display_name,
+        ui_role=_resolve_ui_role(user, membership),
+        title=profile.title if profile else None,
+        bio=profile.bio if profile else None,
+        contacts=_contacts_from_profile(profile),
+        avatar_url=_avatar_url(user.id, profile),
+        is_self=is_self,
+    )
+    if is_self:
+        dto.email = user.email
+        dto.team_role = membership.role if membership else None
+        dto.tracker_login = membership.tracker_login if membership else None
+        dto.private = (profile.private_json if profile else None) or {}
+    return dto
+
+
+@app.get("/me/profile", response_model=ProfileDTO)
+async def get_my_profile(user: User = Depends(current_user)) -> ProfileDTO:
+    async with get_session() as session:
+        return await _profile_dto(session, user, is_self=True)
+
+
+@app.patch("/me/profile", response_model=ProfileDTO)
+async def patch_my_profile(
+    payload: PatchProfileRequest, user: User = Depends(current_user)
+) -> ProfileDTO:
+    async with get_session() as session:
+        profile = await _get_profile(session, user.id)
+        if profile is None:
+            profile = UserProfile(user_id=user.id, contacts_json=[], private_json={})
+            session.add(profile)
+        if payload.title is not None:
+            profile.title = payload.title or None
+        if payload.bio is not None:
+            profile.bio = payload.bio or None
+        if payload.contacts is not None:
+            profile.contacts_json = [
+                item.model_dump(exclude_none=True) for item in payload.contacts
+            ]
+        if payload.private is not None:
+            profile.private_json = payload.private
+        await session.flush()
+        return await _profile_dto(session, user, is_self=True)
+
+
+@app.get("/users/{user_id}/profile", response_model=ProfileDTO)
+async def get_user_profile(
+    user_id: uuid.UUID, viewer: User = Depends(current_user)
+) -> ProfileDTO:
+    async with get_session() as session:
+        target = await session.get(User, user_id)
+        if target is None or not target.active:
+            raise HTTPException(status_code=404, detail="User not found")
+        return await _profile_dto(session, target, is_self=target.id == viewer.id)
+
+
+@app.post("/me/avatar", response_model=ProfileDTO)
+async def upload_my_avatar(
+    request: Request, user: User = Depends(current_user)
+) -> ProfileDTO:
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    ext = AVATAR_CONTENT_TYPES.get(content_type)
+    if ext is None:
+        raise HTTPException(status_code=415, detail="Unsupported image type")
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(body) > AVATAR_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    directory = _avatar_dir()
+    filename = f"{user.id}.{ext}"
+    # Remove stale variants with a different extension.
+    for other_ext in AVATAR_CONTENT_TYPES.values():
+        stale = directory / f"{user.id}.{other_ext}"
+        if other_ext != ext and stale.exists():
+            stale.unlink()
+    (directory / filename).write_bytes(body)
+
+    async with get_session() as session:
+        profile = await _get_profile(session, user.id)
+        if profile is None:
+            profile = UserProfile(user_id=user.id, contacts_json=[], private_json={})
+            session.add(profile)
+        profile.avatar_path = filename
+        await session.flush()
+        return await _profile_dto(session, user, is_self=True)
+
+
+@app.get("/users/{user_id}/avatar")
+async def get_user_avatar(
+    user_id: uuid.UUID, _: User = Depends(current_user)
+) -> FileResponse:
+    async with get_session() as session:
+        profile = await _get_profile(session, user_id)
+    if profile is None or not profile.avatar_path:
+        raise HTTPException(status_code=404, detail="No avatar")
+    file_path = _avatar_dir() / profile.avatar_path
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="No avatar")
+    return FileResponse(file_path)
+
+
+# ---------------------------------------------------------------------------
+# Personal board & stats (Tracker-backed)
+# ---------------------------------------------------------------------------
+
+
+async def _team_queue(session: AsyncSession, team_id: uuid.UUID) -> str | None:
+    team = await session.get(Team, team_id)
+    return team.tracker_queue if team else None
+
+
+def _yql_login(login: str) -> str:
+    return login.replace('"', "")
+
+
+async def _fetch_assignee_issues(
+    login: str, queue: str | None, *, since_date: str | None = None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    safe = _yql_login(login)
+    async with TrackerClient() as client:
+        open_issues = await client.search_all_issues(
+            f'Assignee: "{safe}" AND Resolution: empty()', queue=queue
+        )
+        resolved: list[dict[str, Any]] = []
+        if since_date is not None:
+            resolved = await client.search_all_issues(
+                f'Assignee: "{safe}" AND Resolved: >= "{since_date}"', queue=queue
+            )
+    return open_issues, resolved
+
+
+@app.get("/me/board", response_model=BoardDTO)
+async def my_board(user: User = Depends(current_user)) -> BoardDTO:
+    async with get_session() as session:
+        membership = await _primary_membership(session, user)
+        if membership is None or not membership.tracker_login:
+            return BoardDTO(available=False, note="Tracker-логин не привязан")
+        queue = await _team_queue(session, membership.team_id)
+        login = membership.tracker_login
+
+    try:
+        open_issues, _ = await _fetch_assignee_issues(login, queue)
+    except TrackerError as exc:
+        return BoardDTO(available=False, queue=queue, tracker_login=login, note=str(exc))
+    except Exception:  # noqa: BLE001 — Tracker is best-effort here
+        return BoardDTO(
+            available=False, queue=queue, tracker_login=login, note="Tracker недоступен"
+        )
+
+    now = datetime.now(timezone.utc)
+    order: list[str] = []
+    groups: dict[str, list[BoardIssueDTO]] = {}
+    for issue in open_issues:
+        status = board_metrics.status_display(issue)
+        if status not in groups:
+            groups[status] = []
+            order.append(status)
+        groups[status].append(
+            BoardIssueDTO(
+                key=str(issue.get("key", "")),
+                summary=str(issue.get("summary", "")),
+                status=status,
+                status_key=board_metrics.status_key(issue),
+                deadline=issue.get("deadline"),
+                overdue=board_metrics.is_overdue(issue, now=now),
+                updated_at=issue.get("updatedAt"),
+            )
+        )
+    columns = [BoardColumnDTO(status=status, issues=groups[status]) for status in order]
+    return BoardDTO(
+        available=True,
+        queue=queue,
+        tracker_login=login,
+        total=len(open_issues),
+        columns=columns,
+    )
+
+
+@app.get("/me/stats", response_model=StatsDTO)
+async def my_stats(
+    window: int = Query(14, ge=1, le=90), user: User = Depends(current_user)
+) -> StatsDTO:
+    async with get_session() as session:
+        membership = await _primary_membership(session, user)
+        if membership is None or not membership.tracker_login:
+            return StatsDTO(available=False, window_days=window, note="Tracker-логин не привязан")
+        queue = await _team_queue(session, membership.team_id)
+        login = membership.tracker_login
+
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(days=window)).date().isoformat()
+    try:
+        open_issues, resolved = await _fetch_assignee_issues(login, queue, since_date=since)
+    except TrackerError as exc:
+        return StatsDTO(
+            available=False, window_days=window, tracker_login=login, note=str(exc)
+        )
+    except Exception:  # noqa: BLE001 — Tracker is best-effort here
+        return StatsDTO(
+            available=False,
+            window_days=window,
+            tracker_login=login,
+            note="Tracker недоступен",
+        )
+
+    stats = board_metrics.personal_stats(open_issues, resolved, window_days=window, now=now)
+    return StatsDTO(
+        available=True,
+        window_days=window,
+        tracker_login=login,
+        counts=stats["counts"],
+        throughput=stats["throughput"],
+        status_distribution=stats["status_distribution"],
+        lead_time=stats["lead_time"],
+    )
+
+
+@app.get("/me/pet", response_model=PetDTO)
+async def my_pet(user: User = Depends(current_user)) -> PetDTO:
+    """«Скрамик» — pet state derived from board activity, persisted as a snapshot."""
+    async with get_session() as session:
+        membership = await _primary_membership(session, user)
+        if membership is None or not membership.tracker_login:
+            return PetDTO(available=False, note="Tracker-логин не привязан")
+        queue = await _team_queue(session, membership.team_id)
+        login = membership.tracker_login
+
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(days=30)).date().isoformat()
+    try:
+        open_issues, resolved = await _fetch_assignee_issues(login, queue, since_date=since)
+    except Exception:  # noqa: BLE001 — Tracker is best-effort
+        return PetDTO(available=False, note="Tracker недоступен")
+
+    counts = board_metrics.personal_stats(
+        open_issues, resolved, window_days=30, now=now
+    )["counts"]
+    snapshot = pet_lib.compute_pet(
+        resolved=counts["resolved"],
+        overdue=counts["overdue"],
+        in_progress=counts["in_progress"],
+    )
+
+    async with get_session() as session:
+        state = await session.get(PetState, user.id)
+        if state is None:
+            state = PetState(user_id=user.id)
+            session.add(state)
+        state.xp = snapshot["xp"]
+        state.level = snapshot["level"]
+        state.mood = snapshot["mood"]
+        state.evolution_tier = snapshot["tier"]
+        state.state_json = snapshot
+        state.last_recalc_at = now
+
+    return PetDTO(available=True, **snapshot)
 
 
 # ---------------------------------------------------------------------------
@@ -565,6 +1107,18 @@ async def _runtime_agents() -> dict[str, str]:
         return {item["name"]: item.get("description", "") for item in response.json()}
     except Exception:
         return {}
+
+
+async def _runtime_agent_tools(name: str) -> list[dict[str, Any]]:
+    """Declared tools (+ registry risk metadata) for an agent, via platform-api."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(f"{_platform_api_url()}/agents/{name}/tools")
+        response.raise_for_status()
+        result = response.json()
+        return result if isinstance(result, list) else []
+    except Exception:
+        return []
 
 
 async def _agent_rows(
@@ -804,6 +1358,104 @@ async def patch_agent_overlay(
     return await get_agent_config(name)
 
 
+def _merge_agent_tools(
+    declared: list[dict[str, Any]], overlay: dict[str, Any]
+) -> list[AgentToolDTO]:
+    tool_overrides = overlay.get("tools") if isinstance(overlay, dict) else None
+    tool_overrides = tool_overrides if isinstance(tool_overrides, dict) else {}
+    out: list[AgentToolDTO] = []
+    for tool in declared:
+        name = tool.get("name", "")
+        override = tool_overrides.get(name) or {}
+        out.append(
+            AgentToolDTO(
+                name=name,
+                description=tool.get("description", ""),
+                risk=tool.get("risk", "medium"),
+                enabled=override.get("enabled", True),
+                confirm=override.get("confirm"),
+            )
+        )
+    return out
+
+
+@app.get("/agents/{name}/tools", response_model=list[AgentToolDTO])
+async def get_agent_tools(
+    name: str, user: User = Depends(require_roles("dev", "admin"))
+) -> list[AgentToolDTO]:
+    del user
+    declared = await _runtime_agent_tools(name)
+    async with get_session() as session:
+        instances, _ = await _agent_rows(session)
+        instance = instances.get(name)
+        overlay = dict(instance.overlay) if instance and instance.overlay else {}
+    return _merge_agent_tools(declared, overlay)
+
+
+@app.patch("/agents/{name}/tools", response_model=list[AgentToolDTO])
+async def patch_agent_tools(
+    name: str,
+    request: PatchAgentToolsRequest,
+    user: User = Depends(require_roles("dev", "admin")),
+) -> list[AgentToolDTO]:
+    del user
+    # Store only non-default entries to keep the overlay minimal.
+    tools_map: dict[str, dict[str, Any]] = {}
+    for tool in request.tools:
+        entry: dict[str, Any] = {}
+        if tool.enabled is False:
+            entry["enabled"] = False
+        if tool.confirm is not None:
+            entry["confirm"] = tool.confirm
+        if entry:
+            tools_map[tool.name] = entry
+
+    async with get_session() as session:
+        instance = await _get_or_create_instance(session, name)
+        overlay = dict(instance.overlay or {})
+        if tools_map:
+            overlay["tools"] = tools_map
+        else:
+            overlay.pop("tools", None)
+        instance.overlay = overlay
+
+    declared = await _runtime_agent_tools(name)
+    return _merge_agent_tools(declared, {"tools": tools_map})
+
+
+@app.get("/users", response_model=list[UserSummaryDTO])
+async def list_users(user: User = Depends(require_roles("dev", "admin"))) -> list[UserSummaryDTO]:
+    del user
+    team_id = _default_team_id()
+    async with get_session() as session:
+        rows = (
+            await session.execute(
+                select(User, TeamMembership, UserProfile)
+                .join(
+                    TeamMembership,
+                    (TeamMembership.user_id == User.id) & (TeamMembership.team_id == team_id),
+                    isouter=True,
+                )
+                .join(UserProfile, UserProfile.user_id == User.id, isouter=True)
+                .where(User.active.is_(True))
+                .order_by(User.display_name)
+            )
+        ).all()
+    return [
+        UserSummaryDTO(
+            user_id=str(user_row.id),
+            display_name=user_row.display_name,
+            email=user_row.email,
+            role=user_row.role,  # type: ignore[arg-type]
+            ui_role=_resolve_ui_role(user_row, membership),
+            team_role=membership.role if membership else None,
+            tracker_login=membership.tracker_login if membership else None,
+            avatar_url=_avatar_url(user_row.id, profile),
+        )
+        for user_row, membership, profile in rows
+    ]
+
+
 @app.get("/actions", response_model=list[ActionListItem])
 async def list_actions(
     status: ActionStatus | None = None,
@@ -964,29 +1616,161 @@ async def playground_chat(
     )
 
 
-@app.get("/scheduled-jobs")
-async def list_scheduled_jobs(user: User = Depends(require_roles("dev", "admin"))) -> list[dict]:
-    del user
+def _scheduled_job_dto(job: ScheduledJob, agent_name: str | None) -> ScheduledJobDTO:
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    return ScheduledJobDTO(
+        id=str(job.id),
+        agent_name=agent_name,
+        name=job.name,
+        cron_expr=job.cron_expr,
+        schedule=cron_to_schedule(job.cron_expr),
+        human=describe_cron(job.cron_expr),
+        payload_type=payload.get("type"),
+        enabled=job.enabled,
+        run_count=job.run_count,
+        max_runs=job.max_runs,
+        next_run=_iso(job.next_run),
+        created_at=job.created_at.isoformat(),
+    )
+
+
+@app.get("/scheduled-jobs", response_model=list[ScheduledJobDTO])
+async def list_scheduled_jobs(
+    user: User = Depends(current_teamlead),
+) -> list[ScheduledJobDTO]:
     async with get_session() as session:
+        team_id = _default_team_id()
+        await _assert_team_access(session, user, team_id)
         rows = (
             await session.execute(
                 select(ScheduledJob, AgentInstance.name)
                 .join(AgentInstance, ScheduledJob.agent_instance_id == AgentInstance.id)
-                .where(AgentInstance.team_id == _default_team_id())
+                .where(AgentInstance.team_id == team_id)
                 .order_by(desc(ScheduledJob.created_at))
             )
         ).all()
+    return [_scheduled_job_dto(job, agent_name) for job, agent_name in rows]
+
+
+@app.patch("/scheduled-jobs/{job_id}", response_model=ScheduledJobDTO)
+async def patch_scheduled_job(
+    job_id: uuid.UUID,
+    request: PatchScheduledJobRequest,
+    user: User = Depends(current_teamlead),
+) -> ScheduledJobDTO:
+    if request.enabled is None and request.schedule is None:
+        raise HTTPException(status_code=400, detail="Provide enabled or schedule")
+
+    async with get_session() as session:
+        row = (
+            await session.execute(
+                select(ScheduledJob, AgentInstance.name, AgentInstance.team_id)
+                .join(AgentInstance, ScheduledJob.agent_instance_id == AgentInstance.id)
+                .where(ScheduledJob.id == job_id)
+            )
+        ).one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        job, agent_name, team_id = row
+        await _assert_team_access(session, user, team_id)
+
+        if request.schedule is not None:
+            try:
+                cron_expr = schedule_to_cron(request.schedule.model_dump())
+                job.next_run = compute_next_run(cron_expr)
+            except Exception as exc:  # noqa: BLE001 — surface any cron build error as 400
+                raise HTTPException(status_code=400, detail=f"Invalid schedule: {exc}") from exc
+            job.cron_expr = cron_expr
+        if request.enabled is not None:
+            job.enabled = request.enabled
+
+        await session.flush()
+        return _scheduled_job_dto(job, agent_name)
+
+
+# ---------------------------------------------------------------------------
+# Team (teamlead dashboards)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/teams/{team_id}/members", response_model=list[TeamMemberDTO])
+async def list_team_members(
+    team_id: uuid.UUID, user: User = Depends(current_teamlead)
+) -> list[TeamMemberDTO]:
+    async with get_session() as session:
+        await _assert_team_access(session, user, team_id)
+        rows = (
+            await session.execute(
+                select(TeamMembership, User, UserProfile)
+                .join(User, TeamMembership.user_id == User.id)
+                .join(UserProfile, UserProfile.user_id == User.id, isouter=True)
+                .where(TeamMembership.team_id == team_id)
+                .order_by(TeamMembership.role, User.display_name)
+            )
+        ).all()
     return [
-        {
-            "id": str(job.id),
-            "agent_name": agent_name,
-            "name": job.name,
-            "cron_expr": job.cron_expr,
-            "enabled": job.enabled,
-            "run_count": job.run_count,
-            "max_runs": job.max_runs,
-            "next_run": _iso(job.next_run),
-            "created_at": job.created_at.isoformat(),
-        }
-        for job, agent_name in rows
+        TeamMemberDTO(
+            user_id=str(membership.user_id),
+            display_name=user_row.display_name,
+            tracker_login=membership.tracker_login,
+            role=membership.role,
+            avatar_url=_avatar_url(user_row.id, profile),
+        )
+        for membership, user_row, profile in rows
     ]
+
+
+@app.get("/teams/{team_id}/health", response_model=TeamHealthDTO)
+async def team_health(
+    team_id: uuid.UUID,
+    window: int = Query(14, ge=1, le=90),
+    user: User = Depends(current_teamlead),
+) -> TeamHealthDTO:
+    async with get_session() as session:
+        await _assert_team_access(session, user, team_id)
+        queue = await _team_queue(session, team_id)
+        rows = (
+            await session.execute(
+                select(TeamMembership, User)
+                .join(User, TeamMembership.user_id == User.id)
+                .where(
+                    TeamMembership.team_id == team_id,
+                    TeamMembership.tracker_match_status == "confirmed",
+                )
+            )
+        ).all()
+
+    roster = [
+        (str(membership.user_id), user_row.display_name, membership.tracker_login)
+        for membership, user_row in rows
+        if membership.tracker_login
+    ][:30]
+
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(days=window)).date().isoformat()
+
+    async def _member_issues(login: str) -> tuple[list, list] | None:
+        try:
+            return await _fetch_assignee_issues(login, queue, since_date=since)
+        except Exception:  # noqa: BLE001 — Tracker best-effort
+            return None
+
+    results = await asyncio.gather(*[_member_issues(login) for _, _, login in roster])
+    if roster and all(result is None for result in results):
+        return TeamHealthDTO(available=False, window_days=window, note="Tracker недоступен")
+
+    members: list[dict[str, Any]] = []
+    for (user_id, display_name, login), result in zip(roster, results, strict=True):
+        open_issues, resolved = result if result is not None else ([], [])
+        members.append(
+            {
+                "user_id": user_id,
+                "display_name": display_name,
+                "tracker_login": login,
+                "open": open_issues,
+                "resolved": resolved,
+            }
+        )
+
+    health = board_metrics.team_health(members, window_days=window, now=now)
+    return TeamHealthDTO(available=True, **health)

@@ -71,6 +71,12 @@ async def list_agents() -> list[dict[str, str]]:
     return _get_in_process().list_agents()
 
 
+async def agent_tools(agent: str) -> list[dict[str, Any]]:
+    if _use_http():
+        return await _rpc_http("agent_tools", {"agent": agent})
+    return _get_in_process().agent_tools(agent)
+
+
 async def invoke(
     agent: str,
     message: str,

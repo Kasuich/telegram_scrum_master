@@ -219,6 +219,21 @@ class OrchestratorService:
             for r in self._runners.values()
         ]
 
+    def agent_tools(self, agent_name: str) -> list[dict[str, Any]]:
+        """Return the tools declared by an agent with registry metadata."""
+        runner = self._runner(agent_name)
+        registry = get_registry()
+        tools: list[dict[str, Any]] = []
+        for name in getattr(runner.agent, "tools", []):
+            if registry.exists(name):
+                tool = registry.get(name)
+                tools.append(
+                    {"name": tool.name, "description": tool.description, "risk": tool.risk}
+                )
+            else:
+                tools.append({"name": name, "description": "", "risk": "medium"})
+        return tools
+
     def _runner(self, agent_name: str) -> ReActRunner:
         if agent_name not in self._runners:
             raise KeyError(f"Agent not found: {agent_name!r}")

@@ -3,6 +3,7 @@ import { Bot, FileCode2, ListTree } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { AgentConfigPanel } from "../components/AgentConfigPanel";
+import { AgentToolsPanel } from "../components/AgentToolsPanel";
 import { EnabledBadge, RiskBadge, StatusBadge } from "../components/Badge";
 import { TraceTimeline } from "../components/TraceTimeline";
 import { api, type AgentListItem } from "../lib/api";
@@ -75,11 +76,16 @@ export function DevPage() {
           <FileCode2 className="h-5 w-5 text-muted" />
         </div>
         {activeAgent && config.data ? (
-          <AgentConfigPanel
-            config={config.data}
-            onSaveSpec={(body) => specMutation.mutate({ name: activeAgent, body })}
-            onSaveOverlay={(body) => overlayMutation.mutate({ name: activeAgent, body })}
-          />
+          <>
+            <AgentConfigPanel
+              config={config.data}
+              onSaveSpec={(body) => specMutation.mutate({ name: activeAgent, body })}
+              onSaveOverlay={(body) => overlayMutation.mutate({ name: activeAgent, body })}
+            />
+            <div className="mt-4">
+              <AgentToolsPanel agent={activeAgent} />
+            </div>
+          </>
         ) : (
           <div className="surface empty">Выберите агента</div>
         )}

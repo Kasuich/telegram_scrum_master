@@ -1621,6 +1621,11 @@ class ReActRunner:
         self._active_invocation_context = ctx.invocation_context
         tool_schemas = self.agent._resolve_tool_schemas()
         registry = get_registry()
+        # Per-agent disabled tools (set via overlay) are hidden from the LLM.
+        _rc_tools = ctx.effective_runtime_config or self.runtime_config
+        if _rc_tools.disabled_tools:
+            disabled = set(_rc_tools.disabled_tools)
+            tool_schemas = [s for s in tool_schemas if s.get("name") not in disabled]
         action_only = getattr(self.agent, "action_only", False)
         freeform = bool(getattr(self.agent, "freeform_tool_planning", False))
         steps_before_turn = state.pop("_steps_before_turn", scenario_steps_before)
@@ -1779,10 +1784,15 @@ class ReActRunner:
 
             tool = registry.get(tool_call.name)
             rc = ctx.effective_runtime_config or self.runtime_config
-            needs_confirm = not rc.skip_tool_confirm and (
-                tool.name in rc.always_confirm_tools
-                or (tool.risk in rc.confirm_risk and tool.risk not in rc.auto_risk)
-            )
+            # Per-tool confirm override (set via overlay) wins over risk-based logic.
+            tool_override = rc.tool_confirm.get(tool.name)
+            if tool_override is not None:
+                needs_confirm = not rc.skip_tool_confirm and tool_override
+            else:
+                needs_confirm = not rc.skip_tool_confirm and (
+                    tool.name in rc.always_confirm_tools
+                    or (tool.risk in rc.confirm_risk and tool.risk not in rc.auto_risk)
+                )
 
             if needs_confirm:
                 # --- Autonomy gate: pause and ask ---

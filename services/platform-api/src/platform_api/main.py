@@ -163,6 +163,15 @@ async def list_agents() -> list[dict[str, str]]:
     return await rpc_client.list_agents()
 
 
+@app.get("/agents/{agent_name}/tools")
+async def agent_tools(agent_name: str) -> list[dict[str, Any]]:
+    """List the tools declared by a specific agent with registry metadata."""
+    try:
+        return await rpc_client.agent_tools(agent_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Agent not found") from exc
+
+
 @app.post("/agents/{agent_name}/chat", response_model=ChatResponse)
 async def agent_chat(agent_name: str, request: ChatRequest) -> ChatResponse:
     """Send a message to a specific agent."""

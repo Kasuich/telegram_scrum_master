@@ -126,6 +126,49 @@ class TestOverlayOverrides:
 
 
 # ---------------------------------------------------------------------------
+# Per-tool overrides (overlay["tools"])
+# ---------------------------------------------------------------------------
+
+
+class TestToolOverrides:
+    def test_defaults_empty(self) -> None:
+        cfg = build_effective_config(_Agent(), None, None)
+        assert cfg.runtime_config.disabled_tools == []
+        assert cfg.runtime_config.tool_confirm == {}
+
+    def test_disabled_tool(self) -> None:
+        overlay = {"tools": {"GetIssue": {"enabled": False}}}
+        cfg = build_effective_config(_Agent(), None, overlay)
+        assert cfg.runtime_config.disabled_tools == ["GetIssue"]
+
+    def test_enabled_tool_not_disabled(self) -> None:
+        overlay = {"tools": {"GetIssue": {"enabled": True}}}
+        cfg = build_effective_config(_Agent(), None, overlay)
+        assert cfg.runtime_config.disabled_tools == []
+
+    def test_confirm_override_true_and_false(self) -> None:
+        overlay = {
+            "tools": {
+                "CloseIssue": {"confirm": True},
+                "GetIssue": {"confirm": False},
+            }
+        }
+        cfg = build_effective_config(_Agent(), None, overlay)
+        assert cfg.runtime_config.tool_confirm == {"CloseIssue": True, "GetIssue": False}
+
+    def test_confirm_null_ignored(self) -> None:
+        overlay = {"tools": {"GetIssue": {"enabled": True, "confirm": None}}}
+        cfg = build_effective_config(_Agent(), None, overlay)
+        assert cfg.runtime_config.tool_confirm == {}
+
+    def test_overlay_tools_beat_spec_tools(self) -> None:
+        spec = {"tools": {"GetIssue": {"enabled": False}}}
+        overlay = {"tools": {"GetIssue": {"enabled": True}}}
+        cfg = build_effective_config(_Agent(), spec, overlay)
+        assert cfg.runtime_config.disabled_tools == []
+
+
+# ---------------------------------------------------------------------------
 # ReActRunner: effective_prompt / effective_runtime_config propagation
 # ---------------------------------------------------------------------------
 
