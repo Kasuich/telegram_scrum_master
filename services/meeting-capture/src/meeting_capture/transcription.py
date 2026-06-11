@@ -70,7 +70,7 @@ class SpeechKitTranscriber(Transcriber):
 
         return TranscriptionResult(
             source="speechkit",
-            segments=parse_speechkit_segments(payload),
+            segments=deduplicate_mirror_segments(parse_speechkit_segments(payload)),
             participants_observed=participants_observed,
         )
 
@@ -272,6 +272,30 @@ def parse_speechkit_segments(payload: Any) -> list[dict[str, Any]]:
     return sorted(segments, key=lambda item: (item["start_ms"], item["end_ms"]))
 
 
+def deduplicate_mirror_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop diarization duplicates: same time window and text on multiple speakers.
+
+    SpeechKit often mirrors one utterance onto SPEAKER_01 and SPEAKER_02 when the
+  recording is effectively mono (one remote mix). Keep a single segment per
+    (start_ms, end_ms, text), preferring the one that already has speaker_name.
+    """
+    seen: dict[tuple[int, int, str], dict[str, Any]] = {}
+    order: list[tuple[int, int, str]] = []
+    for seg in segments:
+        text = str(seg.get("text") or "").strip()
+        if not text:
+            continue
+        key = (int(seg.get("start_ms") or 0), int(seg.get("end_ms") or 0), text)
+        if key not in seen:
+            seen[key] = seg
+            order.append(key)
+            continue
+        existing = seen[key]
+        if not existing.get("speaker_name") and seg.get("speaker_name"):
+            seen[key] = seg
+    return [seen[key] for key in order]
+
+
 def map_speakers_to_names(
     segments: list[dict[str, Any]],
     speaker_timeline: list[dict[str, Any]],
@@ -381,6 +405,7 @@ __all__ = [
     "SpeechKitTranscriber",
     "Transcriber",
     "TranscriptionResult",
+    "deduplicate_mirror_segments",
     "empty_transcription_user_message",
     "map_speakers_to_names",
     "parse_speechkit_segments",

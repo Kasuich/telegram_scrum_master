@@ -1508,7 +1508,8 @@ class MeetingArtifact(Base):
     __table_args__ = (
         Index("idx_meeting_artifacts_meeting_id", "meeting_id"),
         CheckConstraint(
-            "kind IN ('recording', 'audio', 'screenshot', 'log')",
+            "kind IN ('recording', 'audio', 'screenshot', 'log', "
+            "'transcript', 'transcript_json', 'summary')",
             name="ck_meeting_artifacts_kind",
         ),
     )

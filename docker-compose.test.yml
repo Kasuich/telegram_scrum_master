@@ -16,6 +16,7 @@ services:
     environment:
       LOG_LEVEL: DEBUG
       RUNTIME_SKIP_TOOL_CONFIRM: ${RUNTIME_SKIP_TOOL_CONFIRM:-true}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
 
 volumes:
   postgres_test_data:

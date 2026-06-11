@@ -61,9 +61,12 @@ cp .env.example .env.test
 Заполнить в `.env.test`:
 
 ```env
-# Yandex Cloud (LLM — gpt-oss-120b via Responses API)
+# Yandex Cloud (SpeechKit, legacy Yandex LLM)
 YC_API_KEY=ваш_ключ
 YC_FOLDER_ID=b1g...
+
+# OpenRouter (LLM агентов: google/gemini-3.1-flash-lite)
+OPENROUTER_API_KEY=sk-or-v1-...
 
 # Яндекс Трекер
 TRACKER_TOKEN=ваш_oauth_token
@@ -363,6 +366,7 @@ digital_breakthrough_2026/
 | `TEST_DB_PASSWORD` | Пароль PostgreSQL |
 | `YC_API_KEY` | Yandex Cloud API key |
 | `YC_FOLDER_ID` | Yandex Cloud folder ID |
+| `OPENROUTER_API_KEY` | OpenRouter API key (Gemini для pm_agent / meeting_summarizer) |
 | `TRACKER_TOKEN` | Яндекс Трекер OAuth token |
 | `TRACKER_ORG_ID` | ID организации Трекера |
 | `TRACKER_ORG_TYPE` | `cloud` или `360` |

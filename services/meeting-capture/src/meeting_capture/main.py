@@ -20,6 +20,7 @@ from meeting_capture.schemas import (
     CreateMeetingRequest,
     CreateMeetingResponse,
     MeetingDTO,
+    RetranscribeResponse,
     StopMeetingResponse,
     TranscriptDTO,
 )
@@ -121,6 +122,29 @@ async def get_meeting(meeting_id: str) -> MeetingDTO:
     if meeting is None:
         raise HTTPException(status_code=404, detail="meeting not found")
     return meeting_to_dto(meeting)
+
+
+@app.post("/meetings/{meeting_id}/transcribe", response_model=RetranscribeResponse)
+async def retranscribe_meeting(
+    meeting_id: str,
+    summarize: bool = True,
+) -> RetranscribeResponse:
+    """Re-run STT (+ optional summarizer) using the stored audio.ogg artifact."""
+    parsed_id = _parse_uuid(meeting_id)
+    try:
+        result = await _dispatcher().retranscribe(parsed_id, summarize=summarize)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    meeting = await _repo().get(parsed_id)
+    status = meeting.status if meeting is not None else "ready"
+    return RetranscribeResponse(
+        meeting_id=str(parsed_id),
+        status=status,  # type: ignore[arg-type]
+        segments_count=len(result.segments),
+        source=result.source,
+    )
 
 
 @app.get("/meetings/{meeting_id}/transcript", response_model=TranscriptDTO)

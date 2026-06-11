@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from meeting_capture.transcription import (
+    deduplicate_mirror_segments,
     empty_transcription_user_message,
     map_speakers_to_names,
     parse_speechkit_segments,
@@ -106,6 +107,28 @@ def test_map_speakers_empty_timeline_sets_none() -> None:
     result = map_speakers_to_names(segments, [])
     assert result[0]["speaker_name"] is None
     assert result[0]["speaker_label"] == "SPEAKER_00"
+
+
+def test_deduplicate_mirror_segments_collapses_speaker_doubles() -> None:
+    segments = [
+        {"start_ms": 16850, "end_ms": 17350, "speaker_label": "SPEAKER_01", "text": "Привет"},
+        {"start_ms": 16850, "end_ms": 17350, "speaker_label": "SPEAKER_02", "text": "Привет"},
+        {
+            "start_ms": 20450,
+            "end_ms": 23130,
+            "speaker_label": "SPEAKER_01",
+            "text": "Мы сегодня планируем",
+        },
+        {
+            "start_ms": 20450,
+            "end_ms": 23130,
+            "speaker_label": "SPEAKER_02",
+            "text": "Мы сегодня планируем",
+        },
+    ]
+    result = deduplicate_mirror_segments(segments)
+    assert len(result) == 2
+    assert {seg["text"] for seg in result} == {"Привет", "Мы сегодня планируем"}
 
 
 def test_map_speakers_no_overlap_sets_none() -> None:

@@ -75,6 +75,13 @@ class StopMeetingResponse(BaseModel):
     status: MeetingStatus
 
 
+class RetranscribeResponse(BaseModel):
+    meeting_id: str
+    status: MeetingStatus
+    segments_count: int
+    source: str
+
+
 class TranscriptSegmentDTO(BaseModel):
     start_ms: int
     end_ms: int
@@ -95,6 +102,7 @@ __all__ = [
     "CreateMeetingResponse",
     "MeetingDTO",
     "MeetingStatus",
+    "RetranscribeResponse",
     "StopMeetingResponse",
     "TranscriptDTO",
     "TranscriptSegmentDTO",

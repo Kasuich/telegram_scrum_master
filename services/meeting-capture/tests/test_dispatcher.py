@@ -120,6 +120,9 @@ class FakeObjectStore(LocalObjectStore):
             uri=f"https://storage.test/bucket/{key}",
         )
 
+    def object_uri(self, key: str) -> str | None:
+        return f"https://storage.test/bucket/{key}"
+
 
 class FakeTranscriber(Transcriber):
     async def transcribe(
@@ -178,7 +181,12 @@ async def test_dispatcher_records_uploads_transcribes_and_marks_ready(tmp_path: 
     await dispatcher.run_now(meeting_id)
 
     assert repo.statuses == ["joining", "recording", "transcribing", "ready"]
-    assert {artifact["kind"] for artifact in repo.artifacts} == {"recording", "audio"}
+    assert {artifact["kind"] for artifact in repo.artifacts} == {
+        "recording",
+        "audio",
+        "transcript",
+        "transcript_json",
+    }
     assert repo.transcript is not None
     assert repo.transcript["segments"][0]["speaker_label"] == "SPEAKER_00"
     assert bot.closed is True
@@ -233,3 +241,36 @@ async def test_dispatcher_skips_when_bot_waits_too_long(tmp_path: Path) -> None:
     assert repo.statuses == ["joining", "waiting_room", "skipped"]
     assert repo.meeting.error == "not admitted before join timeout"
     assert repo.artifacts == []
+
+
+async def test_retranscribe_uses_existing_audio_artifact(tmp_path: Path) -> None:
+    meeting_id = uuid.uuid4()
+    repo = FakeRepository(meeting_id)
+    repo.meeting.status = "ready"
+    repo.meeting.artifacts = [
+        SimpleNamespace(
+            kind="audio",
+            object_key=f"meetings/{meeting_id}/audio.ogg",
+            created_at=None,
+            id=uuid.uuid4(),
+        )
+    ]
+    settings = _settings(tmp_path, ORCHESTRATOR_URL="")
+    dispatcher = MeetingDispatcher(
+        repository=repo,  # type: ignore[arg-type]
+        settings=settings,
+        object_store=FakeObjectStore(settings.object_storage_dir),
+        transcriber=FakeTranscriber(),
+        bot_factory=lambda: FakeBot(JoinResult(admitted=True)),
+        recorder_factory=lambda work_dir: FakeRecorder(work_dir),
+    )
+
+    result = await dispatcher.retranscribe(meeting_id, summarize=False)
+
+    assert result.segments
+    assert repo.statuses == ["transcribing", "ready"]
+    assert repo.transcript is not None
+    assert {artifact["kind"] for artifact in repo.artifacts} >= {
+        "transcript",
+        "transcript_json",
+    }
