@@ -435,6 +435,23 @@ def _build_invocation_context(
     )
 
 
+def _streaming_metadata(result: Any) -> dict[str, Any]:
+    """Flag a pm_agent conversational reply for the gateway's cosmetic
+    streaming (status line + mocked typing) and pass along the ordered stages
+    the agent actually visited. Shortcut replies (standup, telemost) carry no
+    ``steps`` and are left untouched."""
+    steps = getattr(result, "steps", None) or []
+    if not steps:
+        return {}
+    stages: list[str] = []
+    for step in steps:
+        if step.get("kind") == "stage":
+            stage = step.get("stage")
+            if stage and stage not in stages:
+                stages.append(str(stage))
+    return {"stream": True, "stages": stages}
+
+
 async def _enqueue_agent_result(
     session: AsyncSession,
     *,
@@ -481,7 +498,7 @@ async def _enqueue_agent_result(
         text = result.reply
         category = "agent_reply"
         dedupe_key = f"telegram:reply:{message.id}"
-        metadata = {}
+        metadata = _streaming_metadata(result)
     else:
         return None
 
