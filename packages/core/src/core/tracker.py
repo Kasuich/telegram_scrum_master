@@ -14,7 +14,10 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import random
 from typing import Any
 
 import httpx
@@ -23,6 +26,14 @@ from core.config import get_config
 from core.exceptions import CoreError
 
 logger = logging.getLogger(__name__)
+
+# Retry transient Tracker failures (rate limit + 5xx) with exponential backoff.
+# Yandex Tracker rate-limits bursts (concurrent requests share an org quota), so
+# without this a board/team page that fans out per-member queries silently 429s.
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_RETRY_MAX = int(os.getenv("TRACKER_MAX_RETRIES", "4"))
+_RETRY_BASE_DELAY = float(os.getenv("TRACKER_RETRY_BASE_DELAY", "0.5"))
+_RETRY_MAX_DELAY = float(os.getenv("TRACKER_RETRY_MAX_DELAY", "10"))
 
 
 def _norm_transition_label(value: Any) -> str:
@@ -169,10 +180,32 @@ class TrackerClient:
             self._client = httpx.AsyncClient(timeout=self._timeout)
         return self._client
 
+    @staticmethod
+    def _retry_delay(response: httpx.Response, attempt: int) -> float:
+        """Backoff before retrying: honour ``Retry-After``, else exponential + jitter."""
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return min(float(retry_after), _RETRY_MAX_DELAY)
+            except ValueError:
+                pass
+        backoff = min(_RETRY_BASE_DELAY * (2**attempt), _RETRY_MAX_DELAY)
+        return backoff + random.uniform(0, _RETRY_BASE_DELAY)
+
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         self._ensure_configured()
         url = f"{self._base}/{path.lstrip('/')}"
         response = await self._http.request(method, url, headers=self._headers(), **kwargs)
+        for attempt in range(_RETRY_MAX):
+            if response.status_code not in _RETRY_STATUSES:
+                break
+            delay = self._retry_delay(response, attempt)
+            logger.warning(
+                "Tracker %s %s → %s, retry %d/%d in %.1fs",
+                method, path, response.status_code, attempt + 1, _RETRY_MAX, delay,
+            )
+            await asyncio.sleep(delay)
+            response = await self._http.request(method, url, headers=self._headers(), **kwargs)
         if response.status_code == 403:
             raise TrackerError(f"Access denied: {response.text[:200]}", status_code=403)
         if response.status_code == 404:

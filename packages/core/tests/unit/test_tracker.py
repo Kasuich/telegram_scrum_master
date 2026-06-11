@@ -29,6 +29,13 @@ ENV = {
     "TRACKER_QUEUE": "TEST",
 }
 
+
+@pytest.fixture(autouse=True)
+def _fast_tracker_retries(monkeypatch):
+    """Zero out retry backoff so 429/5xx retry paths run instantly in tests."""
+    monkeypatch.setattr("core.tracker._RETRY_BASE_DELAY", 0.0)
+    monkeypatch.setattr("core.tracker._RETRY_MAX_DELAY", 0.0)
+
 ISSUE_RESPONSE = {
     "key": "TEST-1",
     "summary": "Fix login bug",
@@ -57,6 +64,7 @@ def _ok(data: Any, status: int = 200) -> MagicMock:
     resp.status_code = status
     resp.json.return_value = data
     resp.text = json.dumps(data)
+    resp.headers = {}
     return resp
 
 
@@ -65,6 +73,7 @@ def _err(status: int, message: str = "error") -> MagicMock:
     resp.status_code = status
     resp.json.return_value = {"errorMessages": [message]}
     resp.text = json.dumps({"errorMessages": [message]})
+    resp.headers = {}
     return resp
 
 
@@ -156,6 +165,21 @@ class TestTrackerClientErrors:
             with pytest.raises(TrackerError) as exc_info:
                 await c._request("GET", "/issues/X-1")
             assert exc_info.value.status_code == 500
+
+    async def test_429_retries_then_succeeds(self):
+        c = _client()
+        with _patch_request(side_effect=[_err(429), _ok(ISSUE_RESPONSE)]) as mock_req:
+            result = await c._request("GET", "/issues/X-1")
+        assert result["key"] == "TEST-1"
+        assert mock_req.call_count == 2  # one 429, then a successful retry
+
+    async def test_429_gives_up_after_max_retries(self):
+        c = _client()
+        with _patch_request(_err(429)) as mock_req:
+            with pytest.raises(TrackerError) as exc_info:
+                await c._request("GET", "/issues/X-1")
+        assert exc_info.value.status_code == 429
+        assert mock_req.call_count > 1  # retried before giving up
 
     async def test_204_returns_none(self):
         c = _client()
