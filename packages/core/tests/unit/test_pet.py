@@ -101,6 +101,24 @@ def test_compute_stats_bounds_and_affinity():
     assert boosted["velocity"] >= base["velocity"]
 
 
+def test_compute_stats_handles_none_inputs():
+    # A user's very first pet: a fresh PetState object has None-valued columns
+    # (e.g. streak_days) before its first DB flush. Must not crash.
+    stats = compute_stats(
+        level=1, resolved=None, overdue=None, in_progress=None, streak_days=None
+    )
+    assert set(stats) == {"velocity", "focus", "reliability", "stamina"}
+    assert all(5 <= v <= 100 for v in stats.values())
+
+
+def test_snapshot_from_xp_handles_none_streak():
+    snap = snapshot_from_xp(
+        xp=0, resolved=0, overdue=0, in_progress=None, streak_days=None, species_id=None
+    )
+    assert snap["level"] == 1
+    assert set(snap["stats"]) == {"velocity", "focus", "reliability", "stamina"}
+
+
 def test_snapshot_from_xp_uses_explicit_xp():
     snap = snapshot_from_xp(
         xp=5000, resolved=3, overdue=0, in_progress=1, species_id="unikornik"

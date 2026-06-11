@@ -103,6 +103,9 @@ def evolution_tier(level: int) -> tuple[int, str]:
 
 def compute_mood(*, resolved: int, overdue: int, in_progress: int) -> int:
     """Current mood 0..100: closures feed Скрамик, overdue work upsets it."""
+    resolved = int(resolved or 0)
+    overdue = int(overdue or 0)
+    in_progress = int(in_progress or 0)
     mood = 60 + min(resolved, 10) * 4 - overdue * 12 + (5 if in_progress > 0 else 0)
     return max(0, min(100, round(mood)))
 
@@ -221,6 +224,13 @@ def compute_stats(
 ) -> dict[str, int]:
     """Four 0..100 stats: a baseline from level, a real-board signal, x species affinity."""
     affinity = affinity or {}
+    # Coerce None → 0/1 (a fresh PetState object has unset, None-valued columns before
+    # its first DB flush, e.g. streak_days for a user's very first pet).
+    level = int(level or 1)
+    resolved = int(resolved or 0)
+    overdue = int(overdue or 0)
+    in_progress = int(in_progress or 0)
+    streak_days = int(streak_days or 0)
     baseline = min(95, 28 + level * 5)  # grows with level, soft-capped
 
     signals = {
