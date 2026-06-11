@@ -487,7 +487,7 @@ class TestTrackerTools:
         assert "url" in result
 
     @patch.dict("os.environ", ENV)
-    async def test_tracker_create_issue_merges_existing_duplicate(self):
+    async def test_tracker_create_issue_reports_duplicate_without_merge(self):
         from core.issue_dedup import DedupResolution
         from core.tracker_tools import tracker_create_issue
 
@@ -498,7 +498,6 @@ class TestTrackerTools:
             "status": {"display": "Закрыт", "key": "closed"},
             "type": {"key": "task"},
         }
-        merged = {**existing, "merged_duplicate": True, "updates_applied": ["comment", "status"]}
         with patch("core.tracker_tools.TrackerClient") as mock_cls:
             client = AsyncMock()
             mock_cls.return_value.__aenter__.return_value = client
@@ -512,25 +511,26 @@ class TestTrackerTools:
                             action="merge",
                             duplicate_key="TEST-99",
                             comment="new context",
+                            target_status="inProgress",
                         )
                     ],
                     {"TEST-99": existing},
                 ),
             ):
-                with patch(
-                    "core.tracker_tools.apply_duplicate_merge",
-                    new_callable=AsyncMock,
-                    return_value=merged,
-                ):
-                    result = await tracker_create_issue(
-                        "Fix login bug",
-                        queue="TEST",
-                        description="Details from meeting",
-                    )
+                result = await tracker_create_issue(
+                    "Fix login bug",
+                    queue="TEST",
+                    description="Details from meeting",
+                )
 
         assert result["key"] == "TEST-99"
-        assert result.get("merged_duplicate") is True
+        assert result.get("duplicate_found") is True
+        assert result.get("skipped_create") is True
+        assert result.get("planned_create", {}).get("description") == "Details from meeting"
+        assert result.get("suggested_updates", {}).get("comment") == "new context"
         client.create_issue.assert_not_called()
+        client.patch_issue.assert_not_called()
+        client.comment_issue.assert_not_called()
 
     @patch.dict("os.environ", ENV)
     async def test_tracker_create_issue_allow_duplicate_bypasses_dedup(self):

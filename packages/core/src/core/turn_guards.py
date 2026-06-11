@@ -172,6 +172,8 @@ def created_issue_keys_in_turn(steps: list[dict[str, Any]], since_index: int) ->
         tool_name = step.get("tool_name")
         result = step.get("result") or {}
         if tool_name in ("tracker_create_issue", "tracker_create_epic", "CreateIssue"):
+            if result.get("duplicate_found") or result.get("skipped_create"):
+                continue
             key = result.get("key") or result.get("issue_key")
             if key:
                 keys.append(str(key))

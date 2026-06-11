@@ -21,7 +21,6 @@ from core.config import get_config
 from core.invocation import get_current_invocation_context
 from core.issue_dedup import (
     PlannedIssueForDedup,
-    apply_duplicate_merge,
     dedup_enabled_for_backlog,
     resolve_planned_issues_dedup,
 )
@@ -306,37 +305,30 @@ async def _apply_plan_impl(
                 existing = existing_by_key.get(res.duplicate_key)
                 if not existing:
                     existing = await client.get_issue(res.duplicate_key)
-                planned = next(
-                    (p for p in planned_specs if p.planned_id == issue.local_id),
-                    PlannedIssueForDedup(
-                        planned_id=issue.local_id,
-                        summary=issue.summary,
-                        issue_type=type_key,
-                    ),
-                )
-                merged_issue = await apply_duplicate_merge(
-                    client,
-                    res.duplicate_key,
-                    existing,
-                    planned=planned,
-                    description=issue.description or "",
-                    comment=res.comment,
-                    target_status=res.target_status,
-                    deadline=deadline,
-                    priority=priority,
-                    assignee=assignee_login,
-                    story_points=issue.story_points,
-                )
-                key = str(merged_issue.get("key") or res.duplicate_key)
+                key = str(res.duplicate_key)
                 id_map[issue.local_id] = key
                 merged.append(
                     {
                         "local_id": issue.local_id,
                         "key": key,
                         "summary": issue.summary,
-                        "status": (merged_issue.get("status") or {}).get("display"),
-                        "updates_applied": merged_issue.get("updates_applied") or [],
+                        "status": (existing.get("status") or {}).get("display"),
+                        "duplicate_found": True,
                         "reason": res.reason or "duplicate",
+                        "planned_create": {
+                            "summary": issue.summary,
+                            "description": issue.description or "",
+                            "priority": priority,
+                            "assignee": assignee_login,
+                            "deadline": deadline,
+                            "story_points": issue.story_points,
+                            "issue_type": type_key,
+                            "parent": parent,
+                        },
+                        "suggested_updates": {
+                            "comment": res.comment,
+                            "status": res.target_status,
+                        },
                     }
                 )
                 return

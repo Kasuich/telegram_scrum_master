@@ -125,7 +125,7 @@ async def test_apply_backlog_plan_mock():
 
 
 @pytest.mark.asyncio
-async def test_apply_merges_closed_duplicate_epic_and_reuses_key():
+async def test_apply_skips_create_on_duplicate_epic_and_reuses_key():
     from core.issue_dedup import DedupResolution
 
     counter = {"n": 0}
@@ -153,14 +153,6 @@ async def test_apply_merges_closed_duplicate_epic_and_reuses_key():
         ]
         return resolutions, {"TEST-EXISTING": existing_epic}
 
-    async def fake_merge(client, key, existing, **kwargs):
-        return {
-            **existing,
-            "merged_duplicate": True,
-            "updates_applied": ["comment", "status"],
-            "status": {"display": "В работе", "key": "inProgress"},
-        }
-
     with patch("core.backlog_tools.TrackerClient") as mock_cls:
         client = AsyncMock()
         mock_cls.return_value.__aenter__.return_value = client
@@ -174,20 +166,20 @@ async def test_apply_merges_closed_duplicate_epic_and_reuses_key():
             "core.backlog_tools.resolve_planned_issues_dedup",
             side_effect=fake_resolve,
         ):
-            with patch(
-                "core.backlog_tools.apply_duplicate_merge",
-                side_effect=fake_merge,
-            ):
-                result = await tracker_apply_backlog_plan(
-                    plan_json=json.dumps(SAMPLE_PLAN),
-                    queue="TEST",
-                )
+            result = await tracker_apply_backlog_plan(
+                plan_json=json.dumps(SAMPLE_PLAN),
+                queue="TEST",
+            )
 
     assert result["merged_count"] == 1
     assert result["created_count"] == 2
     assert result["epic_key"] == "TEST-EXISTING"
     assert result["id_map"]["epic-1"] == "TEST-EXISTING"
     assert result["id_map"]["story-mvp"].startswith("TEST-")
+    dup = result["merged"][0]
+    assert dup.get("duplicate_found") is True
+    assert dup.get("key") == "TEST-EXISTING"
+    assert dup.get("planned_create", {}).get("summary") == "Бот-помощник"
 
 
 @pytest.mark.asyncio

@@ -23,7 +23,7 @@ from core.config import get_config
 from core.invocation import get_current_invocation_context
 from core.issue_dedup import (
     PlannedIssueForDedup,
-    apply_duplicate_merge,
+    build_duplicate_found_response,
     dedup_enabled_for_create,
     resolve_planned_issues_dedup,
 )
@@ -155,7 +155,7 @@ def _next_sprint_name(name: str) -> str:
     if match is None:
         return f"{text} next"
     value = str(int(match.group(1)) + 1)
-    return f"{text[:match.start()]}{value}{text[match.end():]}"
+    return f"{text[: match.start()]}{value}{text[match.end() :]}"
 
 
 def _next_sprint_dates(sprint: dict[str, Any]) -> tuple[str, str] | None:
@@ -174,8 +174,7 @@ def _issue_has_sprint(issue: dict[str, Any], sprint_id: str) -> bool:
     if not isinstance(sprint_items, list):
         return False
     return any(
-        isinstance(item, dict) and str(item.get("id")) == str(sprint_id)
-        for item in sprint_items
+        isinstance(item, dict) and str(item.get("id")) == str(sprint_id) for item in sprint_items
     )
 
 
@@ -562,8 +561,9 @@ async def tracker_create_issue(
     Use when the user asks to CREATE/ADD a task (создай, заведи, поставь задачу).
     assignee: login or display name — matched to nearest queue team member.
     Optional: description, priority, issue_type, tags, deadline, story_points, sprint, parent, …
-    When a duplicate is found, updates the existing issue (comment/status/fields)
-    instead of creating.
+    When a duplicate is found, returns duplicate_found with the existing issue
+    (no create). Compare planned_create and decide whether to update via
+    UpdateIssue / CreateComment / ChangeIssueStatus, or report only.
     Set allow_duplicate=true ONLY on explicit user request to create a second copy.
     """
     extra = parse_custom_fields_json(custom_fields)
@@ -618,26 +618,28 @@ async def tracker_create_issue(
                 existing = by_key.get(res.duplicate_key)
                 if not existing:
                     existing = await client.get_issue(res.duplicate_key)
-                out = await apply_duplicate_merge(
-                    client,
-                    res.duplicate_key,
+                planned_create: dict[str, Any] = {
+                    "summary": summary,
+                    "description": description or "",
+                    "priority": priority or None,
+                    "assignee": assignee_login,
+                    "deadline": deadline_val,
+                    "story_points": sp_val,
+                    "issue_type": issue_type or None,
+                    "parent": parent.strip() or None,
+                    "tags": parse_tags(tags) or None,
+                }
+                out = build_duplicate_found_response(
                     existing,
-                    planned=planned,
-                    description=description or "",
-                    comment=res.comment,
-                    target_status=res.target_status,
-                    deadline=deadline_val,
-                    priority=priority or None,
-                    assignee=assignee_login,
-                    story_points=sp_val,
+                    duplicate_key=res.duplicate_key,
+                    dedup_reason=res.reason or "",
+                    planned_create=planned_create,
+                    suggested_updates={
+                        "comment": res.comment,
+                        "status": res.target_status,
+                    },
                 )
                 out.update(assignee_meta)
-                applied = ", ".join(out.get("updates_applied") or []) or "без изменений"
-                out["message"] = (
-                    f"Не создавал новую — обновил существующую {res.duplicate_key} ({applied})."
-                )
-                if res.reason:
-                    out["dedup_reason"] = res.reason
                 return out
 
         issue = await client.create_issue(
