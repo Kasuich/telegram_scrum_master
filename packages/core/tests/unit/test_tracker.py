@@ -328,8 +328,22 @@ class TestCreateSprint:
         ) as mock_req:
             await c.open_sprint("44")
             await c.close_sprint("44")
-        assert mock_req.call_args_list[0][1]["json"] == {"archived": False}
-        assert mock_req.call_args_list[1][1]["json"] == {"archived": True}
+        assert mock_req.call_args_list[0][1]["json"] == {"archived": "false"}
+        assert mock_req.call_args_list[1][1]["json"] == {"archived": "true"}
+
+    async def test_close_sprint_falls_back_if_string_archived_rejected(self):
+        c = _client()
+        with _patch_request(
+            side_effect=[
+                _err(400, '{"errors":{"archived":"Incorrect data format."}}'),
+                _ok({**SPRINT_RESPONSE, "archived": True}),
+            ]
+        ) as mock_req:
+            result = await c.close_sprint("44")
+
+        assert mock_req.call_args_list[0][1]["json"] == {"archived": "true"}
+        assert mock_req.call_args_list[1][1]["json"] == {"archived": {"set": True}}
+        assert result["archived"] is True
 
     async def test_add_issue_to_sprint_preserves_existing(self):
         c = _client()
