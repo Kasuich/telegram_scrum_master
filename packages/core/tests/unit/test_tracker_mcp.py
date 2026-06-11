@@ -6,6 +6,11 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 from core.config import Config, set_config
+from core.invocation import (
+    InvocationContext,
+    reset_current_invocation_context,
+    set_current_invocation_context,
+)
 from core.tools import get_registry
 from core.tracker_mcp import (
     TrackerMCPClient,
@@ -132,6 +137,40 @@ def test_create_issue_uses_configured_queue():
         "queue": "DARKHORSE",
         "summary": "Presentation",
     }
+
+
+def test_create_issue_blocks_epic_for_non_lead_mcp_actor():
+    token = set_current_invocation_context(
+        InvocationContext(channel="telegram", actor_role="user")
+    )
+    try:
+        with pytest.raises(TrackerMCPError, match="lead/admin"):
+            _normalize_tool_arguments(
+                "CreateIssue",
+                {"summary": "Epic", "issue_type": "epic"},
+            )
+    finally:
+        reset_current_invocation_context(token)
+
+
+def test_create_issue_allows_epic_for_lead_mcp_actor():
+    cfg = Config()
+    cfg.tracker.tracker_queue = "DARKHORSE"
+    set_config(cfg)
+    token = set_current_invocation_context(
+        InvocationContext(channel="telegram", actor_role="lead")
+    )
+    try:
+        assert _normalize_tool_arguments(
+            "CreateIssue",
+            {"summary": "Epic", "issue_type": "epic"},
+        ) == {
+            "queue": "DARKHORSE",
+            "summary": "Epic",
+            "issue_type": "epic",
+        }
+    finally:
+        reset_current_invocation_context(token)
 
 
 def test_change_status_normalizes_model_resolution_alias():

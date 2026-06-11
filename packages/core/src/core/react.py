@@ -71,7 +71,13 @@ _TOOL_LABELS = {
     "tracker_move_issues_to_in_progress": "Перевод задач в работу",
     "tracker_comment_issue": "Комментарий к задаче",
     "tracker_link_issues": "Связывание задач",
+    "tracker_create_epic": "Создание эпика",
+    "tracker_open_epic": "Открытие эпика",
+    "tracker_close_epic": "Закрытие эпика",
     "tracker_create_sprint": "Создание спринта",
+    "tracker_open_sprint": "Открытие спринта",
+    "tracker_close_sprint": "Закрытие спринта",
+    "tracker_rollover_sprint": "Закрытие спринта и перенос задач",
     "tracker_apply_backlog_plan": "Создание задач из плана",
     "tracker_add_issues_to_sprint": "Добавление задач в спринт",
     "CreateIssue": "Создание задачи в Трекере",
@@ -364,6 +370,31 @@ def _format_action_tool_line(tool_name: str, result: dict[str, Any]) -> str:
         start = result.get("start_date") or "?"
         end = result.get("end_date") or "?"
         return f"Создан спринт {sprint_id} «{name}» на доске {board}: {start} — {end}"
+    if tool_name in ("tracker_open_sprint", "tracker_close_sprint"):
+        name = result.get("name") or ""
+        sprint_id = result.get("id") or "?"
+        action = "Открыт" if tool_name == "tracker_open_sprint" else "Закрыт"
+        return f"{action} спринт {sprint_id} «{name}»"
+    if tool_name == "tracker_rollover_sprint":
+        old_sprint = result.get("old_sprint") or {}
+        new_sprint = result.get("new_sprint") or {}
+        line = (
+            f"Закрыт спринт «{old_sprint.get('name', '?')}», создан "
+            f"«{new_sprint.get('name', '?')}», перенесено задач: {result.get('moved_count', 0)}"
+        )
+        if result.get("error_count"):
+            line += f", ошибок: {result.get('error_count')}"
+        if result.get("close_error"):
+            line += f"; закрытие старого спринта не удалось: {result.get('close_error')}"
+        return line
+    if tool_name == "tracker_create_epic":
+        key = result.get("key") or result.get("issue_key", "")
+        return f"Создан эпик {key} «{result.get('summary', '')}»"
+    if tool_name in ("tracker_open_epic", "tracker_close_epic"):
+        issue = result.get("issue") or result
+        key = issue.get("key") or result.get("issue_key", "")
+        action = "Открыт" if tool_name == "tracker_open_epic" else "Закрыт"
+        return f"{action} эпик {key} «{issue.get('summary', '')}»"
     if tool_name == "tracker_add_issues_to_sprint":
         sprint = result.get("sprint_name") or result.get("sprint_id") or "?"
         n = result.get("updated_count", 0)

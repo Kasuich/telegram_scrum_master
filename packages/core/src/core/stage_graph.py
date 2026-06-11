@@ -132,6 +132,11 @@ def transition_or_close_succeeded(turn_steps: TurnSteps) -> bool:
             "tracker_move_issues_to_in_progress",
             "tracker_close_issue",
             "tracker_close_issues",
+            "tracker_open_epic",
+            "tracker_close_epic",
+            "tracker_open_sprint",
+            "tracker_close_sprint",
+            "tracker_rollover_sprint",
             "ChangeIssueStatus",
             "BulkTransition",
         ):
@@ -394,6 +399,7 @@ _INTAKE_ADDENDUM = (
     "Активная стадия: INTAKE (создание задачи). Разрешено: resolve_assignee → "
     "create_issue. Если пользователь просит создать спринт, используй tracker_create_sprint "
     "(name, start_date, end_date, board_id или board_name), а не tracker_create_issue. "
+    "Если пользователь просит создать эпик, используй tracker_create_epic. "
     "Перед созданием проверь полноту карточки (summary одной строкой, "
     "исполнитель, приоритет, оценка, дедлайн, родительский эпик) и ЗАПОЛНИ пропуски "
     "сам из контекста — не спрашивай. В отчёте перечисли, что предположил."
@@ -445,7 +451,12 @@ _DIALOG_ADDENDUM = (
 INTAKE = Stage(
     id=StageId.INTAKE,
     allowed_tools=_READ_TOOLS
-    | {"tracker_create_issue", "tracker_create_sprint", "tracker_link_issues"},
+    | {
+        "tracker_create_issue",
+        "tracker_create_epic",
+        "tracker_create_sprint",
+        "tracker_link_issues",
+    },
     terminal=lambda steps: bool(created_issue_keys_in_turn(steps, 0))
     or create_sprint_succeeded(steps),
     prompt_addendum=_INTAKE_ADDENDUM,
@@ -492,6 +503,11 @@ TRANSITION = Stage(
         "tracker_move_issues_to_in_progress",
         "tracker_close_issue",
         "tracker_close_issues",
+        "tracker_open_epic",
+        "tracker_close_epic",
+        "tracker_open_sprint",
+        "tracker_close_sprint",
+        "tracker_rollover_sprint",
     },
     terminal=transition_or_close_succeeded,
     prompt_addendum=_TRANSITION_ADDENDUM,
@@ -513,6 +529,7 @@ REORG = Stage(
         "tracker_update_issue",
         "tracker_link_issues",
         "tracker_add_issues_to_sprint",
+        "tracker_rollover_sprint",
         "tracker_create_issue",
         "tracker_comment_issue",
         "tracker_close_issue",

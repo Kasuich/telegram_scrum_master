@@ -250,6 +250,20 @@ class TrackerClient:
         """Return sprint by ID."""
         return await self._request("GET", f"/sprints/{sprint_id}")
 
+    async def patch_sprint(self, sprint_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+        """Patch sprint fields."""
+        if not fields:
+            raise TrackerError("patch_sprint requires at least one field")
+        return await self._request("PATCH", f"/sprints/{sprint_id}", json=fields)
+
+    async def open_sprint(self, sprint_id: str) -> dict[str, Any]:
+        """Mark sprint as open/unarchived."""
+        return await self.patch_sprint(sprint_id, {"archived": False})
+
+    async def close_sprint(self, sprint_id: str) -> dict[str, Any]:
+        """Mark sprint as closed/archived."""
+        return await self.patch_sprint(sprint_id, {"archived": True})
+
     async def list_sprints(self, board_id: str) -> list[dict[str, Any]]:
         """Return all sprints of a board."""
         result = await self._request("GET", f"/boards/{board_id}/sprints")
@@ -289,6 +303,32 @@ class TrackerClient:
                     sprint_items.append({"id": sid})
                     seen.add(sid)
             sprint_items.append({"id": str(sprint_id)})
+        return await self.patch_issue(issue_key, {"sprint": sprint_items})
+
+    async def move_issue_to_sprint(
+        self,
+        issue_key: str,
+        old_sprint_id: str,
+        new_sprint_id: str,
+    ) -> dict[str, Any]:
+        """Move an issue from one sprint to another without changing workflow status."""
+        issue = await self.get_issue(issue_key)
+        current = issue.get("sprint") if isinstance(issue, dict) else []
+        old_id = str(old_sprint_id)
+        new_id = str(new_sprint_id)
+        seen: set[str] = set()
+        sprint_items: list[dict[str, str]] = []
+        if isinstance(current, list):
+            for item in current:
+                if not isinstance(item, dict) or item.get("id") is None:
+                    continue
+                sid = str(item["id"])
+                if sid == old_id or sid in seen:
+                    continue
+                sprint_items.append({"id": sid})
+                seen.add(sid)
+        if new_id not in seen:
+            sprint_items.append({"id": new_id})
         return await self.patch_issue(issue_key, {"sprint": sprint_items})
 
     async def search_issues(

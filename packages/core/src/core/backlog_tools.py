@@ -19,6 +19,7 @@ from core.backlog_plan import (
 from core.backlog_scheduler import compute_deadlines, sort_tasks_for_scheduling
 from core.config import get_config
 from core.issue_dedup import dedup_enabled_for_backlog, find_duplicate_issue
+from core.invocation import get_current_invocation_context
 from core.tools import platform_tool
 from core.tracker import TrackerClient, TrackerError
 from core.tracker_tools import _effective_queue, _resolve_login
@@ -103,6 +104,18 @@ def resolve_backlog_plan_data(
 
 def _backlog_cfg() -> Any:
     return get_config().backlog
+
+
+def _require_lead_or_admin_for_epic() -> dict[str, Any] | None:
+    ctx = get_current_invocation_context()
+    role = str(ctx.actor_role or "").strip().casefold() if ctx is not None else ""
+    if role in {"lead", "admin"}:
+        return None
+    return {
+        "error": "Epic creation is allowed only for team lead/admin",
+        "required_roles": ["admin", "lead"],
+        "actor_role": role or None,
+    }
 
 
 @platform_tool(name="backlog_plan", risk="low", scopes=["tracker:read"])
@@ -362,6 +375,10 @@ async def tracker_apply_backlog_plan(
             "created": [],
             "errors": [],
         }
+    if plan.create_epic and plan.epic:
+        forbidden = _require_lead_or_admin_for_epic()
+        if forbidden is not None:
+            return forbidden
 
     start: date | None = None
     if start_date.strip():

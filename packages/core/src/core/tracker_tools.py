@@ -10,6 +10,7 @@ Risk levels:
 from __future__ import annotations
 
 import re
+from datetime import date, timedelta
 from typing import Any, Literal
 
 from core.assignee_resolver import (
@@ -20,6 +21,7 @@ from core.assignee_resolver import (
 )
 from core.config import get_config
 from core.issue_dedup import dedup_enabled_for_create, find_duplicate_issue
+from core.invocation import get_current_invocation_context
 from core.tools import platform_tool
 from core.tracker import TrackerClient, TrackerError
 from core.tracker_tool_helpers import (
@@ -69,6 +71,141 @@ def _extract_issue_key(*values: str) -> str:
         if match:
             return match.group(1)
     return ""
+
+
+_LEAD_ADMIN_ROLES = frozenset({"lead", "admin"})
+
+
+def _actor_role() -> str:
+    ctx = get_current_invocation_context()
+    return str(ctx.actor_role or "").strip() if ctx is not None else ""
+
+
+def _require_lead_or_admin(action: str) -> dict[str, Any] | None:
+    role = _actor_role().casefold()
+    if role in _LEAD_ADMIN_ROLES:
+        return None
+    return {
+        "error": f"{action} is allowed only for team lead/admin",
+        "required_roles": sorted(_LEAD_ADMIN_ROLES),
+        "actor_role": role or None,
+    }
+
+
+def _default_board_from_context() -> tuple[str, str]:
+    ctx = get_current_invocation_context()
+    if ctx is None:
+        return "", ""
+    board_id = str(ctx.actor_default_board_id or "").strip()
+    board_name = str((ctx.actor_settings or {}).get("default_board_name") or "").strip()
+    return board_id, board_name
+
+
+def _with_default_board(board_id: str, board_name: str) -> tuple[str, str]:
+    if board_id.strip() or board_name.strip():
+        return board_id.strip(), board_name.strip()
+    return _default_board_from_context()
+
+
+def _is_epic_type(issue_type: str) -> bool:
+    return issue_type.strip().casefold() == "epic"
+
+
+def _sprint_summary(
+    sprint: dict[str, Any],
+    *,
+    fallback_board_id: str = "",
+    fallback_board_name: str = "",
+) -> dict[str, Any]:
+    board = sprint.get("board") or {}
+    return {
+        "id": sprint.get("id"),
+        "name": sprint.get("name"),
+        "status": sprint.get("status"),
+        "archived": sprint.get("archived"),
+        "board_id": board.get("id") or fallback_board_id,
+        "board": board.get("display") or fallback_board_name,
+        "start_date": sprint.get("startDate"),
+        "end_date": sprint.get("endDate"),
+        "url": sprint.get("self"),
+        "raw": sprint,
+    }
+
+
+def _parse_sprint_date(value: Any) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _next_sprint_name(name: str) -> str:
+    text = name.strip()
+    if not text:
+        return "Next sprint"
+    match = re.search(r"(\d+)(?!.*\d)", text)
+    if match is None:
+        return f"{text} next"
+    value = str(int(match.group(1)) + 1)
+    return f"{text[:match.start()]}{value}{text[match.end():]}"
+
+
+def _next_sprint_dates(sprint: dict[str, Any]) -> tuple[str, str] | None:
+    start = _parse_sprint_date(sprint.get("startDate"))
+    end = _parse_sprint_date(sprint.get("endDate"))
+    if start is None or end is None or end < start:
+        return None
+    days = (end - start).days
+    next_start = end + timedelta(days=1)
+    next_end = next_start + timedelta(days=days)
+    return next_start.isoformat(), next_end.isoformat()
+
+
+def _issue_has_sprint(issue: dict[str, Any], sprint_id: str) -> bool:
+    sprint_items = issue.get("sprint")
+    if not isinstance(sprint_items, list):
+        return False
+    return any(
+        isinstance(item, dict) and str(item.get("id")) == str(sprint_id)
+        for item in sprint_items
+    )
+
+
+def _is_closed_issue(issue: dict[str, Any]) -> bool:
+    status = issue.get("status") or {}
+    values = [
+        status.get("key") if isinstance(status, dict) else "",
+        status.get("display") if isinstance(status, dict) else status,
+    ]
+    closed = {"closed", "close", "закрыт", "закрыта", "закрыто", "закрытые"}
+    for value in values:
+        normalized = " ".join(str(value or "").casefold().replace("ё", "е").split())
+        if normalized in closed:
+            return True
+    return False
+
+
+def _sprint_sort_key(sprint: dict[str, Any]) -> date:
+    return _parse_sprint_date(sprint.get("endDate")) or date.min
+
+
+def _select_current_sprint(sprints: list[dict[str, Any]]) -> dict[str, Any] | None:
+    today = date.today()
+    active = [s for s in sprints if not bool(s.get("archived"))]
+    in_window = []
+    for sprint in active:
+        start = _parse_sprint_date(sprint.get("startDate"))
+        end = _parse_sprint_date(sprint.get("endDate"))
+        if start is not None and end is not None and start <= today <= end:
+            in_window.append(sprint)
+    if in_window:
+        return sorted(in_window, key=_sprint_sort_key, reverse=True)[0]
+    if active:
+        return sorted(active, key=_sprint_sort_key, reverse=True)[0]
+    return None
 
 
 async def _resolve_board_id(
@@ -430,6 +567,11 @@ async def tracker_create_issue(
             return {"error": f"Invalid story_points: {story_points!r}"}
 
     q = _effective_queue(queue)
+    if _is_epic_type(issue_type):
+        forbidden = _require_lead_or_admin("Epic creation")
+        if forbidden is not None:
+            return forbidden
+
     async with TrackerClient() as client:
         assignee_login: str | None = None
         assignee_meta: dict[str, Any] = {}
@@ -486,6 +628,58 @@ async def tracker_create_issue(
     return out
 
 
+@platform_tool(name="tracker_create_epic", risk="medium", scopes=["tracker:write"])
+async def tracker_create_epic(
+    summary: str,
+    queue: str = "",
+    description: str = "",
+    priority: str = "",
+    assignee: str = "",
+    tags: str = "",
+    deadline: str = "",
+    followers: str = "",
+    custom_fields: str = "",
+) -> dict[str, Any]:
+    """Create an epic in Yandex Tracker. Lead/admin only."""
+    forbidden = _require_lead_or_admin("Epic creation")
+    if forbidden is not None:
+        return forbidden
+    return await tracker_create_issue(
+        summary=summary,
+        queue=queue,
+        description=description,
+        priority=priority,
+        assignee=assignee,
+        issue_type="epic",
+        tags=tags,
+        deadline=deadline,
+        followers=followers,
+        custom_fields=custom_fields,
+    )
+
+
+@platform_tool(name="tracker_open_epic", risk="medium", scopes=["tracker:write"])
+async def tracker_open_epic(issue_key: str, comment: str = "") -> dict[str, Any]:
+    """Open/reopen an epic through the issue workflow. Lead/admin only."""
+    forbidden = _require_lead_or_admin("Epic opening")
+    if forbidden is not None:
+        return forbidden
+    return await tracker_transition_issue(issue_key, "open", comment=comment)
+
+
+@platform_tool(name="tracker_close_epic", risk="high", scopes=["tracker:write"])
+async def tracker_close_epic(
+    issue_key: str,
+    resolution: str = "fixed",
+    comment: str = "",
+) -> dict[str, Any]:
+    """Close an epic through the issue workflow. Lead/admin only."""
+    forbidden = _require_lead_or_admin("Epic closing")
+    if forbidden is not None:
+        return forbidden
+    return await tracker_close_issue(issue_key, resolution=resolution, comment=comment)
+
+
 @platform_tool(name="tracker_create_sprint", risk="medium", scopes=["tracker:write"])
 async def tracker_create_sprint(
     name: str,
@@ -502,6 +696,10 @@ async def tracker_create_sprint(
     start_date/end_date: YYYY-MM-DD.
     Use when the user asks to create/start planning a new sprint.
     """
+    forbidden = _require_lead_or_admin("Sprint creation")
+    if forbidden is not None:
+        return forbidden
+    board_id, board_name = _with_default_board(board_id, board_name)
     if not name.strip():
         return {"error": "name is required"}
     if not board_id.strip() and not board_name.strip():
@@ -582,6 +780,186 @@ async def tracker_add_issues_to_sprint(
         "error_count": len(errors),
         "issues": updated,
         "errors": errors,
+    }
+
+
+@platform_tool(name="tracker_open_sprint", risk="medium", scopes=["tracker:write"])
+async def tracker_open_sprint(
+    sprint_id: str = "",
+    sprint_name: str = "",
+    board_id: str = "",
+    board_name: str = "",
+) -> dict[str, Any]:
+    """Open/unarchive a Yandex Tracker sprint. Lead/admin only."""
+    forbidden = _require_lead_or_admin("Sprint opening")
+    if forbidden is not None:
+        return forbidden
+    board_id, board_name = _with_default_board(board_id, board_name)
+    async with TrackerClient() as client:
+        resolved_sprint_id, sprint_meta = await _resolve_sprint_id(
+            client,
+            sprint_id=sprint_id,
+            sprint_name=sprint_name,
+            board_id=board_id,
+            board_name=board_name,
+        )
+        sprint = await client.open_sprint(resolved_sprint_id)
+    return {
+        **_sprint_summary(
+            sprint,
+            fallback_board_id=str(sprint_meta.get("board_id") or board_id),
+            fallback_board_name=str(sprint_meta.get("board") or board_name),
+        ),
+        "opened": True,
+    }
+
+
+@platform_tool(name="tracker_close_sprint", risk="high", scopes=["tracker:write"])
+async def tracker_close_sprint(
+    sprint_id: str = "",
+    sprint_name: str = "",
+    board_id: str = "",
+    board_name: str = "",
+) -> dict[str, Any]:
+    """Close/archive a Yandex Tracker sprint. Lead/admin only."""
+    forbidden = _require_lead_or_admin("Sprint closing")
+    if forbidden is not None:
+        return forbidden
+    board_id, board_name = _with_default_board(board_id, board_name)
+    async with TrackerClient() as client:
+        resolved_sprint_id, sprint_meta = await _resolve_sprint_id(
+            client,
+            sprint_id=sprint_id,
+            sprint_name=sprint_name,
+            board_id=board_id,
+            board_name=board_name,
+        )
+        sprint = await client.close_sprint(resolved_sprint_id)
+    return {
+        **_sprint_summary(
+            sprint,
+            fallback_board_id=str(sprint_meta.get("board_id") or board_id),
+            fallback_board_name=str(sprint_meta.get("board") or board_name),
+        ),
+        "closed": True,
+    }
+
+
+@platform_tool(name="tracker_rollover_sprint", risk="high", scopes=["tracker:write"])
+async def tracker_rollover_sprint(
+    sprint_id: str = "",
+    sprint_name: str = "",
+    board_id: str = "",
+    board_name: str = "",
+    next_name: str = "",
+    queue: str = "",
+) -> dict[str, Any]:
+    """
+    Close the current sprint, create the next one, and move non-closed issues.
+
+    Issue workflow statuses are not changed; only the sprint field is patched.
+    """
+    forbidden = _require_lead_or_admin("Sprint rollover")
+    if forbidden is not None:
+        return forbidden
+    board_id, board_name = _with_default_board(board_id, board_name)
+    if not board_id.strip() and not board_name.strip():
+        return {"error": "board_id or board_name is required"}
+
+    q = _effective_queue(queue)
+    async with TrackerClient() as client:
+        resolved_board_id, board_meta = await _resolve_board_id(
+            client, board_id=board_id, board_name=board_name
+        )
+        if sprint_id.strip() or sprint_name.strip():
+            resolved_sprint_id, sprint_meta = await _resolve_sprint_id(
+                client,
+                sprint_id=sprint_id,
+                sprint_name=sprint_name,
+                board_id=resolved_board_id,
+                board_name=board_name,
+            )
+            old_sprint = await client.get_sprint(resolved_sprint_id)
+            old_sprint = {
+                "board_id": sprint_meta.get("board_id") or resolved_board_id,
+                **old_sprint,
+            }
+        else:
+            sprints = await client.list_sprints(resolved_board_id)
+            old_sprint = _select_current_sprint(sprints)
+            if old_sprint is None:
+                return {"error": "No open/current sprint found for the board"}
+
+        old_id = str(old_sprint.get("id") or "")
+        if not old_id:
+            return {"error": "Current sprint has no id", "sprint": old_sprint}
+
+        dates = _next_sprint_dates(old_sprint)
+        if dates is None:
+            return {"error": "Current sprint has invalid startDate/endDate", "sprint": old_sprint}
+        next_start, next_end = dates
+        created_sprint = await client.create_sprint(
+            name=next_name.strip() or _next_sprint_name(str(old_sprint.get("name") or "")),
+            board_id=resolved_board_id,
+            start_date=next_start,
+            end_date=next_end,
+        )
+        new_id = str(created_sprint.get("id") or "")
+        if not new_id:
+            return {"error": "Created sprint has no id", "new_sprint": created_sprint}
+
+        all_issues = await client.search_all_issues(f'Queue: "{q}"', queue=q, page_size=200)
+        candidates = [
+            issue
+            for issue in all_issues
+            if _issue_has_sprint(issue, old_id) and not _is_closed_issue(issue)
+        ]
+
+        moved: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        for issue in candidates:
+            key = str(issue.get("key") or "")
+            if not key:
+                continue
+            try:
+                updated = await client.move_issue_to_sprint(key, old_id, new_id)
+                moved.append(issue_summary(updated, detailed=True))
+            except TrackerError as exc:
+                errors.append({"issue_key": key, "error": str(exc)})
+
+        closed_sprint: dict[str, Any] | None = None
+        close_error: str | None = None
+        try:
+            closed_sprint = await client.close_sprint(old_id)
+        except TrackerError as exc:
+            close_error = str(exc)
+
+    return {
+        "old_sprint": _sprint_summary(
+            old_sprint,
+            fallback_board_id=resolved_board_id,
+            fallback_board_name=str(board_meta.get("board_name") or board_name),
+        ),
+        "new_sprint": _sprint_summary(
+            created_sprint,
+            fallback_board_id=resolved_board_id,
+            fallback_board_name=str(board_meta.get("board_name") or board_name),
+        ),
+        "closed_sprint": (
+            _sprint_summary(
+                closed_sprint,
+                fallback_board_id=resolved_board_id,
+                fallback_board_name=str(board_meta.get("board_name") or board_name),
+            )
+            if closed_sprint is not None
+            else None
+        ),
+        "close_error": close_error,
+        "moved_count": len(moved),
+        "error_count": len(errors),
+        "issues": moved,
+        "errors": errors,
+        "statuses_preserved": True,
     }
 
 
@@ -1008,8 +1386,14 @@ __all__ = [
     "tracker_list_transitions",
     "tracker_board_snapshot",
     "tracker_read_comments",
+    "tracker_create_epic",
+    "tracker_open_epic",
+    "tracker_close_epic",
     "tracker_create_issue",
     "tracker_create_sprint",
+    "tracker_open_sprint",
+    "tracker_close_sprint",
+    "tracker_rollover_sprint",
     "tracker_add_issues_to_sprint",
     "tracker_patch_issue",
     "tracker_update_issue",
