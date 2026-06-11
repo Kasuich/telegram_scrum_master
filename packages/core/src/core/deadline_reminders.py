@@ -132,7 +132,6 @@ async def load_reminder_recipients(
             TelegramUserLink.status == "active",
             TeamMembership.tracker_match_status == "confirmed",
             TelegramInstallation.status == "active",
-            TelegramInstallation.mode == "workspace_bot",
             TelegramUser.is_bot.is_(False),
             TelegramUser.is_blocked.is_(False),
         )
