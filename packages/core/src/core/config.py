@@ -498,6 +498,17 @@ class RuntimeConfig(BaseSettings):
         description="Run all tools immediately (no pending_confirm / resume step)",
     )
 
+    # Per-tool overrides (set via agent overlay, see effective_config)
+    disabled_tools: list[str] = Field(
+        default_factory=list,
+        description="Tool names disabled for this agent (excluded from the LLM tool set)",
+    )
+
+    tool_confirm: dict[str, bool] = Field(
+        default_factory=dict,
+        description="Per-tool confirmation override: True=always confirm, False=auto-run",
+    )
+
     # Feature flags
     enable_a2a: bool = Field(
         default=True,

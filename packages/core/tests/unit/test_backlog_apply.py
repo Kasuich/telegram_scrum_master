@@ -125,7 +125,9 @@ async def test_apply_backlog_plan_mock():
 
 
 @pytest.mark.asyncio
-async def test_apply_skips_closed_duplicate_epic_and_reuses_key():
+async def test_apply_merges_closed_duplicate_epic_and_reuses_key():
+    from core.issue_dedup import DedupResolution
+
     counter = {"n": 0}
 
     async def fake_create(queue, summary, **kwargs):
@@ -139,10 +141,25 @@ async def test_apply_skips_closed_duplicate_epic_and_reuses_key():
         "status": {"display": "Закрыт", "key": "closed"},
     }
 
-    async def fake_search(query, *, queue=None, limit=20):
-        if "Бот-помощник" in query:
-            return [existing_epic]
-        return []
+    async def fake_resolve(client, queue, planned):
+        resolutions = [
+            DedupResolution(
+                planned_id=p.planned_id,
+                action="merge" if p.planned_id == "epic-1" else "create",
+                duplicate_key="TEST-EXISTING" if p.planned_id == "epic-1" else None,
+                comment="из плана",
+            )
+            for p in planned
+        ]
+        return resolutions, {"TEST-EXISTING": existing_epic}
+
+    async def fake_merge(client, key, existing, **kwargs):
+        return {
+            **existing,
+            "merged_duplicate": True,
+            "updates_applied": ["comment", "status"],
+            "status": {"display": "В работе", "key": "inProgress"},
+        }
 
     with patch("core.backlog_tools.TrackerClient") as mock_cls:
         client = AsyncMock()
@@ -152,15 +169,21 @@ async def test_apply_skips_closed_duplicate_epic_and_reuses_key():
             "issue_types": [{"key": "epic"}, {"key": "story"}, {"key": "task"}],
             "priorities": [{"key": "critical"}, {"key": "normal"}],
         }
-        client.search_issues.side_effect = fake_search
         client.create_issue.side_effect = fake_create
+        with patch(
+            "core.backlog_tools.resolve_planned_issues_dedup",
+            side_effect=fake_resolve,
+        ):
+            with patch(
+                "core.backlog_tools.apply_duplicate_merge",
+                side_effect=fake_merge,
+            ):
+                result = await tracker_apply_backlog_plan(
+                    plan_json=json.dumps(SAMPLE_PLAN),
+                    queue="TEST",
+                )
 
-        result = await tracker_apply_backlog_plan(
-            plan_json=json.dumps(SAMPLE_PLAN),
-            queue="TEST",
-        )
-
-    assert result["skipped_count"] == 1
+    assert result["merged_count"] == 1
     assert result["created_count"] == 2
     assert result["epic_key"] == "TEST-EXISTING"
     assert result["id_map"]["epic-1"] == "TEST-EXISTING"
@@ -190,7 +213,7 @@ async def test_apply_creates_when_only_cancelled_match():
             "issue_types": [{"key": "epic"}, {"key": "story"}, {"key": "task"}],
             "priorities": [{"key": "critical"}, {"key": "normal"}],
         }
-        client.search_issues.return_value = [cancelled]
+        client.search_all_issues.return_value = [cancelled]
         client.create_issue.side_effect = fake_create
 
         result = await tracker_apply_backlog_plan(
@@ -198,5 +221,5 @@ async def test_apply_creates_when_only_cancelled_match():
             queue="TEST",
         )
 
-    assert result["skipped_count"] == 0
+    assert result["merged_count"] == 0
     assert result["created_count"] == 3

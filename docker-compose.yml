@@ -116,6 +116,9 @@ services:
       CONSOLE_ADMIN_PASSWORD: ${CONSOLE_ADMIN_PASSWORD:-admin}
       CONSOLE_LOGIN_CODE_SECRET: ${CONSOLE_LOGIN_CODE_SECRET}
       CONSOLE_CORS_ORIGINS: ${CONSOLE_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      CONSOLE_AVATAR_DIR: ${CONSOLE_AVATAR_DIR:-/data/avatars}
+    volumes:
+      - console_avatars:/data/avatars
     ports:
       - "8002:8002"
     healthcheck:
@@ -184,3 +187,4 @@ services:
 volumes:
   postgres_data:
   meeting_capture_objects:
+  console_avatars:

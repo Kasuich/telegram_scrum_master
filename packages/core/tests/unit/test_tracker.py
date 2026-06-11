@@ -487,7 +487,8 @@ class TestTrackerTools:
         assert "url" in result
 
     @patch.dict("os.environ", ENV)
-    async def test_tracker_create_issue_returns_existing_duplicate(self):
+    async def test_tracker_create_issue_merges_existing_duplicate(self):
+        from core.issue_dedup import DedupResolution
         from core.tracker_tools import tracker_create_issue
 
         existing = {
@@ -497,40 +498,59 @@ class TestTrackerTools:
             "status": {"display": "Закрыт", "key": "closed"},
             "type": {"key": "task"},
         }
+        merged = {**existing, "merged_duplicate": True, "updates_applied": ["comment", "status"]}
         with patch("core.tracker_tools.TrackerClient") as mock_cls:
             client = AsyncMock()
             mock_cls.return_value.__aenter__.return_value = client
-            client.search_issues.return_value = [existing]
-            result = await tracker_create_issue("Fix login bug", queue="TEST")
+            with patch(
+                "core.tracker_tools.resolve_planned_issues_dedup",
+                new_callable=AsyncMock,
+                return_value=(
+                    [
+                        DedupResolution(
+                            planned_id="0",
+                            action="merge",
+                            duplicate_key="TEST-99",
+                            comment="new context",
+                        )
+                    ],
+                    {"TEST-99": existing},
+                ),
+            ):
+                with patch(
+                    "core.tracker_tools.apply_duplicate_merge",
+                    new_callable=AsyncMock,
+                    return_value=merged,
+                ):
+                    result = await tracker_create_issue(
+                        "Fix login bug",
+                        queue="TEST",
+                        description="Details from meeting",
+                    )
 
         assert result["key"] == "TEST-99"
-        assert result.get("skipped_duplicate") is True
-        assert result.get("duplicates") == [
-            {"key": "TEST-99", "summary": "Fix login bug", "status": "Закрыт"}
-        ]
+        assert result.get("merged_duplicate") is True
         client.create_issue.assert_not_called()
 
     @patch.dict("os.environ", ENV)
     async def test_tracker_create_issue_allow_duplicate_bypasses_dedup(self):
         from core.tracker_tools import tracker_create_issue
 
-        existing = {
-            **ISSUE_RESPONSE,
-            "key": "TEST-99",
-            "summary": "Fix login bug",
-            "status": {"display": "Закрыт", "key": "closed"},
-            "type": {"key": "task"},
-        }
         with patch("core.tracker_tools.TrackerClient") as mock_cls:
             client = AsyncMock()
             mock_cls.return_value.__aenter__.return_value = client
-            client.search_issues.return_value = [existing]
             client.create_issue.return_value = ISSUE_RESPONSE
-            result = await tracker_create_issue("Fix login bug", queue="TEST", allow_duplicate=True)
+            with patch(
+                "core.tracker_tools.resolve_planned_issues_dedup",
+                new_callable=AsyncMock,
+            ) as mock_dedup:
+                result = await tracker_create_issue(
+                    "Fix login bug", queue="TEST", allow_duplicate=True
+                )
 
         assert result["key"] == "TEST-1"
         assert result.get("skipped_duplicate") is None
-        client.search_issues.assert_not_called()
+        mock_dedup.assert_not_called()
         client.create_issue.assert_called_once()
 
     @patch.dict("os.environ", ENV)

@@ -278,32 +278,49 @@ class PlaywrightTelemostBot(TelemostBot):
         loop = asyncio.get_running_loop()
         timeline: list[dict[str, Any]] = []
         current_name: str | None = None
+        current_source: str | None = None
         current_start_ms = 0
-        poll_sec = 1.0
+        current_samples = 0
+        poll_sec = self.settings.speaker_poll_interval_sec
         await self._try_open_participants_panel()
         while not stop_event.is_set():
             if self._page is not None and self._page.is_closed():
                 break
             now_ms = int((loop.time() - record_start_monotonic) * 1000)
-            name = await self._active_speaker_name()
-            if name != current_name:
+            name, source = await self._active_speaker_detection()
+            if name != current_name or source != current_source:
                 if current_name is not None:
                     timeline.append(
                         {
                             "start_ms": current_start_ms,
                             "end_ms": now_ms,
                             "display_name": current_name,
+                            "source": current_source,
+                            "samples": current_samples,
                         }
                     )
                 current_name = name
+                current_source = source
                 current_start_ms = now_ms
+                current_samples = 1 if name else 0
+            elif name:
+                current_samples += 1
             await asyncio.sleep(poll_sec)
         # Close the trailing window.
         if current_name is not None:
             end_ms = int((loop.time() - record_start_monotonic) * 1000)
             timeline.append(
-                {"start_ms": current_start_ms, "end_ms": end_ms, "display_name": current_name}
+                {
+                    "start_ms": current_start_ms,
+                    "end_ms": end_ms,
+                    "display_name": current_name,
+                    "source": current_source,
+                    "samples": current_samples,
+                }
             )
+        from meeting_capture.transcription import merge_speaker_timeline_windows
+
+        timeline = merge_speaker_timeline_windows(timeline)
         if not timeline:
             logger.warning(
                 "Active-speaker timeline is empty; transcript will keep SPEAKER_xx labels"
@@ -312,28 +329,24 @@ class PlaywrightTelemostBot(TelemostBot):
             logger.info("Collected %d active-speaker windows for name mapping", len(timeline))
         return timeline
 
-    async def _active_speaker_name(self) -> str | None:
-        """Best-effort: display name of the currently speaking participant.
-
-        Telemost / Telemost 360 expose the active tile via aria-labels, CSS state,
-        or the participants side panel. Several strategies are tried each poll.
-        """
+    async def _active_speaker_detection(self) -> tuple[str | None, str | None]:
+        """Return (display_name, detection_source) for the active remote speaker."""
         if self._page is None:
-            return None
+            return None, None
         bot_name = self.settings.bot_display_name
 
         name = await self._active_speaker_from_goloom_grid()
         if name:
-            return name
+            return name, "goloom_grid"
 
         for label in await self._collect_aria_labels():
             name = parse_speaking_aria_label(label)
             if name and not is_noise_participant_name(name, bot_display_name=bot_name):
-                return name
+                return name, "aria_label"
 
         name = await self._active_speaker_from_panel()
         if name:
-            return name
+            return name, "panel"
 
         selectors = [
             "[data-speaking='true']",
@@ -346,21 +359,41 @@ class PlaywrightTelemostBot(TelemostBot):
         ]
         for selector in selectors:
             try:
-                locator = self._page.locator(selector).first
-                if await locator.count() == 0:
-                    continue
-                raw = (
-                    await locator.get_attribute("aria-label")
-                    or await locator.get_attribute("data-name")
-                    or await locator.get_attribute("title")
-                    or (await locator.inner_text(timeout=1_000))
-                )
-                name = parse_speaking_aria_label(raw or "") or sanitize_participant_name(raw or "")
-                if name and not is_noise_participant_name(name, bot_display_name=bot_name):
-                    return name
+                locator = self._page.locator(selector)
+                count = await locator.count()
+                for idx in range(count):
+                    item = locator.nth(idx)
+                    if await self._locator_in_self_view(item):
+                        continue
+                    raw = (
+                        await item.get_attribute("aria-label")
+                        or await item.get_attribute("data-name")
+                        or await item.get_attribute("title")
+                        or (await item.inner_text(timeout=1_000))
+                    )
+                    name = parse_speaking_aria_label(raw or "") or sanitize_participant_name(
+                        raw or ""
+                    )
+                    if name and not is_noise_participant_name(name, bot_display_name=bot_name):
+                        return name, "css_selector"
             except Exception:
                 continue
-        return None
+        return None, None
+
+    async def _locator_in_self_view(self, locator: Any) -> bool:
+        try:
+            return bool(
+                await locator.evaluate(
+                    'el => !!el.closest(\'[class*="selfView"], [class*="SelfView"]\')'
+                )
+            )
+        except Exception:
+            return False
+
+    async def _active_speaker_name(self) -> str | None:
+        """Backward-compatible wrapper."""
+        name, _ = await self._active_speaker_detection()
+        return name
 
     async def _active_speaker_from_goloom_grid(self) -> str | None:
         """Read the highlighted remote tile from the Telemost Goloom participant grid."""
@@ -425,15 +458,20 @@ class PlaywrightTelemostBot(TelemostBot):
         ]
         for selector in row_selectors:
             try:
-                locator = self._page.locator(selector).first
-                if await locator.count() == 0:
-                    continue
-                raw = await locator.get_attribute("aria-label") or await locator.inner_text(
-                    timeout=1_000
-                )
-                name = parse_speaking_aria_label(raw or "") or sanitize_participant_name(raw or "")
-                if name and not is_noise_participant_name(name, bot_display_name=bot_name):
-                    return name
+                locator = self._page.locator(selector)
+                count = await locator.count()
+                for idx in range(count):
+                    item = locator.nth(idx)
+                    if await self._locator_in_self_view(item):
+                        continue
+                    raw = await item.get_attribute("aria-label") or await item.inner_text(
+                        timeout=1_000
+                    )
+                    name = parse_speaking_aria_label(raw or "") or sanitize_participant_name(
+                        raw or ""
+                    )
+                    if name and not is_noise_participant_name(name, bot_display_name=bot_name):
+                        return name
             except Exception:
                 continue
         return None
