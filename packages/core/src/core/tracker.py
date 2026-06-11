@@ -296,13 +296,36 @@ class TrackerClient:
             raise TrackerError("patch_sprint requires at least one field")
         return await self._request("PATCH", f"/sprints/{sprint_id}", json=fields)
 
+    async def set_sprint_archived(self, sprint_id: str, archived: bool) -> dict[str, Any]:
+        """Set sprint archived flag.
+
+        Tracker returns the field as a JSON boolean, but the update endpoint
+        rejects a JSON boolean with "Incorrect data format"; it accepts the
+        lower-case string representation.
+        """
+        attempts = (
+            {"archived": str(archived).lower()},
+            {"archived": {"set": archived}},
+            {"archived": archived},
+        )
+        last_error: TrackerError | None = None
+        for fields in attempts:
+            try:
+                return await self.patch_sprint(sprint_id, fields)
+            except TrackerError as exc:
+                if exc.status_code != 400 or "archived" not in str(exc):
+                    raise
+                last_error = exc
+        assert last_error is not None
+        raise last_error
+
     async def open_sprint(self, sprint_id: str) -> dict[str, Any]:
         """Mark sprint as open/unarchived."""
-        return await self.patch_sprint(sprint_id, {"archived": False})
+        return await self.set_sprint_archived(sprint_id, False)
 
     async def close_sprint(self, sprint_id: str) -> dict[str, Any]:
         """Mark sprint as closed/archived."""
-        return await self.patch_sprint(sprint_id, {"archived": True})
+        return await self.set_sprint_archived(sprint_id, True)
 
     async def list_sprints(self, board_id: str) -> list[dict[str, Any]]:
         """Return all sprints of a board."""
