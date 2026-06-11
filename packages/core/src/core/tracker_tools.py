@@ -78,25 +78,6 @@ def _extract_issue_key(*values: str) -> str:
     return ""
 
 
-_LEAD_ADMIN_ROLES = frozenset({"lead", "admin"})
-
-
-def _actor_role() -> str:
-    ctx = get_current_invocation_context()
-    return str(ctx.actor_role or "").strip() if ctx is not None else ""
-
-
-def _require_lead_or_admin(action: str) -> dict[str, Any] | None:
-    role = _actor_role().casefold()
-    if role in _LEAD_ADMIN_ROLES:
-        return None
-    return {
-        "error": f"{action} is allowed only for team lead/admin",
-        "required_roles": sorted(_LEAD_ADMIN_ROLES),
-        "actor_role": role or None,
-    }
-
-
 def _default_board_from_context() -> tuple[str, str]:
     ctx = get_current_invocation_context()
     if ctx is None:
@@ -112,20 +93,20 @@ def _with_default_board(board_id: str, board_name: str) -> tuple[str, str]:
     return _default_board_from_context()
 
 
-def _is_epic_type(issue_type: str) -> bool:
-    return issue_type.strip().casefold() == "epic"
-
-
 def _sprint_summary(
     sprint: dict[str, Any],
     *,
+    fallback_sprint_id: str = "",
+    fallback_sprint_name: str = "",
     fallback_board_id: str = "",
     fallback_board_name: str = "",
 ) -> dict[str, Any]:
+    if not isinstance(sprint, dict):
+        sprint = {}
     board = sprint.get("board") or {}
     return {
-        "id": sprint.get("id"),
-        "name": sprint.get("name"),
+        "id": sprint.get("id") or fallback_sprint_id,
+        "name": sprint.get("name") or fallback_sprint_name,
         "status": sprint.get("status"),
         "archived": sprint.get("archived"),
         "board_id": board.get("id") or fallback_board_id,
@@ -135,6 +116,24 @@ def _sprint_summary(
         "url": sprint.get("self"),
         "raw": sprint,
     }
+
+
+def _merge_sprint_patch_result(
+    original: dict[str, Any],
+    patched: dict[str, Any] | None,
+    *,
+    sprint_id: str,
+    sprint_name: str = "",
+    archived: bool,
+) -> dict[str, Any]:
+    sprint = dict(original) if isinstance(original, dict) else {}
+    if isinstance(patched, dict):
+        sprint.update({key: value for key, value in patched.items() if value is not None})
+    sprint.setdefault("id", sprint_id)
+    if sprint_name:
+        sprint.setdefault("name", sprint_name)
+    sprint["archived"] = archived
+    return sprint
 
 
 def _parse_sprint_date(value: Any) -> date | None:
@@ -622,10 +621,6 @@ async def tracker_create_issue(
             return {"error": f"Invalid story_points: {story_points!r}"}
 
     q = _effective_queue(queue)
-    if _is_epic_type(issue_type):
-        forbidden = _require_lead_or_admin("Epic creation")
-        if forbidden is not None:
-            return forbidden
 
     async with TrackerClient() as client:
         assignee_login: str | None = None
@@ -719,10 +714,7 @@ async def tracker_create_epic(
     followers: str = "",
     custom_fields: str = "",
 ) -> dict[str, Any]:
-    """Create an epic in Yandex Tracker. Lead/admin only."""
-    forbidden = _require_lead_or_admin("Epic creation")
-    if forbidden is not None:
-        return forbidden
+    """Create an epic in Yandex Tracker."""
     return await tracker_create_issue(
         summary=summary,
         queue=queue,
@@ -739,10 +731,7 @@ async def tracker_create_epic(
 
 @platform_tool(name="tracker_open_epic", risk="medium", scopes=["tracker:write"])
 async def tracker_open_epic(issue_key: str, comment: str = "") -> dict[str, Any]:
-    """Open/reopen an epic through the issue workflow. Lead/admin only."""
-    forbidden = _require_lead_or_admin("Epic opening")
-    if forbidden is not None:
-        return forbidden
+    """Open/reopen an epic through the issue workflow."""
     return await tracker_transition_issue(issue_key, "open", comment=comment)
 
 
@@ -752,10 +741,7 @@ async def tracker_close_epic(
     resolution: str = "fixed",
     comment: str = "",
 ) -> dict[str, Any]:
-    """Close an epic through the issue workflow. Lead/admin only."""
-    forbidden = _require_lead_or_admin("Epic closing")
-    if forbidden is not None:
-        return forbidden
+    """Close an epic through the issue workflow."""
     return await tracker_close_issue(issue_key, resolution=resolution, comment=comment)
 
 
@@ -779,9 +765,6 @@ async def tracker_create_sprint(
       `duration_days`-day window starting after the latest sprint.
     Use when the user asks to create/start planning a new sprint.
     """
-    forbidden = _require_lead_or_admin("Sprint creation")
-    if forbidden is not None:
-        return forbidden
     board_id, board_name = _with_default_board(board_id, board_name)
     if not board_id.strip() and not board_name.strip():
         return {"error": "board_id or board_name is required"}
@@ -881,10 +864,7 @@ async def tracker_open_sprint(
     board_id: str = "",
     board_name: str = "",
 ) -> dict[str, Any]:
-    """Open/unarchive a Yandex Tracker sprint. Lead/admin only."""
-    forbidden = _require_lead_or_admin("Sprint opening")
-    if forbidden is not None:
-        return forbidden
+    """Open/unarchive a Yandex Tracker sprint."""
     board_id, board_name = _with_default_board(board_id, board_name)
     async with TrackerClient() as client:
         resolved_sprint_id, sprint_meta = await _resolve_sprint_id(
@@ -894,10 +874,20 @@ async def tracker_open_sprint(
             board_id=board_id,
             board_name=board_name,
         )
-        sprint = await client.open_sprint(resolved_sprint_id)
+        original = await client.get_sprint(resolved_sprint_id)
+        patched = await client.open_sprint(resolved_sprint_id)
+        sprint = _merge_sprint_patch_result(
+            original,
+            patched,
+            sprint_id=resolved_sprint_id,
+            sprint_name=str(sprint_meta.get("sprint_name") or sprint_name),
+            archived=False,
+        )
     return {
         **_sprint_summary(
             sprint,
+            fallback_sprint_id=resolved_sprint_id,
+            fallback_sprint_name=str(sprint_meta.get("sprint_name") or sprint_name),
             fallback_board_id=str(sprint_meta.get("board_id") or board_id),
             fallback_board_name=str(sprint_meta.get("board") or board_name),
         ),
@@ -912,10 +902,7 @@ async def tracker_close_sprint(
     board_id: str = "",
     board_name: str = "",
 ) -> dict[str, Any]:
-    """Close/archive a Yandex Tracker sprint. Lead/admin only."""
-    forbidden = _require_lead_or_admin("Sprint closing")
-    if forbidden is not None:
-        return forbidden
+    """Close/archive a Yandex Tracker sprint."""
     board_id, board_name = _with_default_board(board_id, board_name)
     async with TrackerClient() as client:
         resolved_sprint_id, sprint_meta = await _resolve_sprint_id(
@@ -925,10 +912,20 @@ async def tracker_close_sprint(
             board_id=board_id,
             board_name=board_name,
         )
-        sprint = await client.close_sprint(resolved_sprint_id)
+        original = await client.get_sprint(resolved_sprint_id)
+        patched = await client.close_sprint(resolved_sprint_id)
+        sprint = _merge_sprint_patch_result(
+            original,
+            patched,
+            sprint_id=resolved_sprint_id,
+            sprint_name=str(sprint_meta.get("sprint_name") or sprint_name),
+            archived=True,
+        )
     return {
         **_sprint_summary(
             sprint,
+            fallback_sprint_id=resolved_sprint_id,
+            fallback_sprint_name=str(sprint_meta.get("sprint_name") or sprint_name),
             fallback_board_id=str(sprint_meta.get("board_id") or board_id),
             fallback_board_name=str(sprint_meta.get("board") or board_name),
         ),
@@ -950,9 +947,6 @@ async def tracker_rollover_sprint(
 
     Issue workflow statuses are not changed; only the sprint field is patched.
     """
-    forbidden = _require_lead_or_admin("Sprint rollover")
-    if forbidden is not None:
-        return forbidden
     board_id, board_name = _with_default_board(board_id, board_name)
     if not board_id.strip() and not board_name.strip():
         return {"error": "board_id or board_name is required"}

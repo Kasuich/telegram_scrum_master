@@ -21,6 +21,7 @@ from core.turn_guards import (
     message_has_backlog_intent,
     message_has_close_intent,
     message_has_create_intent,
+    message_has_create_sprint_intent,
     message_has_meeting_sync_intent,
     message_has_status_update_intent,
     normalize_text,
@@ -88,6 +89,14 @@ _TRANSITION_MARKERS = (
     "в работу",
     "в закрыто",
     "верни в",
+    "открой",
+    "открыть",
+    "переоткрой",
+    "переоткрыть",
+    "open sprint",
+    "open epic",
+    "reopen sprint",
+    "reopen epic",
 )
 
 _VALID_STAGES = {s.value for s in StageId}
@@ -110,7 +119,7 @@ def detect_stage_rules(message: str) -> StageId | None:
         return StageId.PROACTIVE
     if any(m in t for m in _HYGIENE_MARKERS):  # R6
         return StageId.HYGIENE
-    if message_has_create_intent(message):  # R7
+    if message_has_create_sprint_intent(message) or message_has_create_intent(message):  # R7
         return StageId.INTAKE
     if any(m in t for m in _QUERY_MARKERS):  # R8
         return StageId.QUERY
