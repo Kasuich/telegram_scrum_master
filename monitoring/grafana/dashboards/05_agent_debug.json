@@ -3,7 +3,7 @@
   "uid": "pm-agent-debug",
   "tags": ["pm-agent"],
   "schemaVersion": 38,
-  "version": 6,
+  "version": 8,
   "refresh": "10s",
   "time": {"from": "now-1h", "to": "now"},
   "timezone": "browser",
@@ -39,6 +39,18 @@
         "current": {"text": "All", "value": "$__all"}
       },
       {
+        "name": "state",
+        "label": "Tool status",
+        "description": "Step outcome: stage, call, ok, error, pending, rejected, final, clarification.",
+        "type": "query",
+        "datasource": {"type": "loki", "uid": "loki"},
+        "query": {"query": "label_values(state)", "refId": "state"},
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {"text": "All", "value": "$__all"}
+      },
+      {
         "name": "session_id",
         "label": "Trace",
         "type": "query",
@@ -47,6 +59,14 @@
         "includeAll": true,
         "allValue": ".*",
         "current": {"text": "All", "value": "$__all"}
+      },
+      {
+        "name": "search",
+        "label": "Search message",
+        "description": "Case-insensitive substring matched against source messages and raw log lines.",
+        "type": "textbox",
+        "query": "",
+        "current": {"text": "", "value": ""}
       }
     ]
   },
@@ -57,14 +77,16 @@
     },
     {
       "id": 1, "title": "Tool Calls", "type": "stat",
+      "description": "Total tool calls requested in range (matching the Agent/Stage/Tool filters).",
       "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}, "overrides": []},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}}, "overrides": []},
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"},
       "targets": [{"expr": "sum(pm_agent_tool_calls_total{agent_name=~\"$agent\",stage=~\"$stage\",tool_name=~\"$tool\",status=\"requested\"}) or vector(0)", "refId": "A"}]
     },
     {
       "id": 2, "title": "Failed / Rejected", "type": "stat",
+      "description": "Tool calls that failed, were rejected at the guard, deduped, or hit an unknown tool.",
       "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}}, "overrides": []},
@@ -73,6 +95,7 @@
     },
     {
       "id": 3, "title": "Pending Confirmations", "type": "stat",
+      "description": "Medium/high-risk writes currently waiting for human confirmation.",
       "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 10}]}}, "overrides": []},
@@ -81,6 +104,7 @@
     },
     {
       "id": 4, "title": "Successful Outputs", "type": "stat",
+      "description": "Tool calls that completed successfully.",
       "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}, "overrides": []},
@@ -89,12 +113,63 @@
     },
 
     {
-      "id": 102, "type": "row", "title": "Agent Behavior",
+      "id": 106, "type": "row", "title": "E2E Response Time (selected period)",
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5}
     },
     {
+      "id": 40, "title": "Requests", "type": "stat",
+      "description": "Number of user→agent responses measured over the dashboard time range.",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "color": {"mode": "fixed", "fixedColor": "blue"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none", "textMode": "value"},
+      "targets": [{"expr": "sum(increase(telegram_bridge_e2e_latency_seconds_count{category=\"agent\"}[$__range])) or vector(0)", "instant": true, "refId": "A"}]
+    },
+    {
+      "id": 41, "title": "Avg", "type": "stat",
+      "description": "Mean user→agent end-to-end latency over the dashboard time range.",
+      "gridPos": {"h": 4, "w": 5, "x": 4, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 2, "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 15}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"expr": "sum(increase(telegram_bridge_e2e_latency_seconds_sum{category=\"agent\"}[$__range])) / sum(increase(telegram_bridge_e2e_latency_seconds_count{category=\"agent\"}[$__range]))", "instant": true, "refId": "A"}]
+    },
+    {
+      "id": 42, "title": "p50", "type": "stat",
+      "description": "Median end-to-end latency over the dashboard time range.",
+      "gridPos": {"h": 4, "w": 5, "x": 9, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 2, "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 15}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"expr": "histogram_quantile(0.50, sum by (le) (increase(telegram_bridge_e2e_latency_seconds_bucket{category=\"agent\"}[$__range])))", "instant": true, "refId": "A"}]
+    },
+    {
+      "id": 43, "title": "p95", "type": "stat",
+      "description": "95th percentile end-to-end latency over the dashboard time range.",
+      "gridPos": {"h": 4, "w": 5, "x": 14, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 2, "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 25}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (increase(telegram_bridge_e2e_latency_seconds_bucket{category=\"agent\"}[$__range])))", "instant": true, "refId": "A"}]
+    },
+    {
+      "id": 44, "title": "p99", "type": "stat",
+      "description": "99th percentile end-to-end latency over the dashboard time range.",
+      "gridPos": {"h": 4, "w": 5, "x": 19, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 2, "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 15}, {"color": "red", "value": 30}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "targets": [{"expr": "histogram_quantile(0.99, sum by (le) (increase(telegram_bridge_e2e_latency_seconds_bucket{category=\"agent\"}[$__range])))", "instant": true, "refId": "A"}]
+    },
+
+    {
+      "id": 102, "type": "row", "title": "Agent Behavior",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 10}
+    },
+    {
       "id": 5, "title": "Graph Traversal: Stage → Tool → Outcome", "type": "bargauge",
-      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 6},
+      "description": "How the agent moved through the stage graph and which tool outcomes it reached.",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 11},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "short", "min": 0, "color": {"mode": "continuous-GrYlRd"}}, "overrides": []},
       "options": {"orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true, "reduceOptions": {"calcs": ["lastNotNull"], "values": false}},
@@ -102,7 +177,8 @@
     },
     {
       "id": 6, "title": "Tool Call Statuses", "type": "piechart",
-      "gridPos": {"h": 9, "w": 6, "x": 12, "y": 6},
+      "description": "Distribution of tool-call outcomes for the current filters.",
+      "gridPos": {"h": 9, "w": 6, "x": 12, "y": 11},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "palette-classic"}}, "overrides": []},
       "options": {"pieType": "donut", "displayLabels": ["name", "percent"], "legend": {"displayMode": "table", "placement": "bottom", "values": ["value"]}, "reduceOptions": {"calcs": ["lastNotNull"], "values": false}},
@@ -110,7 +186,8 @@
     },
     {
       "id": 7, "title": "Output Shapes", "type": "bargauge",
-      "gridPos": {"h": 9, "w": 6, "x": 18, "y": 6},
+      "description": "Shape of tool results (object / list / error / empty / …) per tool.",
+      "gridPos": {"h": 9, "w": 6, "x": 18, "y": 11},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "short", "min": 0, "color": {"mode": "palette-classic"}}, "overrides": []},
       "options": {"orientation": "horizontal", "displayMode": "basic", "showUnfilled": true, "reduceOptions": {"calcs": ["lastNotNull"], "values": false}},
@@ -119,11 +196,12 @@
 
     {
       "id": 103, "type": "row", "title": "Activity Over Time",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 15}
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 20}
     },
     {
       "id": 8, "title": "Stage Activity", "type": "timeseries",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "description": "Stage visit rate over time.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 21},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "ops", "min": 0, "color": {"mode": "palette-classic"}, "custom": {"lineWidth": 2, "fillOpacity": 15, "stacking": {"mode": "normal", "group": "A"}}}, "overrides": []},
       "options": {"tooltip": {"mode": "multi"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["sum"]}},
@@ -131,7 +209,8 @@
     },
     {
       "id": 9, "title": "Tools by Status", "type": "timeseries",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "description": "Tool-call rate split by tool and status over time.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 21},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "ops", "min": 0, "color": {"mode": "palette-classic"}, "custom": {"lineWidth": 2, "fillOpacity": 10}}, "overrides": []},
       "options": {"tooltip": {"mode": "multi"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["sum"]}},
@@ -140,114 +219,136 @@
 
     {
       "id": 104, "type": "row", "title": "Trace Explorer",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 24}
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 29}
     },
     {
-      "id": 30, "title": "Gantt", "type": "marcusolsson-gantt-panel",
-      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 25},
+      "id": 22, "title": "Trace Finder — search by source message", "type": "table",
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 30},
       "datasource": {"type": "loki", "uid": "loki"},
-      "description": "Select a Trace above (by session_id) to see step-by-step Gantt. Each bar = one agent step, width = how long it took.",
+      "description": "Find a trace by its original user message. Type in 'Search message' above, then copy the session_id into the 'Trace' selector to drill into its Gantt.",
+      "fieldConfig": {
+        "defaults": {"custom": {"align": null, "filterable": true}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "trace_label"}, "properties": [{"id": "displayName", "value": "Source message"}, {"id": "custom.width", "value": 520}]},
+          {"matcher": {"id": "byName", "options": "session_id"}, "properties": [{"id": "displayName", "value": "Trace (session_id)"}, {"id": "custom.width", "value": 280}]},
+          {"matcher": {"id": "byName", "options": "agent_name"}, "properties": [{"id": "displayName", "value": "Agent"}, {"id": "custom.width", "value": 140}]},
+          {"matcher": {"id": "byName", "options": "Time"}, "properties": [{"id": "custom.width", "value": 180}]}
+        ]
+      },
+      "options": {"showHeader": true, "sortBy": [{"desc": true, "displayName": "Time"}]},
+      "transformations": [
+        {"id": "extractFields", "options": {"source": "Line", "format": "json"}},
+        {"id": "extractFields", "options": {"source": "message", "format": "json"}},
+        {"id": "organize", "options": {
+          "excludeByName": {"Line": true, "labels": true, "tsNs": true, "id": true, "message": true, "timestamp": true, "level": true, "logger": true, "trace_id": true, "event": true, "stage": true, "kind": true, "tool_name": true, "state": true, "label": true, "step_idx": true, "ts": true, "end_ts": true, "duration_s": true, "offset_s": true, "content": true, "reason": true, "tool_args": true, "result": true, "truncated": true, "preview": true},
+          "indexByName": {"Time": 0, "session_id": 1, "agent_name": 2, "trace_label": 3},
+          "renameByName": {}
+        }}
+      ],
+      "targets": [{"expr": "{job=\"docker\",agent_name=~\"$agent\"} |~ \"trace_label\" |~ \"$search\"", "refId": "A", "maxLines": 200}]
+    },
+    {
+      "id": 30, "title": "Gantt — end-to-end trace timeline", "type": "marcusolsson-gantt-panel",
+      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 37},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "description": "Pick a Trace above to see its end-to-end timeline. Each bar = one agent step (stage / tool call / result), grouped by stage, colored by status, width = time until the next step.",
       "fieldConfig": {"defaults": {}, "overrides": []},
       "options": {
-        "groupBy": "stage",
+        "textField": "label",
+        "startField": "ts",
+        "endField": "end_ts",
+        "groupByField": "stage",
+        "colorByField": "state",
+        "labelFields": ["tool_name"],
         "sortBy": "startTime",
-        "tooltipContent": ["text", "start", "end"],
-        "showHeaders": true
+        "sortOrder": "asc",
+        "showYAxis": true,
+        "colors": [
+          {"text": "ok", "color": "green"},
+          {"text": "error", "color": "red"},
+          {"text": "rejected", "color": "orange"},
+          {"text": "pending", "color": "yellow"},
+          {"text": "call", "color": "blue"},
+          {"text": "stage", "color": "purple"},
+          {"text": "final", "color": "dark-green"},
+          {"text": "clarification", "color": "light-blue"}
+        ],
+        "experiments": {"enabled": false, "lockToExtents": false, "relativeXAxis": false}
       },
       "transformations": [
-        {
-          "id": "extractFields",
-          "options": {"source": "Line", "format": "json"}
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {"Time 1": true, "tsNs": true, "id": true, "labels": true, "Line": true, "event": true, "agent_name": true, "content": true, "reason": true, "tool_args": true, "result": true, "truncated": true, "preview": true, "session_id": true, "step_idx": true, "offset_s": true, "duration_s": true, "trace_label": true},
-            "renameByName": {}
-          }
-        },
-        {
-          "id": "rename",
-          "options": {
-            "renameByName": {"ts": "start", "end_ts": "end", "kind": "_kind", "tool_name": "_tool", "stage": "stage"}
-          }
-        },
-        {
-          "id": "calculateField",
-          "options": {
-            "mode": "reduceRow",
-            "alias": "text",
-            "reduce": {"reducer": "lastNotNull"},
-            "binary": {"left": "_kind", "operator": "+", "right": "_tool"},
-            "replaceFields": false
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {"_kind": true, "_tool": true, "Time": true},
-            "includeByName": {},
-            "renameByName": {}
-          }
-        }
+        {"id": "extractFields", "options": {"source": "Line", "format": "json"}},
+        {"id": "extractFields", "options": {"source": "message", "format": "json"}},
+        {"id": "convertFieldType", "options": {"conversions": [
+          {"targetField": "ts", "destinationType": "time"},
+          {"targetField": "end_ts", "destinationType": "time"}
+        ]}},
+        {"id": "organize", "options": {
+          "excludeByName": {"Line": true, "labels": true, "tsNs": true, "id": true, "message": true, "timestamp": true, "level": true, "logger": true, "trace_id": true, "event": true, "agent_name": true, "session_id": true, "step_idx": true, "duration_s": true, "offset_s": true, "trace_label": true, "content": true, "reason": true, "tool_args": true, "result": true, "truncated": true, "preview": true},
+          "indexByName": {},
+          "renameByName": {}
+        }}
       ],
       "targets": [{
-        "expr": "{job=\"docker\",agent_name=~\"$agent\",session_id=~\"$session_id\"} |~ \"agent_step\"",
-        "refId": "A"
+        "expr": "{job=\"docker\",agent_name=~\"$agent\",session_id=~\"$session_id\",state=~\"$state\"} |~ \"agent_step\"",
+        "refId": "A",
+        "maxLines": 500
       }]
     },
     {
       "id": 21, "title": "Step Details", "type": "table",
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 39},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 51},
       "datasource": {"type": "loki", "uid": "loki"},
       "description": "Per-step timing for the selected trace.",
       "fieldConfig": {
         "defaults": {"custom": {"align": null, "filterable": true, "inspect": true}},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Time"}, "properties": [{"id": "custom.width", "value": 180}]},
-          {"matcher": {"id": "byName", "options": "kind"}, "properties": [{"id": "custom.width", "value": 100}]},
-          {"matcher": {"id": "byName", "options": "tool_name"}, "properties": [{"id": "custom.width", "value": 160}]},
-          {"matcher": {"id": "byName", "options": "stage"}, "properties": [{"id": "custom.width", "value": 80}]},
           {"matcher": {"id": "byName", "options": "duration_s"}, "properties": [{"id": "displayName", "value": "Duration (s)"}, {"id": "custom.cellOptions", "value": {"type": "color-background", "mode": "gradient"}}, {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 3}, {"color": "red", "value": 10}]}}, {"id": "custom.width", "value": 120}]},
           {"matcher": {"id": "byName", "options": "offset_s"}, "properties": [{"id": "displayName", "value": "Offset (s)"}, {"id": "custom.width", "value": 100}]},
           {"matcher": {"id": "byName", "options": "step_idx"}, "properties": [{"id": "displayName", "value": "#"}, {"id": "custom.width", "value": 50}]},
-          {"matcher": {"id": "byName", "options": "trace_label"}, "properties": [{"id": "displayName", "value": "Input"}, {"id": "custom.width", "value": 250}]},
-          {"matcher": {"id": "byName", "options": "Line"}, "properties": [{"id": "custom.hidden", "value": true}]},
-          {"matcher": {"id": "byName", "options": "labels"}, "properties": [{"id": "custom.hidden", "value": true}]},
-          {"matcher": {"id": "byName", "options": "tsNs"}, "properties": [{"id": "custom.hidden", "value": true}]},
-          {"matcher": {"id": "byName", "options": "id"}, "properties": [{"id": "custom.hidden", "value": true}]}
+          {"matcher": {"id": "byName", "options": "stage"}, "properties": [{"id": "custom.width", "value": 90}]},
+          {"matcher": {"id": "byName", "options": "kind"}, "properties": [{"id": "custom.width", "value": 110}]},
+          {"matcher": {"id": "byName", "options": "state"}, "properties": [{"id": "custom.cellOptions", "value": {"type": "color-text"}}, {"id": "custom.width", "value": 100}, {"id": "mappings", "value": [{"type": "value", "options": {"ok": {"color": "green", "index": 0}, "error": {"color": "red", "index": 1}, "rejected": {"color": "orange", "index": 2}, "pending": {"color": "yellow", "index": 3}}}]}]},
+          {"matcher": {"id": "byName", "options": "tool_name"}, "properties": [{"id": "custom.width", "value": 180}]},
+          {"matcher": {"id": "byName", "options": "trace_label"}, "properties": [{"id": "displayName", "value": "Source message"}, {"id": "custom.width", "value": 260}]}
         ]
       },
-      "options": {"showHeader": true, "sortBy": [{"desc": false, "displayName": "Time"}]},
+      "options": {"showHeader": true, "sortBy": [{"desc": false, "displayName": "#"}]},
       "transformations": [
         {"id": "extractFields", "options": {"source": "Line", "format": "json"}},
-        {"id": "organize", "options": {"excludeByName": {"Time 1": true, "tsNs": true, "id": true, "labels": true, "Line": true, "event": true, "agent_name": true, "content": true, "reason": true, "tool_args": true, "result": true, "truncated": true, "preview": true}, "renameByName": {"step_idx": "#", "duration_s": "Duration (s)", "offset_s": "Offset (s)", "trace_label": "Input"}}}
+        {"id": "extractFields", "options": {"source": "message", "format": "json"}},
+        {"id": "organize", "options": {
+          "excludeByName": {"Line": true, "labels": true, "tsNs": true, "id": true, "message": true, "timestamp": true, "level": true, "logger": true, "trace_id": true, "event": true, "agent_name": true, "session_id": true, "label": true, "end_ts": true, "ts": true, "content": true, "reason": true, "tool_args": true, "result": true, "truncated": true, "preview": true},
+          "indexByName": {"Time": 0, "step_idx": 1, "stage": 2, "kind": 3, "state": 4, "tool_name": 5, "offset_s": 6, "duration_s": 7, "trace_label": 8},
+          "renameByName": {"step_idx": "#", "duration_s": "Duration (s)", "offset_s": "Offset (s)", "trace_label": "Source message"}
+        }}
       ],
-      "targets": [{"expr": "{job=\"docker\",agent_name=~\"$agent\",session_id=~\"$session_id\"} |~ \"agent_step\"", "refId": "A"}]
+      "targets": [{"expr": "{job=\"docker\",agent_name=~\"$agent\",session_id=~\"$session_id\",state=~\"$state\"} |~ \"agent_step\"", "refId": "A", "maxLines": 500}]
     },
     {
       "id": 10, "title": "Raw Logs", "type": "logs",
-      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 47},
+      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 59},
       "datasource": {"type": "loki", "uid": "loki"},
-      "description": "Expand a row to inspect full tool_args, result, and error payloads.",
+      "description": "Expand a row to inspect full tool_args, result, and error payloads. Filtered by Trace, Tool status, and Search message.",
       "options": {"showTime": true, "showLabels": false, "showCommonLabels": false, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none"},
-      "targets": [{"expr": "{job=\"docker\"} |= \"agent_step\" |~ \"$session_id\" |~ \"agent_name\" |~ \"stage\"", "refId": "A"}]
+      "targets": [{"expr": "{job=\"docker\",agent_name=~\"$agent\",session_id=~\"$session_id\",state=~\"$state\"} |~ \"agent_step\" |~ \"$search\"", "refId": "A"}]
     },
     {
       "id": 11, "title": "Errors", "type": "logs",
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 47},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 59},
       "datasource": {"type": "loki", "uid": "loki"},
+      "description": "Only tool errors and rejected confirmations for the selected trace.",
       "options": {"showTime": true, "showLabels": false, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none"},
-      "targets": [{"expr": "{job=\"docker\"} |= \"agent_step\" |~ \"$session_id\" |~ \"tool_error|confirm_rejected\"", "refId": "A"}]
+      "targets": [{"expr": "{job=\"docker\",agent_name=~\"$agent\",session_id=~\"$session_id\"} |~ \"agent_step\" |~ \"tool_error|confirm_rejected\"", "refId": "A"}]
     },
 
     {
       "id": 105, "type": "row", "title": "LLM & Latency",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 55}
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 67}
     },
     {
       "id": 14, "title": "LLM Latency (avg + p95)", "type": "timeseries",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 56},
+      "description": "Per-model LLM call latency over time.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 68},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "s", "min": 0, "color": {"mode": "palette-classic"}, "custom": {"lineWidth": 2, "fillOpacity": 10}}, "overrides": []},
       "options": {"tooltip": {"mode": "multi"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}},
@@ -258,7 +359,8 @@
     },
     {
       "id": 15, "title": "Token Usage", "type": "timeseries",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 56},
+      "description": "Prompt/completion token throughput per model.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 68},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "short", "min": 0, "color": {"mode": "palette-classic"}, "custom": {"lineWidth": 2, "fillOpacity": 10, "stacking": {"mode": "normal", "group": "A"}}}, "overrides": []},
       "options": {"tooltip": {"mode": "multi"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["sum"]}},
@@ -266,7 +368,8 @@
     },
     {
       "id": 16, "title": "User → Agent Response Latency", "type": "timeseries",
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 64},
+      "description": "End-to-end latency (message receipt → agent response) over time: avg, p95, p99.",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 76},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {"defaults": {"unit": "s", "min": 0, "color": {"mode": "palette-classic"}, "custom": {"lineWidth": 2, "fillOpacity": 10}}, "overrides": []},
       "options": {"tooltip": {"mode": "multi"}, "legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]}},
