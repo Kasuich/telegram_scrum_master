@@ -192,7 +192,12 @@ class MeetingDispatcher:
                 )
             from meeting_capture.transcription import map_speakers_to_names
 
-            named_segments = map_speakers_to_names(transcription.segments, speaker_timeline)
+            named_segments = map_speakers_to_names(
+                transcription.segments,
+                speaker_timeline,
+                participants_observed=join_result.participants_observed,
+                bot_display_name=self.settings.bot_display_name,
+            )
             transcription = TranscriptionResult(
                 source=transcription.source,
                 segments=named_segments,
@@ -265,7 +270,12 @@ class MeetingDispatcher:
         from meeting_capture.transcription import map_speakers_to_names
 
         speaker_timeline = metadata.get("speaker_timeline") or []
-        named_segments = map_speakers_to_names(transcription.segments, speaker_timeline)
+        named_segments = map_speakers_to_names(
+            transcription.segments,
+            speaker_timeline,
+            participants_observed=participants_observed,
+            bot_display_name=self.settings.bot_display_name,
+        )
         transcription = TranscriptionResult(
             source=transcription.source,
             segments=named_segments,

@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx
 
+from meeting_capture.bot import is_noise_participant_name, sanitize_participant_name
 from meeting_capture.config import CaptureSettings
 
 
@@ -272,33 +273,104 @@ def parse_speechkit_segments(payload: Any) -> list[dict[str, Any]]:
     return sorted(segments, key=lambda item: (item["start_ms"], item["end_ms"]))
 
 
-def deduplicate_mirror_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop diarization duplicates: same time window and text on multiple speakers.
+def _normalize_segment_text(text: str) -> str:
+    return " ".join(text.split())
 
-    SpeechKit often mirrors one utterance onto SPEAKER_01 and SPEAKER_02 when the
-  recording is effectively mono (one remote mix). Keep a single segment per
-    (start_ms, end_ms, text), preferring the one that already has speaker_name.
+
+# Mono Telemost mixes often get the same phrase on SPEAKER_01 and SPEAKER_02 with
+# slightly different SpeechKit time bounds — collapse those mirrors.
+_MIRROR_START_TOLERANCE_MS = 2_000
+
+
+def deduplicate_mirror_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop diarization mirror duplicates on mono recordings.
+
+    SpeechKit frequently emits the same utterance twice under different speaker
+    labels. Mirrors share the same words but may differ in ``end_ms`` or by a
+    few hundred ms at ``start_ms``. Keep one segment per near-duplicate cluster.
     """
-    seen: dict[tuple[int, int, str], dict[str, Any]] = {}
-    order: list[tuple[int, int, str]] = []
+    prepared: list[dict[str, Any]] = []
     for seg in segments:
-        text = str(seg.get("text") or "").strip()
+        text = _normalize_segment_text(str(seg.get("text") or ""))
         if not text:
             continue
-        key = (int(seg.get("start_ms") or 0), int(seg.get("end_ms") or 0), text)
-        if key not in seen:
-            seen[key] = seg
-            order.append(key)
+        prepared.append({**seg, "text": text})
+
+    prepared.sort(
+        key=lambda item: (
+            int(item.get("start_ms") or 0),
+            str(item.get("speaker_label") or ""),
+        )
+    )
+
+    kept: list[dict[str, Any]] = []
+    for seg in prepared:
+        start = int(seg.get("start_ms") or 0)
+        text = seg["text"]
+        replace_idx: int | None = None
+        for idx, existing in enumerate(kept):
+            if existing["text"] != text:
+                continue
+            estart = int(existing.get("start_ms") or 0)
+            if abs(start - estart) > _MIRROR_START_TOLERANCE_MS:
+                continue
+            # Same phrase near the same time — mirror duplicate.
+            if not existing.get("speaker_name") and seg.get("speaker_name"):
+                replace_idx = idx
+            else:
+                replace_idx = -1  # drop seg
+            break
+        if replace_idx is None:
+            kept.append(seg)
+        elif replace_idx >= 0:
+            kept[replace_idx] = seg
+    return kept
+
+
+def _clean_participant_roster(
+    participants_observed: list[dict[str, Any]] | None,
+    *,
+    bot_display_name: str = "",
+) -> list[str]:
+    roster: list[str] = []
+    seen: set[str] = set()
+    for item in participants_observed or []:
+        name = sanitize_participant_name(str(item.get("display_name") or ""))
+        key = name.casefold()
+        if not name or key in seen:
             continue
-        existing = seen[key]
-        if not existing.get("speaker_name") and seg.get("speaker_name"):
-            seen[key] = seg
-    return [seen[key] for key in order]
+        if is_noise_participant_name(name, bot_display_name=bot_display_name):
+            continue
+        seen.add(key)
+        roster.append(name)
+    return roster
+
+
+def _map_speakers_from_roster(
+    segments: list[dict[str, Any]],
+    roster: list[str],
+) -> list[dict[str, Any]]:
+    """Fallback when DOM timeline is empty: map labels to roster by speech order."""
+    labels_order: list[str] = []
+    for seg in sorted(segments, key=lambda item: int(item.get("start_ms") or 0)):
+        label = str(seg.get("speaker_label") or "")
+        if label and label not in labels_order:
+            labels_order.append(label)
+    if not labels_order or len(labels_order) != len(roster):
+        return [{**seg, "speaker_name": None} for seg in segments]
+    mapping = dict(zip(labels_order, roster, strict=True))
+    return [
+        {**seg, "speaker_name": mapping.get(str(seg.get("speaker_label") or ""))}
+        for seg in segments
+    ]
 
 
 def map_speakers_to_names(
     segments: list[dict[str, Any]],
     speaker_timeline: list[dict[str, Any]],
+    *,
+    participants_observed: list[dict[str, Any]] | None = None,
+    bot_display_name: str = "",
 ) -> list[dict[str, Any]]:
     """Attach a human ``speaker_name`` to each diarized segment.
 
@@ -318,6 +390,12 @@ def map_speakers_to_names(
     if not segments:
         return segments
     if not speaker_timeline:
+        roster = _clean_participant_roster(
+            participants_observed,
+            bot_display_name=bot_display_name,
+        )
+        if roster:
+            return _map_speakers_from_roster(segments, roster)
         return [{**seg, "speaker_name": None} for seg in segments]
 
     # Tally overlap(label -> name -> ms) across all segments.
