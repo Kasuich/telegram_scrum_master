@@ -1,4 +1,18 @@
-from pm_orchestrator.agents.pm_agent import PROMPT
+from pm_orchestrator.agents.pm_agent import PROMPT, PMAgent
+
+
+def test_pm_agent_exposes_epic_and_sprint_lifecycle_tools():
+    expected = {
+        "tracker_create_epic",
+        "tracker_open_epic",
+        "tracker_close_epic",
+        "tracker_create_sprint",
+        "tracker_open_sprint",
+        "tracker_close_sprint",
+        "tracker_rollover_sprint",
+        "tracker_add_issues_to_sprint",
+    }
+    assert expected <= set(PMAgent.tools)
 
 
 def test_prompt_describes_react_harness_and_observation_semantics():

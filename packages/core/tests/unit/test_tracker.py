@@ -6,11 +6,17 @@ All HTTP calls are mocked — no real Tracker access needed.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from core.invocation import (
+    InvocationContext,
+    reset_current_invocation_context,
+    set_current_invocation_context,
+)
 from core.tracker import TrackerClient, TrackerError
 
 ENV = {
@@ -76,6 +82,22 @@ def _patch_request(return_value: Any = None, side_effect: Any = None):
     if side_effect is not None:
         return patch("httpx.AsyncClient.request", AsyncMock(side_effect=side_effect))
     return patch("httpx.AsyncClient.request", AsyncMock(return_value=return_value))
+
+
+@contextmanager
+def _actor(role: str, *, board_id: str = "3"):
+    token = set_current_invocation_context(
+        InvocationContext(
+            channel="telegram",
+            actor_role=role,
+            actor_default_board_id=board_id,
+            actor_settings={"default_board_name": "Testing"},
+        )
+    )
+    try:
+        yield
+    finally:
+        reset_current_invocation_context(token)
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +287,26 @@ class TestCreateSprint:
         assert url.endswith("/boards/3/sprints")
         assert result[0]["id"] == 44
 
+    async def test_patches_sprint(self):
+        c = _client()
+        with _patch_request(_ok({**SPRINT_RESPONSE, "archived": True})) as mock_req:
+            result = await c.patch_sprint("44", {"archived": True})
+        method, url = mock_req.call_args[0]
+        assert method == "PATCH"
+        assert url.endswith("/sprints/44")
+        assert mock_req.call_args[1]["json"] == {"archived": True}
+        assert result["archived"] is True
+
+    async def test_open_and_close_sprint_patch_archived(self):
+        c = _client()
+        with _patch_request(
+            side_effect=[_ok(SPRINT_RESPONSE), _ok({**SPRINT_RESPONSE, "archived": True})]
+        ) as mock_req:
+            await c.open_sprint("44")
+            await c.close_sprint("44")
+        assert mock_req.call_args_list[0][1]["json"] == {"archived": False}
+        assert mock_req.call_args_list[1][1]["json"] == {"archived": True}
+
     async def test_add_issue_to_sprint_preserves_existing(self):
         c = _client()
         issue_with_sprint = {**ISSUE_RESPONSE, "sprint": [{"id": "11", "display": "Old"}]}
@@ -280,6 +322,21 @@ class TestCreateSprint:
             await c.add_issue_to_sprint("TEST-1", "44", preserve_existing=False)
         body = mock_req.call_args[1]["json"]
         assert body == {"sprint": [{"id": "44"}]}
+
+    async def test_move_issue_to_sprint_replaces_only_old_sprint(self):
+        c = _client()
+        issue = {
+            **ISSUE_RESPONSE,
+            "sprint": [
+                {"id": "11", "display": "Old"},
+                {"id": "22", "display": "Other"},
+            ],
+        }
+        with _patch_request(side_effect=[_ok(issue), _ok(ISSUE_RESPONSE)]) as mock_req:
+            result = await c.move_issue_to_sprint("TEST-1", "11", "44")
+        body = mock_req.call_args_list[1][1]["json"]
+        assert body == {"sprint": [{"id": "22"}, {"id": "44"}]}
+        assert result["key"] == "TEST-1"
 
 
 class TestSearchIssues:
@@ -504,12 +561,13 @@ class TestTrackerTools:
             "core.tracker.TrackerClient.create_sprint",
             AsyncMock(return_value=SPRINT_RESPONSE),
         ) as mock_create:
-            result = await tracker_create_sprint(
-                "Sprint 1",
-                board_id="3",
-                start_date="2026-06-10",
-                end_date="2026-06-24",
-            )
+            with _actor("lead"):
+                result = await tracker_create_sprint(
+                    "Sprint 1",
+                    board_id="3",
+                    start_date="2026-06-10",
+                    end_date="2026-06-24",
+                )
 
         mock_create.assert_awaited_once_with(
             name="Sprint 1",
@@ -531,12 +589,13 @@ class TestTrackerTools:
             client.list_boards.return_value = [BOARD_RESPONSE]
             client.create_sprint.return_value = SPRINT_RESPONSE
 
-            result = await tracker_create_sprint(
-                "Sprint 1",
-                board_name="Testing",
-                start_date="2026-06-10",
-                end_date="2026-06-24",
-            )
+            with _actor("lead"):
+                result = await tracker_create_sprint(
+                    "Sprint 1",
+                    board_name="Testing",
+                    start_date="2026-06-10",
+                    end_date="2026-06-24",
+                )
 
         client.create_sprint.assert_awaited_once_with(
             name="Sprint 1",
@@ -572,6 +631,151 @@ class TestTrackerTools:
         assert result["error_count"] == 0
         client.add_issue_to_sprint.assert_any_await("TEST-1", "44", preserve_existing=True)
         client.add_issue_to_sprint.assert_any_await("TEST-2", "44", preserve_existing=True)
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_create_sprint_requires_lead_or_admin(self):
+        from core.tracker_tools import tracker_create_sprint
+
+        with _actor("user"):
+            result = await tracker_create_sprint(
+                "Sprint 1",
+                board_id="3",
+                start_date="2026-06-10",
+                end_date="2026-06-24",
+            )
+
+        assert result["error"] == "Sprint creation is allowed only for team lead/admin"
+        assert result["actor_role"] == "user"
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_create_sprint_uses_default_board_from_context(self):
+        from core.tracker_tools import tracker_create_sprint
+
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.create_sprint.return_value = SPRINT_RESPONSE
+
+            with _actor("admin", board_id="3"):
+                result = await tracker_create_sprint(
+                    "Sprint 1",
+                    start_date="2026-06-10",
+                    end_date="2026-06-24",
+                )
+
+        client.create_sprint.assert_awaited_once_with(
+            name="Sprint 1",
+            board_id="3",
+            start_date="2026-06-10",
+            end_date="2026-06-24",
+        )
+        assert result["board_id"] == "3"
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_create_issue_blocks_epic_for_user(self):
+        from core.tracker_tools import tracker_create_issue
+
+        with _actor("user"):
+            result = await tracker_create_issue("Epic title", issue_type="epic")
+
+        assert result["error"] == "Epic creation is allowed only for team lead/admin"
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_create_epic_wraps_create_issue(self):
+        from core.tracker_tools import tracker_create_epic
+
+        with patch(
+            "core.tracker_tools.tracker_create_issue",
+            AsyncMock(return_value=ISSUE_RESPONSE),
+        ) as mock_create:
+            with _actor("lead"):
+                result = await tracker_create_epic("Epic title", description="Scope")
+
+        mock_create.assert_awaited_once()
+        assert mock_create.call_args.kwargs["issue_type"] == "epic"
+        assert result["key"] == "TEST-1"
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_open_and_close_sprint_tools(self):
+        from core.tracker_tools import tracker_close_sprint, tracker_open_sprint
+
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.open_sprint.return_value = SPRINT_RESPONSE
+            client.close_sprint.return_value = {**SPRINT_RESPONSE, "archived": True}
+
+            with _actor("lead"):
+                opened = await tracker_open_sprint(sprint_id="44")
+                closed = await tracker_close_sprint(sprint_id="44")
+
+        client.open_sprint.assert_awaited_once_with("44")
+        client.close_sprint.assert_awaited_once_with("44")
+        assert opened["opened"] is True
+        assert closed["closed"] is True
+        assert closed["archived"] is True
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_rollover_sprint_moves_non_closed_without_transitions(self):
+        from core.tracker_tools import tracker_rollover_sprint
+
+        old_sprint = {
+            **SPRINT_RESPONSE,
+            "id": 44,
+            "name": "Sprint 9",
+            "startDate": "2026-06-01",
+            "endDate": "2026-06-14",
+        }
+        new_sprint = {
+            **SPRINT_RESPONSE,
+            "id": 45,
+            "name": "Sprint 10",
+            "startDate": "2026-06-15",
+            "endDate": "2026-06-28",
+        }
+        open_issue = {
+            **ISSUE_RESPONSE,
+            "key": "TEST-1",
+            "status": {"key": "open", "display": "Open"},
+            "sprint": [{"id": "44"}],
+        }
+        cancelled_issue = {
+            **ISSUE_RESPONSE,
+            "key": "TEST-2",
+            "status": {"key": "cancelled", "display": "Cancelled"},
+            "sprint": [{"id": "44"}],
+        }
+        closed_issue = {
+            **ISSUE_RESPONSE,
+            "key": "TEST-3",
+            "status": {"key": "closed", "display": "Closed"},
+            "sprint": [{"id": "44"}],
+        }
+
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.get_sprint.return_value = old_sprint
+            client.create_sprint.return_value = new_sprint
+            client.search_all_issues.return_value = [open_issue, cancelled_issue, closed_issue]
+            client.move_issue_to_sprint.side_effect = [open_issue, cancelled_issue]
+            client.close_sprint.return_value = {**old_sprint, "archived": True}
+
+            with _actor("lead"):
+                result = await tracker_rollover_sprint(sprint_id="44", board_id="3")
+
+        client.create_sprint.assert_awaited_once_with(
+            name="Sprint 10",
+            board_id="3",
+            start_date="2026-06-15",
+            end_date="2026-06-28",
+        )
+        client.move_issue_to_sprint.assert_any_await("TEST-1", "44", "45")
+        client.move_issue_to_sprint.assert_any_await("TEST-2", "44", "45")
+        assert client.move_issue_to_sprint.await_count == 2
+        client.transition_issue.assert_not_called()
+        assert result["moved_count"] == 2
+        assert result["statuses_preserved"] is True
 
     @patch.dict("os.environ", ENV)
     async def test_tracker_search_tool(self):

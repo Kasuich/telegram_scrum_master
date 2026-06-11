@@ -17,8 +17,8 @@ from core import (
     bot,
     config,
     daily_digest,
-    deadline_reminders,
     db,
+    deadline_reminders,
     effective_config,
     entry_point,
     exceptions,
@@ -57,15 +57,6 @@ from core.config import (
     reload_config,
     set_config,
 )
-from core.deadline_reminders import (
-    DEADLINE_REMINDER_CATEGORY,
-    DEADLINE_REMINDER_JOB_NAME,
-    DEADLINE_REMINDER_PAYLOAD_TYPE,
-    DeadlineIssue,
-    ReminderRecipient,
-    ensure_deadline_reminder_scheduled_job,
-    send_team_deadline_reminders,
-)
 from core.daily_digest import (
     DAILY_DIGEST_JOB_NAME,
     DAILY_DIGEST_PAYLOAD_TYPE,
@@ -84,6 +75,15 @@ from core.db import (
     get_session_factory,
     health_check,
     reset_engine,
+)
+from core.deadline_reminders import (
+    DEADLINE_REMINDER_CATEGORY,
+    DEADLINE_REMINDER_JOB_NAME,
+    DEADLINE_REMINDER_PAYLOAD_TYPE,
+    DeadlineIssue,
+    ReminderRecipient,
+    ensure_deadline_reminder_scheduled_job,
+    send_team_deadline_reminders,
 )
 from core.effective_config import EffectiveAgentConfig, build_effective_config
 from core.entry_point import EntryPoint
@@ -207,9 +207,12 @@ from core.tools import (
 from core.tracker import TrackerClient, TrackerError
 from core.tracker_tools import (
     tracker_add_issues_to_sprint,
+    tracker_close_epic,
     tracker_close_issue,
     tracker_close_issues,
+    tracker_close_sprint,
     tracker_comment_issue,
+    tracker_create_epic,
     tracker_create_issue,
     tracker_create_sprint,
     tracker_find_issues,
@@ -218,7 +221,10 @@ from core.tracker_tools import (
     tracker_link_issues,
     tracker_list_transitions,
     tracker_move_issues_to_in_progress,
+    tracker_open_epic,
+    tracker_open_sprint,
     tracker_patch_issue,
+    tracker_rollover_sprint,
     tracker_search_issues,
     tracker_transition_issue,
     tracker_update_followers,
@@ -263,8 +269,14 @@ __all__ = [
     "tracker_get_issue",
     "tracker_search_issues",
     "tracker_list_transitions",
+    "tracker_create_epic",
     "tracker_create_issue",
     "tracker_create_sprint",
+    "tracker_open_epic",
+    "tracker_close_epic",
+    "tracker_open_sprint",
+    "tracker_close_sprint",
+    "tracker_rollover_sprint",
     "tracker_add_issues_to_sprint",
     "tracker_patch_issue",
     "tracker_update_issue",

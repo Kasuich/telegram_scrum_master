@@ -11,6 +11,7 @@ import httpx
 
 from core.config import get_config
 from core.exceptions import CoreError
+from core.invocation import get_current_invocation_context
 from core.tools import Tool, get_registry
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,8 @@ _READ_TOOLS = {
     "SearchEntities",
     "WaitForBulkChange",
 }
+
+_LEAD_ADMIN_ROLES = {"lead", "admin"}
 
 
 class TrackerMCPClient:
@@ -350,6 +353,20 @@ def _content_text(result: dict[str, Any]) -> str:
 def _normalize_tool_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(arguments)
     if name == "CreateIssue":
+        issue_type = str(
+            normalized.get("issue_type")
+            or normalized.get("type")
+            or normalized.get("issuetype")
+            or normalized.get("issueType")
+            or ""
+        ).strip().lower()
+        if issue_type == "epic":
+            ctx = get_current_invocation_context()
+            role = (ctx.actor_role if ctx else None) or ""
+            if role.strip().lower() not in _LEAD_ADMIN_ROLES:
+                raise TrackerMCPError(
+                    "Epic creation is allowed only for team lead/admin"
+                )
         queue = get_config().tracker.tracker_queue.strip()
         if queue:
             normalized["queue"] = queue

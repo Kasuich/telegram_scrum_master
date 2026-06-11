@@ -159,6 +159,12 @@ def test_intake_allows_and_terminates_on_create_sprint():
     assert stage.is_terminal([_result("tracker_create_sprint", {"id": 44})])
 
 
+def test_intake_allows_create_epic_and_terminates_on_key():
+    stage = STAGES[StageId.INTAKE]
+    assert stage.check_tool("tracker_create_epic", {"summary": "Epic"}, []).allow
+    assert stage.is_terminal([_result("tracker_create_epic", {"key": "T-1"})])
+
+
 # ---------------------------------------------------------------------------
 # TRANSITION stage
 # ---------------------------------------------------------------------------
@@ -170,6 +176,11 @@ def test_transition_allows_transition_blocks_create():
     assert stage.check_tool("tracker_move_issues_to_in_progress", {"issue_keys": "T-1"}, []).allow
     assert stage.check_tool("tracker_close_issue", {"issue_key": "T-1"}, []).allow
     assert stage.check_tool("tracker_close_issues", {"issue_keys": "T-1,T-2"}, []).allow
+    assert stage.check_tool("tracker_open_epic", {"issue_key": "T-1"}, []).allow
+    assert stage.check_tool("tracker_close_epic", {"issue_key": "T-1"}, []).allow
+    assert stage.check_tool("tracker_open_sprint", {"sprint_id": "44"}, []).allow
+    assert stage.check_tool("tracker_close_sprint", {"sprint_id": "44"}, []).allow
+    assert stage.check_tool("tracker_rollover_sprint", {"sprint_id": "44"}, []).allow
     assert not stage.check_tool("tracker_create_issue", {"summary": "x"}, []).allow
 
 
@@ -179,6 +190,8 @@ def test_transition_terminal():
     assert stage.is_terminal([_result("tracker_close_issues", {"closed_count": 2})])
     assert stage.is_terminal([_result("tracker_transition_issue", {"issue_key": "T-1"})])
     assert stage.is_terminal([_result("tracker_move_issues_to_in_progress", {"updated_count": 1})])
+    assert stage.is_terminal([_result("tracker_close_sprint", {"id": 44})])
+    assert stage.is_terminal([_result("tracker_rollover_sprint", {"moved_count": 1})])
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +234,7 @@ def test_reorg_allows_add_issues_to_sprint():
         {"issue_keys": "T-1,T-2", "sprint_name": "Sprint 1", "board_name": "Board"},
         [],
     ).allow
+    assert stage.check_tool("tracker_rollover_sprint", {"sprint_id": "44"}, []).allow
 
 
 def test_proactive_allows_comment_and_snapshot():

@@ -107,8 +107,8 @@ class OrchestratorService:
             return
         try:
             from core.daily_digest import ensure_daily_digest_scheduled_job
-            from core.deadline_reminders import ensure_deadline_reminder_scheduled_job
             from core.db import create_all_tables, get_session
+            from core.deadline_reminders import ensure_deadline_reminder_scheduled_job
             from core.seed import (
                 ensure_agent_instances,
                 ensure_default_agent_models,

@@ -171,7 +171,7 @@ def created_issue_keys_in_turn(steps: list[dict[str, Any]], since_index: int) ->
             continue
         tool_name = step.get("tool_name")
         result = step.get("result") or {}
-        if tool_name in ("tracker_create_issue", "CreateIssue"):
+        if tool_name in ("tracker_create_issue", "tracker_create_epic", "CreateIssue"):
             key = result.get("key") or result.get("issue_key")
             if key:
                 keys.append(str(key))

@@ -7,6 +7,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from core.backlog_tools import tracker_apply_backlog_plan
+from core.invocation import (
+    InvocationContext,
+    reset_current_invocation_context,
+    set_current_invocation_context,
+)
 
 SAMPLE_PLAN = {
     "create_epic": True,
@@ -41,6 +46,17 @@ SAMPLE_PLAN = {
         }
     ],
 }
+
+
+@pytest.fixture(autouse=True)
+def lead_invocation_context():
+    token = set_current_invocation_context(
+        InvocationContext(channel="telegram", actor_role="lead")
+    )
+    try:
+        yield
+    finally:
+        reset_current_invocation_context(token)
 
 
 @pytest.mark.asyncio
