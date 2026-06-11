@@ -13,6 +13,7 @@ from core.config import get_config
 from core.exceptions import CoreError
 from core.invocation import get_current_invocation_context
 from core.tools import Tool, get_registry
+from core.tracker import TrackerClient, TrackerError
 
 logger = logging.getLogger(__name__)
 
@@ -391,6 +392,40 @@ def _normalize_tool_arguments(name: str, arguments: dict[str, Any]) -> dict[str,
     return normalized
 
 
+async def _change_issue_status_via_tracker(kwargs: dict[str, Any]) -> Any:
+    """Resolve workflow transition locally (status key or transition id)."""
+    arguments = _normalize_tool_arguments("ChangeIssueStatus", kwargs)
+    issue_key = str(
+        arguments.get("issue_key") or arguments.get("key") or arguments.get("id") or ""
+    ).strip()
+    if not issue_key:
+        raise TrackerMCPError("issue_key is required for ChangeIssueStatus")
+    transition = str(
+        arguments.get("status")
+        or arguments.get("transition")
+        or arguments.get("transition_id")
+        or ""
+    ).strip()
+    if not transition:
+        raise TrackerMCPError("status is required for ChangeIssueStatus")
+    resolution = arguments.get("resolution")
+    comment = arguments.get("comment")
+    if resolution is not None:
+        resolution = str(resolution).strip() or None
+    if comment is not None:
+        comment = str(comment).strip() or None
+    try:
+        async with TrackerClient() as client:
+            return await client.transition_issue(
+                issue_key,
+                transition,
+                resolution=resolution,
+                comment=comment,
+            )
+    except TrackerError as exc:
+        raise TrackerMCPError(str(exc)) from exc
+
+
 async def register_tracker_mcp_tools() -> list[str]:
     """Discover remote Tracker tools and register local proxy Tool objects."""
     cfg = get_config().tracker_mcp
@@ -408,6 +443,8 @@ async def register_tracker_mcp_tools() -> list[str]:
             continue
 
         async def invoke(_tool_name: str = name, **kwargs: Any) -> Any:
+            if _tool_name == "ChangeIssueStatus":
+                return await _change_issue_status_via_tracker(kwargs)
             arguments = _normalize_tool_arguments(_tool_name, kwargs)
             return await TrackerMCPClient().call_tool(_tool_name, arguments)
 
