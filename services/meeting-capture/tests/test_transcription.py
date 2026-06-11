@@ -109,6 +109,26 @@ def test_map_speakers_empty_timeline_sets_none() -> None:
     assert result[0]["speaker_label"] == "SPEAKER_00"
 
 
+def test_map_speakers_roster_fallback_when_timeline_empty() -> None:
+    segments = [
+        {"start_ms": 0, "end_ms": 1000, "speaker_label": "SPEAKER_01", "text": "привет"},
+        {"start_ms": 1000, "end_ms": 2000, "speaker_label": "SPEAKER_02", "text": "ага"},
+    ]
+    roster = [
+        {"display_name": "Коля", "source": "telemost_ui"},
+        {"display_name": "Рома", "source": "telemost_ui"},
+        {"display_name": "Поддержка", "source": "telemost_ui"},
+    ]
+    result = map_speakers_to_names(
+        segments,
+        [],
+        participants_observed=roster,
+        bot_display_name="PM Assistant (recording)",
+    )
+    assert result[0]["speaker_name"] == "Коля"
+    assert result[1]["speaker_name"] == "Рома"
+
+
 def test_deduplicate_mirror_segments_collapses_speaker_doubles() -> None:
     segments = [
         {"start_ms": 16850, "end_ms": 17350, "speaker_label": "SPEAKER_01", "text": "Привет"},
@@ -129,6 +149,38 @@ def test_deduplicate_mirror_segments_collapses_speaker_doubles() -> None:
     result = deduplicate_mirror_segments(segments)
     assert len(result) == 2
     assert {seg["text"] for seg in result} == {"Привет", "Мы сегодня планируем"}
+
+
+def test_deduplicate_mirror_segments_ignores_end_ms_and_near_start() -> None:
+    """SpeechKit mirrors often differ in end_ms or start by a few hundred ms."""
+    segments = [
+        {"start_ms": 64000, "end_ms": 64200, "speaker_label": "SPEAKER_02", "text": "Ничего"},
+        {"start_ms": 64000, "end_ms": 64800, "speaker_label": "SPEAKER_01", "text": "Ничего"},
+        {
+            "start_ms": 162000,
+            "end_ms": 162500,
+            "speaker_label": "SPEAKER_02",
+            "text": "А что это много",
+        },
+        {
+            "start_ms": 162400,
+            "end_ms": 163000,
+            "speaker_label": "SPEAKER_01",
+            "text": "А что это много",
+        },
+    ]
+    result = deduplicate_mirror_segments(segments)
+    assert len(result) == 2
+    assert [seg["text"] for seg in result] == ["Ничего", "А что это много"]
+
+
+def test_deduplicate_mirror_segments_keeps_distinct_same_second_phrases() -> None:
+    segments = [
+        {"start_ms": 1000, "end_ms": 1500, "speaker_label": "SPEAKER_01", "text": "да"},
+        {"start_ms": 1200, "end_ms": 1700, "speaker_label": "SPEAKER_02", "text": "нет"},
+    ]
+    result = deduplicate_mirror_segments(segments)
+    assert len(result) == 2
 
 
 def test_map_speakers_no_overlap_sets_none() -> None:

@@ -10,7 +10,11 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from meeting_capture.bot import PlaywrightTelemostBot
+from meeting_capture.bot import (
+    PlaywrightTelemostBot,
+    is_noise_participant_name,
+    parse_speaking_aria_label,
+)
 from meeting_capture.config import CaptureSettings
 
 
@@ -54,6 +58,31 @@ def test_end_screen_patterns(body: str) -> None:
 
 def test_end_screen_negative() -> None:
     assert PlaywrightTelemostBot._looks_like_end_screen("Идёт обсуждение бюджета") is False
+
+
+@pytest.mark.parametrize(
+    ("label", "expected"),
+    [
+        ("Коля, говорит", "Коля"),
+        ("Roman is speaking", "Roman"),
+        ("говорит: Алиса", "Алиса"),
+        ("Микрофон включен", None),
+    ],
+)
+def test_parse_speaking_aria_label(label: str, expected: str | None) -> None:
+    assert parse_speaking_aria_label(label) == expected
+
+
+def test_is_noise_participant_name_filters_ui_chrome() -> None:
+    assert is_noise_participant_name("Тарифы для бизнеса") is True
+    assert is_noise_participant_name("Николай") is False
+    assert (
+        is_noise_participant_name(
+            "PM Assistant (recording)",
+            bot_display_name="PM Assistant (recording)",
+        )
+        is True
+    )
 
 
 def test_left_call_url_detected() -> None:

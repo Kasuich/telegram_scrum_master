@@ -12,6 +12,52 @@ from meeting_capture.config import CaptureSettings
 
 logger = logging.getLogger(__name__)
 
+# UI chrome / menu lines that must not become speaker names.
+_NOISE_NAME_RE = re.compile(
+    r"(тариф|поддержк|вопрос|микрофон|камер|чат|запись|participant|участник|"
+    r"pm assistant|recording|продолжить|подключ|join|continue|browser|браузер|"
+    r"ваше имя|your name|screen|экран|настрой|settings|выйти|leave|"
+    r"^\d+$|^[+]\d)",
+    re.I,
+)
+_SPEAKING_ARIA_RES = (
+    re.compile(r"^(.+?)(?:,|\s)+(?:говорит|speaking|is speaking)\b", re.I),
+    re.compile(r"(?:говорит|speaking)[:\s]+(.+)$", re.I),
+    re.compile(r"^(.+?)\s+[—–-]\s+(?:говорит|speaking)\b", re.I),
+)
+
+
+def parse_speaking_aria_label(label: str) -> str | None:
+    """Extract a participant display name from a Telemost speaking aria-label."""
+    cleaned = " ".join((label or "").split())
+    if not cleaned:
+        return None
+    for pattern in _SPEAKING_ARIA_RES:
+        match = pattern.search(cleaned)
+        if match:
+            return sanitize_participant_name(match.group(1))
+    return None
+
+
+def sanitize_participant_name(name: str) -> str:
+    value = " ".join(name.split()).strip(" ,—–-")
+    value = re.sub(
+        r"\b(говорит|speaking|микрофон|microphone|камера|camera)\b",
+        "",
+        value,
+        flags=re.I,
+    )
+    return value.strip(" ,—–-")
+
+
+def is_noise_participant_name(name: str, *, bot_display_name: str = "") -> bool:
+    cleaned = sanitize_participant_name(name)
+    if not cleaned or len(cleaned) > 80:
+        return True
+    if bot_display_name and cleaned.casefold() == bot_display_name.casefold():
+        return True
+    return bool(_NOISE_NAME_RE.search(cleaned))
+
 
 @dataclass(frozen=True)
 class JoinResult:
@@ -197,6 +243,7 @@ class PlaywrightTelemostBot(TelemostBot):
         current_name: str | None = None
         current_start_ms = 0
         poll_sec = 1.0
+        await self._try_open_participants_panel()
         while not stop_event.is_set():
             if self._page is not None and self._page.is_closed():
                 break
@@ -220,21 +267,39 @@ class PlaywrightTelemostBot(TelemostBot):
             timeline.append(
                 {"start_ms": current_start_ms, "end_ms": end_ms, "display_name": current_name}
             )
+        if not timeline:
+            logger.warning(
+                "Active-speaker timeline is empty; transcript will keep SPEAKER_xx labels"
+            )
+        else:
+            logger.info("Collected %d active-speaker windows for name mapping", len(timeline))
         return timeline
 
     async def _active_speaker_name(self) -> str | None:
         """Best-effort: display name of the currently speaking participant.
 
-        Telemost marks the active tile (speaking ring / data attribute). Selectors
-        are tried in order; the first hit's accessible name is returned. Returns
-        None when nothing is detected (silence or unreadable DOM).
+        Telemost / Telemost 360 expose the active tile via aria-labels, CSS state,
+        or the participants side panel. Several strategies are tried each poll.
         """
         if self._page is None:
             return None
+        bot_name = self.settings.bot_display_name
+
+        for label in await self._collect_aria_labels():
+            name = parse_speaking_aria_label(label)
+            if name and not is_noise_participant_name(name, bot_display_name=bot_name):
+                return name
+
+        name = await self._active_speaker_from_panel()
+        if name:
+            return name
+
         selectors = [
             "[data-speaking='true']",
-            "[class*='speaking']",
-            "[class*='active-speaker']",
+            "[data-is-speaking='true']",
+            "[class*='speaking' i]",
+            "[class*='active-speaker' i]",
+            "[class*='Speaking']",
             "[aria-label*='говорит' i]",
             "[aria-label*='speaking' i]",
         ]
@@ -243,19 +308,68 @@ class PlaywrightTelemostBot(TelemostBot):
                 locator = self._page.locator(selector).first
                 if await locator.count() == 0:
                     continue
-                name = (
+                raw = (
                     await locator.get_attribute("aria-label")
                     or await locator.get_attribute("data-name")
+                    or await locator.get_attribute("title")
                     or (await locator.inner_text(timeout=1_000))
                 )
-                name = (name or "").strip()
-                name = re.sub(r"\b(говорит|speaking|микрофон|microphone)\b", "", name, flags=re.I)
-                name = name.strip()
-                if name and len(name) <= 80:
+                name = parse_speaking_aria_label(raw or "") or sanitize_participant_name(raw or "")
+                if name and not is_noise_participant_name(name, bot_display_name=bot_name):
                     return name
             except Exception:
                 continue
         return None
+
+    async def _try_open_participants_panel(self) -> None:
+        """Open the participants drawer so names / speaking state are readable."""
+        await self._click_first(
+            [
+                "button[aria-label*='Участники' i]",
+                "button[aria-label*='участник' i]",
+                "button[aria-label*='Participants' i]",
+                "button[aria-label*='participant' i]",
+                "[data-testid*='participant' i]",
+            ],
+            timeout_ms=1_500,
+        )
+
+    async def _active_speaker_from_panel(self) -> str | None:
+        if self._page is None:
+            return None
+        bot_name = self.settings.bot_display_name
+        row_selectors = [
+            "[role='listitem'][aria-label*='говорит' i]",
+            "[role='listitem'][aria-label*='speaking' i]",
+            "[class*='participant'][class*='speaking' i]",
+            "[class*='Participant'][class*='Speaking']",
+            "[class*='participants'] [class*='speaking' i]",
+        ]
+        for selector in row_selectors:
+            try:
+                locator = self._page.locator(selector).first
+                if await locator.count() == 0:
+                    continue
+                raw = await locator.get_attribute("aria-label") or await locator.inner_text(
+                    timeout=1_000
+                )
+                name = parse_speaking_aria_label(raw or "") or sanitize_participant_name(raw or "")
+                if name and not is_noise_participant_name(name, bot_display_name=bot_name):
+                    return name
+            except Exception:
+                continue
+        return None
+
+    async def _collect_aria_labels(self) -> list[str]:
+        if self._page is None:
+            return []
+        try:
+            labels = await self._page.locator("[aria-label]").evaluate_all(
+                "els => els.map(e => e.getAttribute('aria-label')).filter(Boolean)"
+            )
+        except Exception:
+            return []
+        return [str(label) for label in labels if label]
 
     async def close(self) -> None:
         for obj in (self._context, self._browser):
@@ -346,14 +460,42 @@ class PlaywrightTelemostBot(TelemostBot):
         return False
 
     async def _participants_best_effort(self) -> list[dict[str, Any]]:
-        body = await self._body_text()
+        await self._try_open_participants_panel()
         names: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        bot_name = self.settings.bot_display_name
+
+        if self._page is not None:
+            for selector in (
+                "[role='listitem'][aria-label]",
+                "[class*='participant' i][aria-label]",
+                "[class*='Participant' i][aria-label]",
+            ):
+                try:
+                    labels = await self._page.locator(selector).evaluate_all(
+                        "els => els.map(e => e.getAttribute('aria-label')).filter(Boolean)"
+                    )
+                except Exception:
+                    continue
+                for label in labels:
+                    name = sanitize_participant_name(str(label).split(",")[0])
+                    if not name or name.casefold() in seen:
+                        continue
+                    if is_noise_participant_name(name, bot_display_name=bot_name):
+                        continue
+                    seen.add(name.casefold())
+                    names.append({"display_name": name, "source": "telemost_ui"})
+                if names:
+                    return names[:30]
+
+        body = await self._body_text()
         for line in body.splitlines():
-            value = line.strip()
-            if not value or len(value) > 80:
+            value = sanitize_participant_name(line)
+            if not value or value.casefold() in seen:
                 continue
-            if re.search(r"(микрофон|камера|чат|запись|meeting|camera|microphone)", value, re.I):
+            if is_noise_participant_name(value, bot_display_name=bot_name):
                 continue
+            seen.add(value.casefold())
             names.append({"display_name": value, "source": "telemost_ui"})
         return names[:30]
 
@@ -435,4 +577,11 @@ class PlaywrightTelemostBot(TelemostBot):
         )
 
 
-__all__ = ["JoinResult", "PlaywrightTelemostBot", "TelemostBot"]
+__all__ = [
+    "JoinResult",
+    "PlaywrightTelemostBot",
+    "TelemostBot",
+    "is_noise_participant_name",
+    "parse_speaking_aria_label",
+    "sanitize_participant_name",
+]
