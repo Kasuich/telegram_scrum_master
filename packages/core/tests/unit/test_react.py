@@ -703,6 +703,26 @@ class TestActionOnlyReport:
         ]
         assert _build_action_report(steps) == "Задача не найдена"
 
+    def test_duplicate_found_create_reports_not_created(self):
+        from core.react import _build_action_report
+
+        steps = [
+            {
+                "kind": "tool_result",
+                "tool_name": "tracker_create_issue",
+                "result": {
+                    "key": "DARKHORSE-42",
+                    "summary": "Интеграция Telegram",
+                    "duplicate_found": True,
+                },
+            }
+        ]
+        assert (
+            _build_action_report(steps)
+            == "Найден дубликат задачи DARKHORSE-42 «Интеграция Telegram». "
+            "Новая карточка не создавалась"
+        )
+
     def test_comment_report_over_call_agent(self):
         from core.react import _build_action_report
 

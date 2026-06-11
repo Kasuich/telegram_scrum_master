@@ -353,6 +353,16 @@ def _format_action_tool_line(tool_name: str, result: dict[str, Any]) -> str:
         issues = result.get("issues") or []
         parts = [f"{i.get('key')} «{i.get('summary')}» ({i.get('status')})" for i in issues[:5]]
         return "Найдено: " + "; ".join(parts)
+    if tool_name == "tracker_create_issue" and (
+        result.get("duplicate_found") or result.get("merged_duplicate")
+    ):
+        key = result.get("key") or result.get("issue_key", "")
+        summary = result.get("summary", "")
+        line = f"Найден дубликат задачи {key} «{summary}». Новая карточка не создавалась"
+        applied = result.get("updates_applied") or []
+        if applied:
+            line += f". Обновлено: {', '.join(str(x) for x in applied)}"
+        return line
     if tool_name in ("tracker_create_issue", "tracker_patch_issue", "tracker_update_issue"):
         key = result.get("key") or result.get("issue_key", "")
         who = result.get("assignee", "")
@@ -675,6 +685,9 @@ def _build_action_report(steps: list[dict[str, Any]]) -> str:
     board = [ln for ln in lines if ln.startswith("Доска:")]
     if board:
         return board[-1]
+    merged = [ln for ln in lines if ln.startswith("Найден дубликат")]
+    if merged:
+        return merged[-1]
     created = [ln for ln in lines if ln.startswith("Создана")]
     if created:
         assumptions = _assumptions_line(steps)

@@ -460,6 +460,44 @@ def _build_merge_comment(
     return "\n\n".join(parts)
 
 
+def build_duplicate_found_response(
+    existing: dict[str, Any],
+    *,
+    duplicate_key: str,
+    dedup_reason: str = "",
+    planned_create: dict[str, Any] | None = None,
+    suggested_updates: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build tool result when a duplicate is found but create was skipped."""
+    out = issue_summary(existing, detailed=True)
+    out["duplicate_found"] = True
+    out["skipped_create"] = True
+    out["key"] = duplicate_key
+    if dedup_reason:
+        out["dedup_reason"] = dedup_reason
+    if planned_create:
+        out["planned_create"] = planned_create
+    if suggested_updates:
+        out["suggested_updates"] = suggested_updates
+    dup_summary = str(existing.get("summary") or "")
+    dup_status = (existing.get("status") or {}).get("display") or ""
+    out["duplicates"] = [
+        {
+            "key": duplicate_key,
+            "summary": dup_summary,
+            "status": dup_status,
+        }
+    ]
+    out["message"] = (
+        f"Найден дубликат {duplicate_key} «{dup_summary}». Новая карточка не создана. "
+        "Сравни planned_create с существующей задачей и реши: если нужно дополнить контекст "
+        "или поля — UpdateIssue / CreateComment / ChangeIssueStatus; если дубль полностью "
+        "покрывает запрос — сообщи пользователю; для явной второй копии — "
+        "tracker_create_issue с allow_duplicate=true."
+    )
+    return out
+
+
 async def apply_duplicate_merge(
     client: TrackerClient,
     duplicate_key: str,
@@ -592,6 +630,7 @@ __all__ = [
     "DedupResolution",
     "PlannedIssueForDedup",
     "apply_duplicate_merge",
+    "build_duplicate_found_response",
     "build_dedup_status_exclusions",
     "cancelled_status_names",
     "clear_dedup_cache",
