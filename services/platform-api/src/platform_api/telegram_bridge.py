@@ -485,21 +485,20 @@ async def _enqueue_thinking_status(
         logger.warning("Failed to enqueue thinking status: %s", exc)
 
 
-def _streaming_metadata(result: Any) -> dict[str, Any]:
-    """Flag a pm_agent conversational reply for the gateway's cosmetic
-    streaming (status line + mocked typing) and pass along the ordered stages
-    the agent actually visited. Shortcut replies (standup, telemost) carry no
-    ``steps`` and are left untouched."""
+def _streaming_metadata(result: Any, chat: TelegramChat) -> dict[str, Any]:
+    """Flag a pm_agent reply for native draft streaming in the gateway.
+
+    Native ``sendMessageDraft`` streaming only works in **private** chats (a
+    group target errors with ``TEXTDRAFT_PEER_INVALID``), so groups are left
+    unflagged and get a plain send. Shortcut replies (standup, telemost) carry
+    no ``steps`` and are left untouched. The early "thinking" status is enqueued
+    separately and shown in all chats regardless of this flag."""
+    if chat.type != "private":
+        return {}
     steps = getattr(result, "steps", None) or []
     if not steps:
         return {}
-    stages: list[str] = []
-    for step in steps:
-        if step.get("kind") == "stage":
-            stage = step.get("stage")
-            if stage and stage not in stages:
-                stages.append(str(stage))
-    return {"stream": True, "stages": stages}
+    return {"stream": True}
 
 
 async def _enqueue_agent_result(
@@ -548,7 +547,7 @@ async def _enqueue_agent_result(
         text = result.reply
         category = "agent_reply"
         dedupe_key = f"telegram:reply:{message.id}"
-        metadata = _streaming_metadata(result)
+        metadata = _streaming_metadata(result, chat)
     else:
         return None
 

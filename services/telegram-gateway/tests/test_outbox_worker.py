@@ -318,10 +318,14 @@ def _streaming_runtime(tmp_path: Path):
     )
     runtime.bot_client.edit_message_text = AsyncMock()  # type: ignore[method-assign]
     runtime.bot_client.delete_message = AsyncMock()  # type: ignore[method-assign]
+    runtime.bot_client.send_message_draft = AsyncMock()  # type: ignore[method-assign]
     return runtime
 
 
-def _reply_lease(text: str) -> LeaseResponse:
+def _reply_lease(text: str, *, stream: bool = True) -> LeaseResponse:
+    # stream=True models a private chat (gateway streams a draft); stream=False
+    # models a group reply (platform-api leaves it unflagged → plain send).
+    metadata = {"stream": True} if stream else {}
     return LeaseResponse(
         items=[
             LeaseItem(
@@ -335,7 +339,7 @@ def _reply_lease(text: str) -> LeaseResponse:
                     "method": "sendMessage",
                     "text": text,
                     "reply_to_message_id": "42",
-                    "metadata": {"stream": True, "stages": ["QUERY"]},
+                    "metadata": metadata,
                 },
                 business_connection_id=None,
                 lease_expires_at=datetime.now(tz=timezone.utc),
@@ -388,7 +392,7 @@ async def test_thinking_status_posted_and_tracked(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_streaming_reply_clears_status_then_reveals(tmp_path: Path) -> None:
+async def test_private_reply_clears_status_then_streams_draft(tmp_path: Path) -> None:
     runtime = _streaming_runtime(tmp_path)
 
     # 1. Early thinking status arrives first.
@@ -398,7 +402,7 @@ async def test_streaming_reply_clears_status_then_reveals(tmp_path: Path) -> Non
     await runtime.deliver_once()
     status_msg_id = runtime.status_messages["-100123"][0]
 
-    # 2. Reply arrives → status cleared, answer revealed via edits.
+    # 2. Private reply arrives → status cleared, answer streamed via draft.
     runtime.bridge.lease_outbox = AsyncMock(  # type: ignore[method-assign]
         return_value=_reply_lease("Нашла три задачи в очереди, держи список.")
     )
@@ -410,15 +414,42 @@ async def test_streaming_reply_clears_status_then_reveals(tmp_path: Path) -> Non
         chat_id="-100123", message_id=status_msg_id
     )
     assert "-100123" not in runtime.status_messages
-    # The answer grows via edits, last edit applies HTML formatting.
-    assert runtime.bot_client.edit_message_text.await_count >= 1
-    final_edit = runtime.bot_client.edit_message_text.await_args_list[-1]
-    assert final_edit.kwargs["parse_mode"] == "HTML"
-    # Acked as sent with the revealed message's provider id (not the status one).
-    assert (
-        runtime.bridge.ack_outbox.await_args.kwargs["provider_message_id"]
-        == final_edit.kwargs["message_id"]
+    # The answer streams as a native draft (animated dots), growing text.
+    assert runtime.bot_client.send_message_draft.await_count >= 1
+    draft_calls = runtime.bot_client.send_message_draft.await_args_list
+    draft_id = draft_calls[0].kwargs["draft_id"]
+    assert all(c.kwargs["draft_id"] == draft_id for c in draft_calls)  # one stream
+    assert len(draft_calls[-1].kwargs["text"]) >= len(draft_calls[0].kwargs["text"])
+    # The reply is committed with a real sendMessage carrying HTML.
+    final_send = runtime.bot_client.send_message.await_args_list[-1]
+    assert final_send.kwargs["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
+async def test_group_reply_clears_status_then_plain_send(tmp_path: Path) -> None:
+    runtime = _streaming_runtime(tmp_path)
+
+    # 1. Status appears in the group too.
+    runtime.bridge.lease_outbox = AsyncMock(  # type: ignore[method-assign]
+        return_value=_status_lease()
     )
+    await runtime.deliver_once()
+    status_msg_id = runtime.status_messages["-100123"][0]
+
+    # 2. Group reply (no stream flag) → status cleared, whole message sent plain.
+    runtime.bridge.lease_outbox = AsyncMock(  # type: ignore[method-assign]
+        return_value=_reply_lease("Нашла три задачи в очереди.", stream=False)
+    )
+    delivered = await runtime.deliver_once()
+
+    assert delivered == 1
+    runtime.bot_client.delete_message.assert_awaited_with(
+        chat_id="-100123", message_id=status_msg_id
+    )
+    # No draft streaming in a group; the answer is a single HTML send.
+    runtime.bot_client.send_message_draft.assert_not_called()
+    final_send = runtime.bot_client.send_message.await_args_list[-1]
+    assert final_send.kwargs["parse_mode"] == "HTML"
 
 
 @pytest.mark.asyncio
@@ -431,9 +462,9 @@ async def test_streaming_skipped_for_short_reply(tmp_path: Path) -> None:
     delivered = await runtime.deliver_once()
 
     assert delivered == 1
-    # Plain single send, no reveal edits.
+    # Plain single send, no draft streaming.
     runtime.bot_client.send_message.assert_awaited_once()
-    runtime.bot_client.edit_message_text.assert_not_called()
+    runtime.bot_client.send_message_draft.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -448,4 +479,4 @@ async def test_streaming_disabled_by_settings(tmp_path: Path) -> None:
 
     assert delivered == 1
     runtime.bot_client.send_message.assert_awaited_once()
-    runtime.bot_client.edit_message_text.assert_not_called()
+    runtime.bot_client.send_message_draft.assert_not_called()

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import random
 
+import pytest
 from telegram_gateway.streaming import (
-    CURSOR,
     FUN_PHRASES,
     STAGE_PHRASES,
     THINKING_SEQUENCE,
-    reveal_frames,
+    plan_pacing,
     status_html,
+    stream_output,
     thinking_html,
 )
 
@@ -44,26 +45,32 @@ def test_thinking_html_cycles_the_sequence() -> None:
     assert thinking_html(0, rng) == f"<i>{STAGE_PHRASES[THINKING_SEQUENCE[0]]}</i>"
 
 
-def test_reveal_frames_grow_prefixes_with_cursor() -> None:
-    text = "abcdefghij" * 3  # 30 chars
-    frames = reveal_frames(text, cps=6, interval=0.8, max_steps=10, max_duration=6)
-    assert frames
-    prev = 0
-    for frame in frames:
-        assert frame.endswith(CURSOR)
-        body = frame[: -len(CURSOR)]
-        assert text.startswith(body)
-        assert len(body) > prev
-        prev = len(body)
-    # Frames stop before the full text (final HTML is rendered by the caller).
-    assert prev < len(text)
+def test_plan_pacing_targets_cps() -> None:
+    chunk, delay = plan_pacing(30, cps=6, interval=0.8, max_steps=10, max_duration=6)
+    assert delay == 0.8
+    assert chunk == round(6 * 0.8)  # ~5 chars per draft update
 
 
-def test_reveal_frames_respect_max_duration() -> None:
-    text = "x" * 5000
-    frames = reveal_frames(text, cps=6, interval=0.8, max_steps=100, max_duration=6)
-    assert len(frames) <= int(6 / 0.8)
+def test_plan_pacing_caps_steps_by_duration() -> None:
+    chunk, delay = plan_pacing(5000, cps=6, interval=0.8, max_steps=100, max_duration=6)
+    steps = -(-5000 // chunk)  # ceil
+    assert steps <= int(6 / 0.8)
 
 
-def test_reveal_frames_empty_text() -> None:
-    assert reveal_frames("", cps=6, interval=0.8, max_steps=10, max_duration=6) == []
+def test_plan_pacing_empty() -> None:
+    assert plan_pacing(0, cps=6, interval=0.8, max_steps=10, max_duration=6) == (1, 0.8)
+
+
+@pytest.mark.asyncio
+async def test_stream_output_yields_full_text_in_chunks() -> None:
+    async def _noop(_: float) -> None:
+        return None
+
+    text = "Нашла три задачи в очереди"
+    chunks = [
+        chunk
+        async for chunk in stream_output(text, chunk_size=5, delay=0, sleep=_noop)
+    ]
+    assert "".join(chunks) == text
+    assert all(len(c) <= 5 for c in chunks)
+    assert len(chunks) == -(-len(text) // 5)  # ceil(len / 5)

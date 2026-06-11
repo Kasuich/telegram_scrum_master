@@ -18,7 +18,7 @@ from telegram_gateway.bridge import (
 from telegram_gateway.formatting import render_telegram_html
 from telegram_gateway.settings import GatewaySettings
 from telegram_gateway.spool import GatewaySpool
-from telegram_gateway.streaming import reveal_frames, thinking_html
+from telegram_gateway.streaming import plan_pacing, stream_output, thinking_html
 
 WEBHOOK_TOTAL = Counter("telegram_gateway_webhook_total", "Webhook requests received", ["status"])
 SPOOL_DEPTH = Gauge("telegram_gateway_spool_depth", "Queued inbound updates")
@@ -50,6 +50,13 @@ class GatewayRuntime:
     # chat_id → (status message_id, background animation task) for the early
     # "thinking" status, so the reply delivery can cancel + delete it.
     status_messages: dict[str, tuple[str, "asyncio.Task[None]"]] = field(default_factory=dict)
+    draft_seq: int = 0
+
+    def _next_draft_id(self) -> int:
+        """Unique int32 draft id per stream (stable across updates of one
+        stream, distinct between streams)."""
+        self.draft_seq = (self.draft_seq + 1) % 2_147_483_647
+        return self.draft_seq + 1
 
     def _now(self) -> datetime:
         return datetime.now(tz=timezone.utc)
@@ -237,10 +244,14 @@ class GatewayRuntime:
             if metadata.get("status"):
                 return await self._deliver_status(item)
             text = render_telegram_html(raw_text)
+            # Any real reply replaces the early "thinking" status (groups too).
+            chat_id = item.target_chat_id or item.target_user_id
+            await self._clear_status(str(chat_id))
+            # Private chats get native draft streaming; groups get a plain send.
             if self._should_stream(item, raw_text, text):
                 return await self._deliver_streaming_reply(item, raw_text, text)
             return await self.bot_client.send_message(
-                chat_id=item.target_chat_id or item.target_user_id,
+                chat_id=chat_id,
                 text=text,
                 reply_to_message_id=item.payload.get("reply_to_message_id"),
                 message_thread_id=item.payload.get("message_thread_id"),
@@ -262,14 +273,15 @@ class GatewayRuntime:
         return None
 
     def _should_stream(self, item: LeaseItem, raw_text: str, rendered: str) -> bool:
-        """Cosmetic streaming applies only to flagged pm_agent conversation
-        replies that fit a single Telegram message and are worth animating."""
+        """Native draft streaming applies only to replies platform-api flagged
+        as private-chat (``sendMessageDraft`` errors in groups) and worth
+        animating. Groups fall through to a plain send."""
         if not self.settings.stream_enabled or self.bot_client is None:
             return False
         metadata = item.payload.get("metadata") or {}
         if not metadata.get("stream"):
             return False
-        # No room for a typing effect on plain confirmations / buttons.
+        # No room for a draft preview on plain confirmations / buttons.
         if item.payload.get("reply_markup"):
             return False
         if len(raw_text) < self.settings.stream_min_chars:
@@ -348,19 +360,18 @@ class GatewayRuntime:
         raw_text: str,
         rendered: str,
     ) -> SendResult | None:
-        """Drop the thinking status → reveal the answer with a typing effect.
+        """Native draft streaming for a private chat, then commit the answer.
 
-        The reveal grows one message via repeated ``editMessageText`` (the
-        reliable, universally-supported mechanism) and a final edit applies the
-        HTML formatting. Any Bot API hiccup degrades to a plain final message.
+        The answer is streamed into a live draft bubble via ``sendMessageDraft``
+        (Telegram draws the animated dots natively); the draft is ephemeral, so a
+        real ``sendMessage`` with the HTML formatting follows to persist it. The
+        caller has already cleared the thinking status. Any Bot API hiccup — e.g.
+        the chat isn't actually private — degrades to a plain final send.
         """
         assert self.bot_client is not None
         chat_id = item.target_chat_id or item.target_user_id
         reply_to = item.payload.get("reply_to_message_id")
         thread_id = item.payload.get("message_thread_id")
-
-        # Remove the early "thinking" status before revealing the answer.
-        await self._clear_status(str(chat_id))
 
         async def _plain_send() -> SendResult:
             return await self.bot_client.send_message(
@@ -371,48 +382,30 @@ class GatewayRuntime:
                 parse_mode="HTML",
             )
 
-        frames = reveal_frames(
-            raw_text,
+        chunk_size, delay = plan_pacing(
+            len(raw_text),
             cps=self.settings.stream_cps,
             interval=self.settings.stream_interval,
             max_steps=self.settings.stream_max_steps,
             max_duration=self.settings.stream_max_duration,
         )
-        if not frames:
-            return await _plain_send()
-
+        draft_id = self._next_draft_id()
+        accumulated = ""
         try:
-            # Intermediate frames are plain text (no parse_mode) so partial
-            # Markdown never produces broken HTML mid-stream.
-            first = await self.bot_client.send_message(
-                chat_id=chat_id,
-                text=frames[0],
-                reply_to_message_id=reply_to,
-                message_thread_id=thread_id,
-            )
-            answer_message_id = first.message_id
-            for frame in frames[1:]:
-                await self.sleep(self.settings.stream_interval)
-                await self.bot_client.edit_message_text(
-                    chat_id=chat_id, message_id=answer_message_id, text=frame
+            async for chunk in stream_output(
+                raw_text, chunk_size=chunk_size, delay=delay, sleep=self.sleep
+            ):
+                accumulated += chunk
+                # Plain text draft — Telegram appends the animated dots itself.
+                await self.bot_client.send_message_draft(
+                    chat_id=chat_id, draft_id=draft_id, text=accumulated
                 )
-            await self.sleep(self.settings.stream_interval)
-            # Final edit applies the HTML formatting.
-            await self.bot_client.edit_message_text(
-                chat_id=chat_id,
-                message_id=answer_message_id,
-                text=rendered,
-                parse_mode="HTML",
-            )
-            return SendResult(
-                message_id=answer_message_id,
-                chat_id=str(chat_id),
-                text=rendered,
-                sent_at=self._now(),
-            )
         except BotAPIError:
-            # Mid-reveal failure — make sure the user still gets the answer.
-            return await _plain_send()
+            # Draft stream failed (e.g. group chat) — fall through and commit.
+            pass
+
+        # The draft is ephemeral; a real send is required to persist the reply.
+        return await _plain_send()
 
     async def _try_delete(self, chat_id: str | None, message_id: str) -> None:
         if self.bot_client is None:
