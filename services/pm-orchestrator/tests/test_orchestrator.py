@@ -186,6 +186,43 @@ class TestOrchestratorService:
             await svc.invoke("alpha", "hi", "s1")
         assert any(a["kind"] == "tool_call" for a in svc.actions)
 
+    async def test_actions_carry_gantt_label_and_state(self):
+        svc = self._svc(_make_agent("alpha"))
+        result = AgentResult(
+            reply="ok",
+            session_id="s1",
+            steps=[
+                {"kind": "stage", "stage": "BOARD", "ts": "2026-06-12T00:00:00+00:00"},
+                {
+                    "kind": "tool_call",
+                    "tool_name": "tracker_create_issue",
+                    "ts": "2026-06-12T00:00:01+00:00",
+                },
+                {
+                    "kind": "tool_result",
+                    "tool_name": "tracker_create_issue",
+                    "result": {"error": "boom"},
+                    "ts": "2026-06-12T00:00:03+00:00",
+                },
+                {"kind": "final", "content": "done", "ts": "2026-06-12T00:00:04+00:00"},
+            ],
+        )
+        with patch.object(svc._runners["alpha"], "invoke", AsyncMock(return_value=result)):
+            await svc.invoke("alpha", "create a task", "s1")
+
+        by_kind = {a["kind"]: a for a in svc.actions}
+        # Bar text (textField) and color bucket (colorByField) are present on every step.
+        assert all("label" in a and "state" in a for a in svc.actions)
+        assert by_kind["tool_call"]["label"] == "tracker_create_issue"
+        assert by_kind["tool_call"]["state"] == "call"
+        # A tool_result carrying an error must color as "error", not "ok".
+        assert by_kind["tool_result"]["state"] == "error"
+        assert by_kind["stage"]["state"] == "stage"
+        # Gantt start/end timestamps wired for the timeline.
+        assert by_kind["tool_call"]["end_ts"] == "2026-06-12T00:00:03+00:00"
+        # Source message captured on the first step for trace search.
+        assert by_kind["stage"]["trace_label"] == "create a task"
+
     async def test_invoke_blocked_when_agent_disabled(self):
         svc = self._svc(_make_agent("alpha"))
         svc._db_enabled = True

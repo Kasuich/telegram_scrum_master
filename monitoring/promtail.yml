@@ -35,6 +35,8 @@ scrape_configs:
             stage: stage
             kind: kind
             tool_name: tool_name
+            state: state
+            label: label
             ts: ts
             duration_s: duration_s
             offset_s: offset_s
@@ -47,6 +49,7 @@ scrape_configs:
           stage:
           kind:
           tool_name:
+          state:
       - timestamp:
           source: ts
           format: ISO8601

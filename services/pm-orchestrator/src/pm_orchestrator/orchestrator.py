@@ -387,6 +387,37 @@ class OrchestratorService:
             return "empty_string" if not result else "string"
         return "other"
 
+    @classmethod
+    def _step_state(cls, kind: str, step: dict[str, Any]) -> str:
+        """Normalized state for a step — drives Gantt bar color (colorByField)."""
+        if kind == "stage":
+            return "stage"
+        if kind == "tool_call":
+            return "call"
+        if kind == "tool_result":
+            return "error" if cls._result_kind(step.get("result")) == "error" else "ok"
+        if kind == "confirm_wait":
+            return "pending"
+        if kind == "confirm_rejected":
+            return "rejected"
+        if kind == "tool_error":
+            return "error"
+        if kind == "final":
+            return "final"
+        if kind == "clarification":
+            return "clarification"
+        return kind or "unknown"
+
+    @staticmethod
+    def _step_label(kind: str, step: dict[str, Any]) -> str:
+        """Short human label for a Gantt bar (textField)."""
+        tool_name = str(step.get("tool_name") or "").strip()
+        if tool_name:
+            return tool_name
+        if kind == "stage":
+            return f"stage:{step.get('stage') or '?'}"
+        return kind or "step"
+
     @staticmethod
     def _event_json(event: dict[str, Any]) -> str:
         payload = json.dumps(event, ensure_ascii=False, default=str, separators=(",", ":"))
@@ -400,7 +431,10 @@ class OrchestratorService:
                 "stage": event.get("stage"),
                 "kind": event.get("kind"),
                 "tool_name": event.get("tool_name"),
+                "label": event.get("label"),
+                "state": event.get("state"),
                 "step_idx": event.get("step_idx"),
+                "ts": event.get("ts"),
                 "duration_s": event.get("duration_s"),
                 "offset_s": event.get("offset_s"),
                 "end_ts": event.get("end_ts"),
@@ -552,6 +586,8 @@ class OrchestratorService:
                     "stage": stage,
                     "step_idx": step_idx,
                     **step,
+                    "label": self._step_label(kind, step),
+                    "state": self._step_state(kind, step),
                 }
                 if step_idx == 0 and trace_label:
                     event["trace_label"] = trace_label
