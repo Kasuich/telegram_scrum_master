@@ -21,6 +21,21 @@ def test_console_api_routes_are_registered() -> None:
     assert ("/auth/code/verify", "POST") in routes
     assert ("/auth/logout", "POST") in routes
     assert ("/auth/me", "GET") in routes
+    assert ("/me/profile", "GET") in routes
+    assert ("/me/profile", "PATCH") in routes
+    assert ("/users/{user_id}/profile", "GET") in routes
+    assert ("/me/avatar", "POST") in routes
+    assert ("/users/{user_id}/avatar", "GET") in routes
+    assert ("/me/board", "GET") in routes
+    assert ("/me/stats", "GET") in routes
+    assert ("/me/pet", "GET") in routes
+    assert ("/scheduled-jobs", "GET") in routes
+    assert ("/scheduled-jobs/{job_id}", "PATCH") in routes
+    assert ("/teams/{team_id}/members", "GET") in routes
+    assert ("/teams/{team_id}/health", "GET") in routes
+    assert ("/agents/{name}/tools", "GET") in routes
+    assert ("/agents/{name}/tools", "PATCH") in routes
+    assert ("/users", "GET") in routes
     assert ("/agents", "GET") in routes
     assert ("/agents/{name}/config", "GET") in routes
     assert ("/agents/{name}/spec", "PATCH") in routes

@@ -105,6 +105,10 @@ async def _list_agents(params: dict) -> list:
     return _svc.list_agents()
 
 
+async def _agent_tools(params: dict) -> list:
+    return _svc.agent_tools(params["agent"])
+
+
 async def _invoke(params: dict) -> dict:
     agent = params.get("agent", "pm_agent")
     message = params["message"]
@@ -132,6 +136,7 @@ async def _get_actions(params: dict) -> list:
 
 _METHODS = {
     "list_agents": _list_agents,
+    "agent_tools": _agent_tools,
     "invoke": _invoke,
     "resume": _resume,
     "get_actions": _get_actions,

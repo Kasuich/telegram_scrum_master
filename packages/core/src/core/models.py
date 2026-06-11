@@ -111,6 +111,83 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    profile: Mapped[UserProfile | None] = relationship(
+        "UserProfile",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class UserProfile(Base):
+    """Social-style profile for a console user.
+
+    Public fields (avatar, title, bio, contacts) are visible to other users;
+    ``private_json`` holds personal info visible only to the owner.
+    """
+
+    __tablename__ = "user_profiles"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    avatar_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    bio: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contacts_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    private_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    user: Mapped[User] = relationship("User", back_populates="profile")
+
+
+class PetState(Base):
+    """Persisted «Скрамик» state per user (leveling/mood snapshot)."""
+
+    __tablename__ = "pet_states"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    xp: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    mood: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    streak_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    evolution_tier: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    state_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    last_recalc_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 
 class ConsoleSession(Base):

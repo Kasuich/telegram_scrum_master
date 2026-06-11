@@ -32,6 +32,30 @@ class EffectiveAgentConfig:
     runtime_config: RuntimeConfig
 
 
+def _merge_tool_overrides(
+    spec_tools: Any, overlay_tools: Any
+) -> tuple[list[str], dict[str, bool]]:
+    """Collapse spec + overlay per-tool config into runtime fields.
+
+    Each layer maps ``tool_name -> {"enabled": bool, "confirm": bool|null}``.
+    Overlay entries win over spec entries.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for layer in (spec_tools, overlay_tools):
+        if isinstance(layer, dict):
+            for name, cfg in layer.items():
+                if isinstance(cfg, dict):
+                    merged.setdefault(name, {}).update(cfg)
+
+    disabled = [name for name, cfg in merged.items() if cfg.get("enabled") is False]
+    tool_confirm = {
+        name: bool(cfg["confirm"])
+        for name, cfg in merged.items()
+        if cfg.get("confirm") is not None
+    }
+    return disabled, tool_confirm
+
+
 def build_effective_config(
     agent: BaseAgent,
     spec: dict[str, Any] | None,
@@ -96,10 +120,19 @@ def build_effective_config(
     confirm_risk: list[str] = _pick("confirm_risk", base_confirm)
     always_confirm: list[str] = _pick("always_confirm_tools", base_always)
 
+    # ── Per-tool overrides ───────────────────────────────────────────────
+    # overlay["tools"] = {tool_name: {"enabled": bool, "confirm": bool|null}}
+    # overlay wins over spec.
+    disabled_tools, tool_confirm = _merge_tool_overrides(
+        spec.get("tools"), overlay.get("tools")
+    )
+
     runtime_config = RuntimeConfig(
         auto_risk=auto_risk,
         confirm_risk=confirm_risk,
         always_confirm_tools=always_confirm,
+        disabled_tools=disabled_tools,
+        tool_confirm=tool_confirm,
     )
 
     return EffectiveAgentConfig(
