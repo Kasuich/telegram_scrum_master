@@ -1,4 +1,4 @@
-from pm_orchestrator.agents.pm_agent import PMAgent, PROMPT
+from pm_orchestrator.agents.pm_agent import PROMPT, PMAgent
 
 
 def test_pm_agent_exposes_epic_and_sprint_lifecycle_tools():

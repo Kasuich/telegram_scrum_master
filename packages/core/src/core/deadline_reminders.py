@@ -169,7 +169,7 @@ def build_deadline_issues_yql(
     tracker_login: str,
     cutoff_date: date,
 ) -> str:
-    """Build a YQL query for open issues assigned to *tracker_login* with deadline ≤ *cutoff_date*."""
+    """Build YQL for open issues assigned to *tracker_login* before *cutoff_date*."""
     cutoff_iso = cutoff_date.isoformat()
     return (
         f"Queue: {_quote_yql(queue)} "
@@ -324,9 +324,9 @@ async def send_team_deadline_reminders(
         return {"status": "skipped", "reason": "disabled"}
 
     tz = _timezone(reminder_cfg.timezone)
-    current = (now or datetime.now(tz=timezone.utc)).replace(
-        tzinfo=timezone.utc
-    ) if (now or datetime.now(tz=timezone.utc)).tzinfo is None else (now or datetime.now(tz=timezone.utc))
+    current = now or datetime.now(tz=timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
     local_now = current.astimezone(tz)
     today = local_now.date()
     cutoff_date = today + timedelta(days=reminder_cfg.soon_days)

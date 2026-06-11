@@ -17,6 +17,6 @@ declare const _default: {
             };
         };
     };
-    plugins: any[];
+    plugins: unknown[];
 };
 export default _default;

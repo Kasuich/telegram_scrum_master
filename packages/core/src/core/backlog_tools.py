@@ -18,8 +18,8 @@ from core.backlog_plan import (
 )
 from core.backlog_scheduler import compute_deadlines, sort_tasks_for_scheduling
 from core.config import get_config
-from core.issue_dedup import dedup_enabled_for_backlog, find_duplicate_issue
 from core.invocation import get_current_invocation_context
+from core.issue_dedup import dedup_enabled_for_backlog, find_duplicate_issue
 from core.tools import platform_tool
 from core.tracker import TrackerClient, TrackerError
 from core.tracker_tools import _effective_queue, _resolve_login

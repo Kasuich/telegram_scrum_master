@@ -17,8 +17,8 @@ from core import (
     bot,
     config,
     daily_digest,
-    deadline_reminders,
     db,
+    deadline_reminders,
     effective_config,
     entry_point,
     exceptions,
@@ -57,15 +57,6 @@ from core.config import (
     reload_config,
     set_config,
 )
-from core.deadline_reminders import (
-    DEADLINE_REMINDER_CATEGORY,
-    DEADLINE_REMINDER_JOB_NAME,
-    DEADLINE_REMINDER_PAYLOAD_TYPE,
-    DeadlineIssue,
-    ReminderRecipient,
-    ensure_deadline_reminder_scheduled_job,
-    send_team_deadline_reminders,
-)
 from core.daily_digest import (
     DAILY_DIGEST_JOB_NAME,
     DAILY_DIGEST_PAYLOAD_TYPE,
@@ -84,6 +75,15 @@ from core.db import (
     get_session_factory,
     health_check,
     reset_engine,
+)
+from core.deadline_reminders import (
+    DEADLINE_REMINDER_CATEGORY,
+    DEADLINE_REMINDER_JOB_NAME,
+    DEADLINE_REMINDER_PAYLOAD_TYPE,
+    DeadlineIssue,
+    ReminderRecipient,
+    ensure_deadline_reminder_scheduled_job,
+    send_team_deadline_reminders,
 )
 from core.effective_config import EffectiveAgentConfig, build_effective_config
 from core.entry_point import EntryPoint

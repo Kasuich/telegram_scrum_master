@@ -8,8 +8,6 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from core.deadline_reminders import (
     DEADLINE_REMINDER_CATEGORY,
     DEADLINE_REMINDER_JOB_NAME,
@@ -26,7 +24,6 @@ from core.deadline_reminders import (
 )
 from core.models import ScheduledJob, TelegramOutbox
 from core.scheduler import SchedulerDaemon
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -371,7 +368,15 @@ class TestFetchMemberDeadlineIssues:
 class TestFormatMemberReminder:
     def test_returns_none_when_no_issues(self) -> None:
         r = _recipient()
-        assert format_member_reminder(recipient=r, overdue=[], soon=[], local_date="2026-06-11") is None
+        assert (
+            format_member_reminder(
+                recipient=r,
+                overdue=[],
+                soon=[],
+                local_date="2026-06-11",
+            )
+            is None
+        )
 
     def test_overdue_section_present(self) -> None:
         r = _recipient(display="Ivan")
@@ -423,7 +428,12 @@ class TestFormatMemberReminder:
 
     def test_includes_local_date_in_header(self) -> None:
         r = _recipient(display="Sergey")
-        text = format_member_reminder(recipient=r, overdue=[_issue()], soon=[], local_date="2026-06-11")
+        text = format_member_reminder(
+            recipient=r,
+            overdue=[_issue()],
+            soon=[],
+            local_date="2026-06-11",
+        )
         assert text is not None
         assert "2026-06-11" in text
         assert "Sergey" in text

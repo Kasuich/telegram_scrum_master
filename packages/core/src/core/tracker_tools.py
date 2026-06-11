@@ -20,8 +20,8 @@ from core.assignee_resolver import (
     resolve_assignee as match_assignee,
 )
 from core.config import get_config
-from core.issue_dedup import dedup_enabled_for_create, find_duplicate_issues
 from core.invocation import get_current_invocation_context
+from core.issue_dedup import dedup_enabled_for_create, find_duplicate_issues
 from core.tools import platform_tool
 from core.tracker import TrackerClient, TrackerError
 from core.tracker_tool_helpers import (
