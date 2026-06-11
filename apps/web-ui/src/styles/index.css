@@ -883,8 +883,8 @@
     width: 140px;
     height: 140px;
     border-radius: 16px;
-    background: linear-gradient(160deg, #ecfeff, #eef2ff);
-    border: 1px solid #d7dde8;
+    background: radial-gradient(circle at 50% 38%, #232839, #14161f);
+    border: 1px solid #2a2f3d;
     align-content: center;
   }
 
@@ -896,7 +896,7 @@
   .pet-tier {
     font-size: 12px;
     font-weight: 600;
-    color: #0f766e;
+    color: #5eead4;
   }
 
   .pet-stats {
@@ -1048,7 +1048,7 @@
     width: 84px;
     height: 84px;
     border-radius: 10px;
-    background: radial-gradient(circle at 50% 40%, #eef2ff, #e6ecf6);
+    background: radial-gradient(circle at 50% 40%, #232839, #14161f);
   }
 
   .shop-card-name {
