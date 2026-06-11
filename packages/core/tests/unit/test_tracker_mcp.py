@@ -15,6 +15,7 @@ from core.tools import get_registry
 from core.tracker_mcp import (
     TrackerMCPClient,
     TrackerMCPError,
+    _change_issue_status_via_tracker,
     _normalize_tool_arguments,
     register_tracker_mcp_tools,
 )
@@ -190,6 +191,26 @@ def test_change_status_adds_default_resolution_when_closing():
             {"issue_key": "DARKHORSE-272", "status": "closed"},
         )["resolution"]
         == "fixed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_change_issue_status_uses_tracker_client_transition_resolver():
+    with patch("core.tracker_mcp.TrackerClient") as mock_cls:
+        client = AsyncMock()
+        mock_cls.return_value.__aenter__.return_value = client
+        client.transition_issue.return_value = {"status": "inProgress"}
+
+        result = await _change_issue_status_via_tracker(
+            {"issue_key": "DARKHORSE-1", "status": "inProgress"}
+        )
+
+    assert result == {"status": "inProgress"}
+    client.transition_issue.assert_awaited_once_with(
+        "DARKHORSE-1",
+        "inProgress",
+        resolution=None,
+        comment=None,
     )
 
 

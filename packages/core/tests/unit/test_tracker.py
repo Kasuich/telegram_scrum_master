@@ -385,6 +385,23 @@ class TestTransitionIssue:
             result = await c.transition_issue("TEST-1", "в работе")
         assert result == {"status": "inProgress"}
 
+    async def test_inprogress_resolves_start_progress_transition_id(self):
+        c = _client()
+        transitions = [
+            {
+                "id": "start_progress",
+                "display": "В работу",
+                "to": {"key": "inProgress", "display": "В работе"},
+            }
+        ]
+        side_effect = [_ok(transitions), _ok({"status": "inProgress"})]
+        with _patch_request(side_effect=side_effect) as mock_req:
+            result = await c.transition_issue("TEST-1", "inProgress")
+        assert result == {"status": "inProgress"}
+        assert mock_req.call_args_list[1][0][1].endswith(
+            "/issues/TEST-1/transitions/start_progress/_execute"
+        )
+
     async def test_executes_close_by_target_status_display(self):
         c = _client()
         transitions = [{"id": "finish", "display": "Завершить", "to": {"display": "Закрыто"}}]

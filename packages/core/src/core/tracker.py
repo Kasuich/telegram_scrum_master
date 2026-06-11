@@ -29,35 +29,77 @@ def _norm_transition_label(value: Any) -> str:
     return " ".join(str(value or "").casefold().replace("ё", "е").split())
 
 
+_IN_PROGRESS_KEYS = frozenset(
+    {
+        "in_progress",
+        "inprogress",
+        "in progress",
+        "в работе",
+        "в работу",
+        "взять в работу",
+        "начать работу",
+        "start_progress",
+        "start progress",
+    }
+)
+_NEED_INFO_KEYS = frozenset(
+    {
+        "needinfo",
+        "need_info",
+        "need info",
+        "требуется информация",
+        "нужна информация",
+    }
+)
+_CLOSE_KEYS = frozenset(
+    {
+        "close",
+        "closed",
+        "done",
+        "resolved",
+        "закрыть",
+        "закрыто",
+        "закрыт",
+        "решено",
+        "завершено",
+    }
+)
+_CANCELLED_KEYS = frozenset(
+    {
+        "cancelled",
+        "canceled",
+        "cancelledmeta",
+        "отменено",
+        "отменена",
+        "отменен",
+        "отменён",
+    }
+)
+_OPEN_KEYS = frozenset(
+    {
+        "open",
+        "открыт",
+        "reopen",
+        "переоткрыть",
+        "переоткрытие",
+    }
+)
+
+
 def _transition_aliases(value: str) -> set[str]:
     normalized = _norm_transition_label(value)
-    aliases = {normalized}
-    if normalized in {"in_progress", "inprogress", "in progress", "в работе", "в работу"}:
-        aliases.update(
-            {
-                "in_progress",
-                "inprogress",
-                "in progress",
-                "в работе",
-                "в работу",
-                "взять в работу",
-                "начать работу",
-            }
-        )
-    if normalized in {"close", "closed", "done", "resolved", "закрыть", "закрыто", "закрыт"}:
-        aliases.update(
-            {
-                "close",
-                "closed",
-                "done",
-                "resolved",
-                "закрыть",
-                "закрыто",
-                "закрыт",
-                "решено",
-                "завершено",
-            }
-        )
+    compact = normalized.replace(" ", "").replace("_", "")
+    aliases = {normalized, compact}
+    if normalized in _IN_PROGRESS_KEYS or compact in {"inprogress", "startprogress"}:
+        aliases.update(_IN_PROGRESS_KEYS)
+    if normalized in _NEED_INFO_KEYS or compact == "needinfo":
+        aliases.update(_NEED_INFO_KEYS)
+    if normalized in _CLOSE_KEYS or compact in {"close", "closed", "done", "resolved"}:
+        aliases.update(_CLOSE_KEYS)
+    if normalized in _CANCELLED_KEYS or compact in {"cancelled", "canceled", "cancelledmeta"}:
+        aliases.update(_CANCELLED_KEYS)
+    if normalized in _OPEN_KEYS or compact == "open":
+        aliases.update(_OPEN_KEYS)
     return aliases
 
 
