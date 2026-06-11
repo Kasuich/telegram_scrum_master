@@ -69,6 +69,11 @@ def _quote_yql(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _he(text: str) -> str:
+    """Minimal HTML-escape for Telegram HTML parse_mode."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _parse_deadline_date(raw: Any) -> date | None:
     if not raw:
         return None
@@ -236,23 +241,23 @@ def format_member_reminder(
     """Format a per-assignee reminder DM. Returns None when the member has no at-risk tasks."""
     if not overdue and not soon:
         return None
-    lines = [f"🔔 Дедлайны на {local_date} — {recipient.display}", ""]
+    lines = [f"🔔 <b>Дедлайны на {local_date}</b> — {_he(recipient.display)}", ""]
     if overdue:
         lines.append(f"🔴 Просрочено ({len(overdue)}):")
         for issue in overdue:
             lines.append(
-                f"- {issue.key} [{issue.deadline}]: {issue.summary or '(без названия)'}"
+                f'- <a href="{issue.url}">{issue.key}</a> [{issue.deadline}]:'
+                f" {_he(issue.summary or '(без названия)')}"
             )
-            lines.append(f"  {issue.url}")
     if overdue and soon:
         lines.append("")
     if soon:
         lines.append(f"🟡 Скоро дедлайн ({len(soon)}):")
         for issue in soon:
             lines.append(
-                f"- {issue.key} [{issue.deadline}]: {issue.summary or '(без названия)'}"
+                f'- <a href="{issue.url}">{issue.key}</a> [{issue.deadline}]:'
+                f" {_he(issue.summary or '(без названия)')}"
             )
-            lines.append(f"  {issue.url}")
     return "\n".join(lines)
 
 
@@ -265,20 +270,22 @@ def format_lead_summary(
     active = [(r, ov, sn) for r, ov, sn in member_data if ov or sn]
     if not active:
         return None
-    lines = [f"📋 Сводка по дедлайнам команды на {local_date}", ""]
+    lines = [f"📋 <b>Сводка по дедлайнам команды на {local_date}</b>", ""]
     for recipient, overdue, soon in active:
-        lines.append(f"👤 {recipient.display} (@{recipient.tracker_login})")
+        lines.append(f"👤 {_he(recipient.display)} (@{recipient.tracker_login})")
         if overdue:
             lines.append(f"  🔴 Просрочено ({len(overdue)}):")
             for issue in overdue:
                 lines.append(
-                    f"    • {issue.key} [{issue.deadline}]: {issue.summary or '(без названия)'}"
+                    f'    • <a href="{issue.url}">{issue.key}</a> [{issue.deadline}]:'
+                    f" {_he(issue.summary or '(без названия)')}"
                 )
         if soon:
             lines.append(f"  🟡 Скоро ({len(soon)}):")
             for issue in soon:
                 lines.append(
-                    f"    • {issue.key} [{issue.deadline}]: {issue.summary or '(без названия)'}"
+                    f'    • <a href="{issue.url}">{issue.key}</a> [{issue.deadline}]:'
+                    f" {_he(issue.summary or '(без названия)')}"
                 )
         lines.append("")
     return "\n".join(lines).rstrip()
@@ -380,6 +387,7 @@ async def send_team_deadline_reminders(
                             f"deadline-reminder:{team_uuid}:{hour_slot}:"
                             f"{recipient.telegram_user_id}"
                         ),
+                        parse_mode="HTML",
                     )
                     assignee_outbox_ids.append(str(outbox.id))
 
@@ -403,6 +411,7 @@ async def send_team_deadline_reminders(
                     text=summary_text,
                     category=DEADLINE_REMINDER_CATEGORY,
                     dedupe_key=f"deadline-reminder:{team_uuid}:{hour_slot}:lead",
+                    parse_mode="HTML",
                 )
                 lead_outbox_id = str(lead_outbox.id)
         else:

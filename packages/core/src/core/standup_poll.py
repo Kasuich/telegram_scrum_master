@@ -316,6 +316,7 @@ async def _enqueue_private_message(
     text: str,
     category: str,
     dedupe_key: str,
+    parse_mode: str | None = None,
 ) -> TelegramOutbox:
     existing = (
         await session.execute(
@@ -327,6 +328,9 @@ async def _enqueue_private_message(
     ).scalar_one_or_none()
     if existing is not None:
         return existing
+    msg_payload: dict = {"method": "sendMessage", "text": text}
+    if parse_mode:
+        msg_payload["parse_mode"] = parse_mode
     outbox = TelegramOutbox(
         id=uuid.uuid4(),
         team_id=team_id,
@@ -338,7 +342,7 @@ async def _enqueue_private_message(
         priority=105,
         status="pending",
         attempts=0,
-        payload={"method": "sendMessage", "text": text},
+        payload=msg_payload,
     )
     session.add(outbox)
     await session.flush()
