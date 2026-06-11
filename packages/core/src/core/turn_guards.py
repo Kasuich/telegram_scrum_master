@@ -34,7 +34,6 @@ _BACKLOG_MARKERS = (
     "самари лекции",
     "оформи доску",
     "разбей на задачи",
-    "заведи эпик",
     "оформить доску",
     "бэклог",
     "backlog",
@@ -111,6 +110,8 @@ def message_has_meeting_sync_intent(text: str) -> bool:
 
 
 def message_has_create_intent(text: str) -> bool:
+    if message_has_create_sprint_intent(text):
+        return True
     if message_has_backlog_intent(text):
         return False
     t = normalize_text(text)

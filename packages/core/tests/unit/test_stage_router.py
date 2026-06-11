@@ -39,6 +39,8 @@ def test_rule_reorg():
 def test_rule_transition():
     assert detect_stage_rules("закрой DARKHORSE-8") is StageId.TRANSITION
     assert detect_stage_rules("переведи в работу DARKHORSE-2") is StageId.TRANSITION
+    assert detect_stage_rules("открой спринт Sprint 1") is StageId.TRANSITION
+    assert detect_stage_rules("переоткрой эпик DARKHORSE-1") is StageId.TRANSITION
 
 
 def test_rule_proactive():
@@ -55,6 +57,9 @@ def test_rule_hygiene():
 def test_rule_intake():
     assert detect_stage_rules("создай Коле задачу MCP") is StageId.INTAKE
     assert detect_stage_rules("заведи задачу на нотификации") is StageId.INTAKE
+    assert detect_stage_rules("создай спринт Sprint 2") is StageId.INTAKE
+    assert detect_stage_rules("новый спринт Sprint 2") is StageId.INTAKE
+    assert detect_stage_rules("заведи эпик про платежи") is StageId.INTAKE
 
 
 def test_rule_query():
