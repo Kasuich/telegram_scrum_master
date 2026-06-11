@@ -28,6 +28,20 @@ class _FakeResponse:
         return self._payload
 
 
+class _FakeObjectStore:
+    def __init__(self) -> None:
+        self.uploads: list[dict[str, Any]] = []
+
+    async def upload_bytes(self, data: bytes, *, key: str, content_type: str) -> Any:
+        self.uploads.append({"key": key, "data": data, "content_type": content_type})
+        return SimpleNamespace(
+            key=key,
+            size_bytes=len(data),
+            content_type=content_type,
+            uri=f"https://storage.test/bucket/{key}",
+        )
+
+
 class _FakeHttpClient:
     """Scripts /rpc responses by JSON-RPC method; records invoke calls."""
 
@@ -53,26 +67,32 @@ class _FakeHttpClient:
         return _FakeResponse({"result": {}})
 
 
-def _dispatcher(tmp_path: Path) -> tuple[MeetingDispatcher, Any]:
+def _dispatcher(tmp_path: Path) -> tuple[MeetingDispatcher, Any, _FakeObjectStore]:
     settings = CaptureSettings(
         CAPTURE_WORK_DIR=tmp_path / "work",
         CAPTURE_OBJECT_STORAGE_DIR=tmp_path / "objects",
         ORCHESTRATOR_URL="http://orchestrator:8000",
     )
-    repo = SimpleNamespace(team_id=uuid.uuid4())
+    repo = SimpleNamespace(team_id=uuid.uuid4(), artifacts=[])
+    object_store = _FakeObjectStore()
+
+    async def _add_artifact(**kwargs: Any) -> None:
+        repo.artifacts.append(kwargs)
+
+    repo.add_artifact = _add_artifact
     disp = MeetingDispatcher(
         repository=repo,  # type: ignore[arg-type]
         settings=settings,
-        object_store=SimpleNamespace(),  # type: ignore[arg-type]
+        object_store=object_store,  # type: ignore[arg-type]
         transcriber=SimpleNamespace(),  # type: ignore[arg-type]
         bot_factory=lambda: SimpleNamespace(),  # type: ignore[arg-type]
         recorder_factory=lambda work_dir: SimpleNamespace(),  # type: ignore[arg-type]
     )
-    return disp, repo
+    return disp, repo, object_store
 
 
 async def test_fanout_delivers_to_telegram_and_pm_agent(tmp_path: Path, monkeypatch) -> None:
-    disp, repo = _dispatcher(tmp_path)
+    disp, repo, object_store = _dispatcher(tmp_path)
     meeting_id = uuid.uuid4()
     transcription = TranscriptionResult(
         source="speechkit",
@@ -111,9 +131,14 @@ async def test_fanout_delivers_to_telegram_and_pm_agent(tmp_path: Path, monkeypa
     assert "Всё ок" in pm_calls[0]["message"]
     assert pm_calls[0]["context"]["chat_id"] == "-100123"
 
+    assert len(object_store.uploads) == 1
+    assert object_store.uploads[0]["key"].endswith("summary.md")
+    assert b"\xd0\x92\xd1\x81\xd1\x91 \xd0\xbe\xd0\xba" in object_store.uploads[0]["data"]
+    assert {artifact["kind"] for artifact in repo.artifacts} == {"summary"}
+
 
 async def test_empty_transcript_sends_notice_to_telegram(tmp_path: Path, monkeypatch) -> None:
-    disp, repo = _dispatcher(tmp_path)
+    disp, repo, _object_store = _dispatcher(tmp_path)
     meeting_id = uuid.uuid4()
     transcription = TranscriptionResult(
         source="speechkit_s3_not_configured",
@@ -139,7 +164,7 @@ async def test_empty_transcript_sends_notice_to_telegram(tmp_path: Path, monkeyp
 
 
 def test_format_transcript_prefers_name_over_label(tmp_path: Path) -> None:
-    disp, _ = _dispatcher(tmp_path)
+    disp, _, _object_store = _dispatcher(tmp_path)
     transcription = TranscriptionResult(
         source="speechkit",
         segments=[

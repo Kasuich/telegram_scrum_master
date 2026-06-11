@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from collections.abc import Callable
@@ -65,6 +66,10 @@ class MeetingDispatcher:
         )
         self._tasks[meeting_id] = task
         task.add_done_callback(lambda done: self._tasks.pop(meeting_id, None))
+
+    _ACTIVE_CAPTURE_STATUSES = frozenset(
+        {"scheduled", "joining", "waiting_room", "recording", "transcribing"}
+    )
 
     async def stop(self, meeting_id: uuid.UUID) -> None:
         event = self._stop_events.get(meeting_id)
@@ -157,7 +162,11 @@ class MeetingDispatcher:
                 meeting_id,
                 "transcribing",
                 ended_at=utcnow(),
-                metadata_update={"finish_reason": finish_reason},
+                metadata_update={
+                    "finish_reason": finish_reason,
+                    "speaker_timeline": speaker_timeline,
+                    "participants_observed": join_result.participants_observed,
+                },
             )
 
             uploaded = await self._upload_recording_files(meeting_id, files)
@@ -189,26 +198,13 @@ class MeetingDispatcher:
                 segments=named_segments,
                 participants_observed=transcription.participants_observed,
             )
-            await self.repository.save_transcript(
-                meeting_id=meeting_id,
-                source=transcription.source,
-                segments=transcription.segments,
-                participants_observed=transcription.participants_observed,
-            )
-            await self.repository.set_status(meeting_id, "ready")
             target_chat_id = (getattr(meeting, "metadata_json", None) or {}).get("target_chat_id")
-            if transcription.segments:
-                await self._summarize_and_fanout(
-                    meeting_id,
-                    transcription,
-                    target_chat_id=target_chat_id,
-                )
-            else:
-                await self._deliver_empty_transcription_notice(
-                    meeting_id,
-                    transcription.source,
-                    target_chat_id=target_chat_id,
-                )
+            await self._store_transcription_result(
+                meeting_id,
+                transcription,
+                target_chat_id=target_chat_id,
+                summarize=True,
+            )
         except Exception as exc:
             logger.exception("Meeting capture failed for %s", meeting_id)
             if recorder_started:
@@ -225,6 +221,103 @@ class MeetingDispatcher:
         finally:
             self._stop_events.pop(meeting_id, None)
             await bot.close()
+
+    async def retranscribe(
+        self, meeting_id: uuid.UUID, *, summarize: bool = True
+    ) -> TranscriptionResult:
+        """Re-run SpeechKit on an existing audio artifact (e.g. after a failed STT)."""
+        meeting = await self.repository.get(meeting_id)
+        if meeting is None:
+            raise ValueError("meeting not found")
+        if meeting.status in self._ACTIVE_CAPTURE_STATUSES:
+            raise ValueError(f"meeting is busy: {meeting.status}")
+
+        audio_key = self._audio_object_key(meeting)
+        if audio_key is None:
+            raise ValueError("meeting has no audio artifact")
+
+        audio_uri = self.object_store.object_uri(audio_key)
+        if not audio_uri:
+            raise ValueError("object storage does not expose a public URI for SpeechKit")
+
+        metadata = meeting.metadata_json or {}
+        participants_observed = metadata.get("participants_observed") or []
+
+        await self.repository.set_status(meeting_id, "transcribing")
+        try:
+            transcription = await asyncio.wait_for(
+                self.transcriber.transcribe(
+                    Path("audio.ogg"),
+                    audio_uri=audio_uri,
+                    language=meeting.language,
+                    participants_observed=participants_observed,
+                ),
+                timeout=self.settings.transcribe_timeout_sec,
+            )
+        except Exception as exc:
+            await self.repository.set_status(
+                meeting_id,
+                "failed",
+                error=f"retranscribe failed: {exc}",
+            )
+            raise
+
+        from meeting_capture.transcription import map_speakers_to_names
+
+        speaker_timeline = metadata.get("speaker_timeline") or []
+        named_segments = map_speakers_to_names(transcription.segments, speaker_timeline)
+        transcription = TranscriptionResult(
+            source=transcription.source,
+            segments=named_segments,
+            participants_observed=transcription.participants_observed,
+        )
+        target_chat_id = metadata.get("target_chat_id")
+        await self._store_transcription_result(
+            meeting_id,
+            transcription,
+            target_chat_id=target_chat_id,
+            summarize=summarize,
+        )
+        return transcription
+
+    @staticmethod
+    def _audio_object_key(meeting: Any) -> str | None:
+        artifacts = getattr(meeting, "artifacts", None) or []
+        audio = [artifact for artifact in artifacts if artifact.kind == "audio"]
+        if not audio:
+            return None
+        audio.sort(key=lambda item: item.created_at or item.id, reverse=True)
+        return str(audio[0].object_key)
+
+    async def _store_transcription_result(
+        self,
+        meeting_id: uuid.UUID,
+        transcription: TranscriptionResult,
+        *,
+        target_chat_id: str | None,
+        summarize: bool,
+    ) -> None:
+        await self.repository.save_transcript(
+            meeting_id=meeting_id,
+            source=transcription.source,
+            segments=transcription.segments,
+            participants_observed=transcription.participants_observed,
+        )
+        await self._persist_transcript_artifacts(meeting_id, transcription)
+        await self.repository.set_status(meeting_id, "ready")
+        if transcription.segments:
+            if summarize:
+                await self._summarize_and_fanout(
+                    meeting_id,
+                    transcription,
+                    target_chat_id=target_chat_id,
+                )
+        else:
+            await self._deliver_empty_transcription_notice(
+                meeting_id,
+                transcription.source,
+                target_chat_id=target_chat_id,
+            )
 
     async def _collect_speaker_timeline(
         self, speaker_task: "asyncio.Task[list[dict[str, Any]]]"
@@ -292,6 +385,76 @@ class MeetingDispatcher:
             uploaded[kind] = obj
         return uploaded
 
+    async def _persist_transcript_artifacts(
+        self,
+        meeting_id: uuid.UUID,
+        transcription: TranscriptionResult,
+    ) -> None:
+        """Upload human-readable and structured transcript files to object storage."""
+        try:
+            transcript_text = self._format_transcript(transcription)
+            payload = {
+                "meeting_id": str(meeting_id),
+                "source": transcription.source,
+                "participants_observed": transcription.participants_observed,
+                "segments": transcription.segments,
+            }
+            await self._upload_bytes_artifact(
+                meeting_id,
+                kind="transcript",
+                filename="transcript.txt",
+                data=transcript_text.encode("utf-8"),
+                content_type="text/plain; charset=utf-8",
+            )
+            await self._upload_bytes_artifact(
+                meeting_id,
+                kind="transcript_json",
+                filename="transcript.json",
+                data=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                content_type="application/json; charset=utf-8",
+            )
+        except Exception:
+            logger.exception("Failed to persist transcript artifacts for meeting %s", meeting_id)
+
+    async def _persist_summary_artifact(self, meeting_id: uuid.UUID, summary: str) -> None:
+        """Upload the meeting summary markdown to object storage."""
+        if not summary.strip():
+            return
+        try:
+            await self._upload_bytes_artifact(
+                meeting_id,
+                kind="summary",
+                filename="summary.md",
+                data=summary.encode("utf-8"),
+                content_type="text/markdown; charset=utf-8",
+            )
+        except Exception:
+            logger.exception("Failed to persist summary artifact for meeting %s", meeting_id)
+
+    async def _upload_bytes_artifact(
+        self,
+        meeting_id: uuid.UUID,
+        *,
+        kind: str,
+        filename: str,
+        data: bytes,
+        content_type: str,
+    ) -> UploadedObject:
+        obj = await self.object_store.upload_bytes(
+            data,
+            key=artifact_key(str(meeting_id), filename),
+            content_type=content_type,
+        )
+        await self.repository.add_artifact(
+            meeting_id=meeting_id,
+            kind=kind,
+            object_key=obj.key,
+            content_type=obj.content_type,
+            size_bytes=obj.size_bytes,
+            expires_at=self._artifact_expiration(),
+        )
+        return obj
+
     async def _summarize_and_fanout(
         self,
         meeting_id: uuid.UUID,
@@ -357,6 +520,7 @@ class MeetingDispatcher:
         except Exception:
             logger.exception("Failed to store summary for meeting %s", meeting_id)
 
+        await self._persist_summary_artifact(meeting_id, summary)
         await self._deliver_summary_to_telegram(meeting_id, summary, target_chat_id)
         if self.settings.summary_fanout_pm_agent:
             await self._send_summary_to_pm_agent(meeting_id, summary, target_chat_id, base)

@@ -27,6 +27,13 @@ class ObjectStore:
     async def upload_file(self, source: Path, *, key: str, content_type: str) -> UploadedObject:
         raise NotImplementedError
 
+    async def upload_bytes(self, data: bytes, *, key: str, content_type: str) -> UploadedObject:
+        raise NotImplementedError
+
+    def object_uri(self, key: str) -> str | None:
+        """Public URI for an existing object key (S3 only; None for local dev store)."""
+        return None
+
 
 class LocalObjectStore(ObjectStore):
     """Filesystem-backed object store for local/dev/test deployments."""
@@ -41,6 +48,21 @@ class LocalObjectStore(ObjectStore):
         return UploadedObject(
             key=key,
             size_bytes=destination.stat().st_size,
+            content_type=content_type,
+            uri=None,
+        )
+
+    async def upload_bytes(self, data: bytes, *, key: str, content_type: str) -> UploadedObject:
+        destination = self.root / key
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        def _write() -> None:
+            destination.write_bytes(data)
+
+        await asyncio.to_thread(_write)
+        return UploadedObject(
+            key=key,
+            size_bytes=len(data),
             content_type=content_type,
             uri=None,
         )
@@ -81,6 +103,26 @@ class S3ObjectStore(ObjectStore):
             content_type=content_type,
             uri=self._object_uri(key),
         )
+
+    async def upload_bytes(self, data: bytes, *, key: str, content_type: str) -> UploadedObject:
+        def _upload() -> None:
+            self._client.put_object(
+                Bucket=self._bucket,
+                Key=key,
+                Body=data,
+                ContentType=content_type,
+            )
+
+        await asyncio.to_thread(_upload)
+        return UploadedObject(
+            key=key,
+            size_bytes=len(data),
+            content_type=content_type,
+            uri=self._object_uri(key),
+        )
+
+    def object_uri(self, key: str) -> str | None:
+        return self._object_uri(key)
 
     def _object_uri(self, key: str) -> str:
         if self._client.meta.endpoint_url:

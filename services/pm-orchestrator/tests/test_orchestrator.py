@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
 os.environ.setdefault("YC_API_KEY", "stub_key_00000000000000000000")
 os.environ.setdefault("YC_FOLDER_ID", "b1g0000000000000000")
+os.environ.setdefault("OPENROUTER_API_KEY", "sk-or-v1-test-stub-key-0000000000")
 os.environ.setdefault("TRACKER_TOKEN", "stub_token_000000000000000000000")
 os.environ.setdefault("TRACKER_ORG_ID", "000000000000")
 os.environ.setdefault("TRACKER_ORG_TYPE", "cloud")
