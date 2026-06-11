@@ -169,6 +169,7 @@ class PetState(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         primary_key=True,
     )
+    species_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     xp: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     mood: Mapped[int] = mapped_column(Integer, nullable=False, default=100)

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Скрамики — превью спрайтов</title>
+<style>
+  :root { --bg:#0f1117; --panel:#1a1d27; --line:#2a2f3d; --ink:#e7ebf3; --muted:#9aa3b5; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Inter,sans-serif; }
+  header { padding:20px 28px; border-bottom:1px solid var(--line);
+           display:flex; align-items:center; gap:24px; flex-wrap:wrap;
+           position:sticky; top:0; background:var(--bg); z-index:2; }
+  h1 { font-size:18px; margin:0; }
+  .sub { color:var(--muted); font-size:13px; }
+  .controls { display:flex; gap:18px; align-items:center; margin-left:auto; flex-wrap:wrap; }
+  .controls label { display:flex; gap:6px; align-items:center; color:var(--muted); font-size:13px; }
+  input[type=range]{ width:140px; }
+  .grid { display:grid; gap:18px; padding:28px;
+          grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:14px;
+          padding:16px; display:flex; flex-direction:column; gap:10px; }
+  .stage { display:flex; justify-content:center; align-items:center; padding:10px 0;
+           background:radial-gradient(circle at 50% 40%, #232839, #14161f);
+           border-radius:10px; }
+  .name-row { display:flex; align-items:center; gap:8px; }
+  .name { font-weight:700; font-size:15px; }
+  .chip { font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px;
+          color:#0f1117; }
+  .chance { color:var(--muted); font-size:12px; margin-left:auto; }
+  .aff { font-size:12px; color:#c7d0e0; }
+  .desc { font-size:12.5px; color:var(--muted); font-style:italic; }
+  svg { image-rendering:pixelated; display:block; }
+  .legend { color:var(--muted); font-size:12px; padding:0 28px 28px; }
+  code { background:#222634; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>🥚 Скрамики — превью пиксель-спрайтов</h1>
+    <div class="sub">16×16 · единый blob-силуэт + фичи-оверлеи · стиль «buddy»</div>
+  </div>
+  <div class="controls">
+    <label>Масштаб <input id="scale" type="range" min="6" max="22" value="13" /></label>
+    <label><input id="grid" type="checkbox" /> сетка пикселей</label>
+    <label><input id="overlay" type="checkbox" checked /> фичи (оверлей)</label>
+  </div>
+</header>
+
+<div class="grid" id="gallery"></div>
+
+<div class="legend">
+  Меняешь спрайты в <code>docs/scrumiks/sprites.js</code> → обновляешь страницу.
+  Контур <code>o</code>, тело <code>g</code>, тень <code>d</code>, блик <code>h</code>,
+  глаза <code>W/P</code>; фичи — ключи из <code>opal</code> каждого вида.
+</div>
+
+<script src="sprites.js"></script>
+<script>
+  const gallery = document.getElementById("gallery");
+  const scaleEl = document.getElementById("scale");
+  const gridEl = document.getElementById("grid");
+  const overlayEl = document.getElementById("overlay");
+
+  const N = SCRUMIK_BASE.length; // 16
+
+  function spriteSVG(sp, px, showGrid, showOverlay) {
+    const size = N * px;
+    let rects = "";
+    for (let r = 0; r < N; r++) {
+      const baseRow = SCRUMIK_BASE[r] || "";
+      const ovRow = (showOverlay && sp.overlay && sp.overlay[r]) || "";
+      for (let c = 0; c < N; c++) {
+        const ovCh = ovRow[c] && ovRow[c] !== "." ? ovRow[c] : null;
+        const baseCh = baseRow[c] && baseRow[c] !== "." ? baseRow[c] : null;
+        let fill = null;
+        if (ovCh) {
+          fill = sp.opal[ovCh] || "#ff00ff"; // magenta = опечатка в ключе
+        } else if (baseCh) {
+          if (baseCh === "W") fill = "#ffffff";
+          else if (baseCh === "P") fill = sp.colors.o;
+          else fill = sp.colors[baseCh] || "#ff00ff";
+        }
+        if (!fill) continue;
+        rects += `<rect x="${c * px}" y="${r * px}" width="${px}" height="${px}" fill="${fill}"/>`;
+      }
+    }
+    let gridLines = "";
+    if (showGrid) {
+      for (let i = 0; i <= N; i++) {
+        gridLines += `<line x1="${i * px}" y1="0" x2="${i * px}" y2="${size}" stroke="#ffffff14"/>`;
+        gridLines += `<line x1="0" y1="${i * px}" x2="${size}" y2="${i * px}" stroke="#ffffff14"/>`;
+      }
+    }
+    return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"
+              xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">${rects}${gridLines}</svg>`;
+  }
+
+  function render() {
+    const px = +scaleEl.value;
+    const showGrid = gridEl.checked;
+    const showOverlay = overlayEl.checked;
+    gallery.innerHTML = SCRUMIKS.map((sp) => {
+      const rar = SCRUMIK_RARITY[sp.rarity];
+      return `<div class="card">
+        <div class="stage">${spriteSVG(sp, px, showGrid, showOverlay)}</div>
+        <div class="name-row">
+          <span class="name">${sp.name}</span>
+          <span class="chip" style="background:${rar.color}">${rar.label}</span>
+          <span class="chance">${sp.chance}</span>
+        </div>
+        <div class="aff">${sp.affinity}</div>
+        <div class="desc">«${sp.desc}»</div>
+      </div>`;
+    }).join("");
+  }
+
+  [scaleEl, gridEl, overlayEl].forEach((el) => el.addEventListener("input", render));
+  render();
+</script>
+</body>
+</html>
