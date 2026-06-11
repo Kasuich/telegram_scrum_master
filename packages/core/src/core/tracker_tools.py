@@ -169,6 +169,49 @@ def _next_sprint_dates(sprint: dict[str, Any]) -> tuple[str, str] | None:
     return next_start.isoformat(), next_end.isoformat()
 
 
+def _derive_next_sprint_name(sprints: list[dict[str, Any]]) -> str:
+    """Pick the next sprint name from existing board sprints.
+
+    Increments the highest trailing number among existing names; falls back to a
+    sequential 'Sprint N' when no numbered sprint is present.
+    """
+    numbered: list[tuple[int, str]] = []
+    for sprint in sprints:
+        name = str(sprint.get("name") or "")
+        match = re.search(r"(\d+)(?!.*\d)", name)
+        if match is not None:
+            numbered.append((int(match.group(1)), name))
+    if numbered:
+        _, top_name = max(numbered, key=lambda item: item[0])
+        return _next_sprint_name(top_name)
+    if sprints:
+        return f"Sprint {len(sprints) + 1}"
+    return "Sprint 1"
+
+
+def _default_sprint_dates(
+    sprints: list[dict[str, Any]], duration_days: int = 14
+) -> tuple[str, str]:
+    """Derive default dates for a new sprint.
+
+    Starts the day after the latest existing sprint ends (or today if none is
+    in the future) and spans `duration_days` calendar days inclusive.
+    """
+    duration = max(1, duration_days)
+    today = date.today()
+    latest_end: date | None = None
+    for sprint in sprints:
+        end = _parse_sprint_date(sprint.get("endDate"))
+        if end is not None and (latest_end is None or end > latest_end):
+            latest_end = end
+    if latest_end is not None and latest_end >= today:
+        start = latest_end + timedelta(days=1)
+    else:
+        start = today
+    end = start + timedelta(days=duration - 1)
+    return start.isoformat(), end.isoformat()
+
+
 def _issue_has_sprint(issue: dict[str, Any], sprint_id: str) -> bool:
     sprint_items = issue.get("sprint")
     if not isinstance(sprint_items, list):
@@ -718,40 +761,52 @@ async def tracker_close_epic(
 
 @platform_tool(name="tracker_create_sprint", risk="medium", scopes=["tracker:write"])
 async def tracker_create_sprint(
-    name: str,
-    start_date: str,
-    end_date: str,
+    name: str = "",
+    start_date: str = "",
+    end_date: str = "",
     board_id: str = "",
     board_name: str = "",
+    duration_days: int = 14,
 ) -> dict[str, Any]:
     """
     Create a sprint on a Yandex Tracker board.
 
     board_id: numeric board ID from Tracker Agile board URL/API.
     board_name: board name; used when board_id is empty.
-    start_date/end_date: YYYY-MM-DD.
+    name: sprint title. Leave EMPTY to auto-number — the next 'Sprint N' is
+      derived from existing board sprints (do not invent a name yourself).
+    start_date/end_date: YYYY-MM-DD. Leave both EMPTY to default to a
+      `duration_days`-day window starting after the latest sprint.
     Use when the user asks to create/start planning a new sprint.
     """
     forbidden = _require_lead_or_admin("Sprint creation")
     if forbidden is not None:
         return forbidden
     board_id, board_name = _with_default_board(board_id, board_name)
-    if not name.strip():
-        return {"error": "name is required"}
     if not board_id.strip() and not board_name.strip():
         return {"error": "board_id or board_name is required"}
-    if not start_date.strip() or not end_date.strip():
-        return {"error": "start_date and end_date are required in YYYY-MM-DD format"}
+
+    name = name.strip()
+    start_date = start_date.strip()
+    end_date = end_date.strip()
+    need_autoname = not name
+    need_autodates = not start_date or not end_date
 
     async with TrackerClient() as client:
         resolved_board_id, board_meta = await _resolve_board_id(
             client, board_id=board_id, board_name=board_name
         )
+        if need_autoname or need_autodates:
+            existing = await client.list_sprints(resolved_board_id)
+            if need_autoname:
+                name = _derive_next_sprint_name(existing)
+            if need_autodates:
+                start_date, end_date = _default_sprint_dates(existing, duration_days)
         sprint = await client.create_sprint(
-            name=name.strip(),
+            name=name,
             board_id=resolved_board_id,
-            start_date=start_date.strip(),
-            end_date=end_date.strip(),
+            start_date=start_date,
+            end_date=end_date,
         )
 
     board = sprint.get("board") or {}
