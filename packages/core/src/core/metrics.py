@@ -167,8 +167,15 @@ def track_tool(
 
 
 _KNOWN_STAGES = [
-    "INTAKE", "STATUS", "BOARD", "TRANSITION",
-    "QUERY", "REORG", "PROACTIVE", "HYGIENE", "DIALOG",
+    "INTAKE",
+    "STATUS",
+    "BOARD",
+    "TRANSITION",
+    "QUERY",
+    "REORG",
+    "PROACTIVE",
+    "HYGIENE",
+    "DIALOG",
 ]
 _KNOWN_TOOL_STATUSES = ["requested", "completed", "failed", "rejected", "guard_rejected"]
 

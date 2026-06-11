@@ -140,7 +140,7 @@ async def resolve_installation(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="bridge not available",
         )
-    
+
     try:
         result = await runtime.bridge.resolve_installation(token)
         return InstallationInfo(

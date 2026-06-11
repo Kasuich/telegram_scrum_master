@@ -1,6 +1,11 @@
 """Tests for fuzzy assignee resolution (no API)."""
 
-from core.assignee_resolver import TrackerUser, best_user_match, extract_assignee_mention, resolve_first_person
+from core.assignee_resolver import (
+    TrackerUser,
+    best_user_match,
+    extract_assignee_mention,
+    resolve_first_person,
+)
 
 
 def _team() -> list[TrackerUser]:
@@ -125,7 +130,11 @@ def test_resolve_first_person_case_insensitive():
 
 
 def test_resolve_first_person_embedded_in_sentence():
-    assert resolve_first_person("пожалуйста, назначь мне задачу по CI", tracker_login="nukolaus") == "nukolaus"
+    result = resolve_first_person(
+        "пожалуйста, назначь мне задачу по CI",
+        tracker_login="nukolaus",
+    )
+    assert result == "nukolaus"
 
 
 def test_resolve_first_person_third_person_unaffected():

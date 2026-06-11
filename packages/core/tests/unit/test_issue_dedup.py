@@ -5,12 +5,12 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from core.issue_dedup import (
     build_dedup_find_queries,
     build_dedup_status_exclusions,
     filter_out_cancelled,
     find_duplicate_issue,
+    find_duplicate_issues,
     issues_match_duplicate,
     normalize_summary,
     summaries_match,
@@ -137,3 +137,41 @@ async def test_find_duplicate_issue_returns_best_match():
     )
     assert dup is not None
     assert dup["key"] == "TEST-5"
+
+
+@patch.dict("os.environ", ENV)
+@pytest.mark.asyncio
+async def test_find_duplicate_issues_returns_all_sorted():
+    client = AsyncMock()
+    client.search_issues.return_value = [
+        {
+            "key": "TEST-5",
+            "summary": "Сделать рабочий дайджест",
+            "type": {"key": "task"},
+            "status": {"display": "Открыт", "key": "open"},
+        },
+        {
+            "key": "TEST-9",
+            "summary": "Сделать рабочий дайджест по проекту",
+            "type": {"key": "task"},
+            "status": {"display": "В работе", "key": "inProgress"},
+        },
+        {
+            "key": "TEST-3",
+            "summary": "Совсем про другое",
+            "type": {"key": "task"},
+            "status": {"display": "Открыт", "key": "open"},
+        },
+    ]
+    dups = await find_duplicate_issues(
+        client,
+        "TEST",
+        summary="Сделать рабочий дайджест",
+        issue_type="task",
+        parent_key=None,
+        threshold=0.55,
+    )
+    keys = [d["key"] for d in dups]
+    # Both similar issues returned, exact match first; unrelated one excluded.
+    assert keys[0] == "TEST-5"
+    assert set(keys) == {"TEST-5", "TEST-9"}

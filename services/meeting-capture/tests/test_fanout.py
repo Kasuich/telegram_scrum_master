@@ -127,7 +127,7 @@ async def test_fanout_delivers_to_telegram_and_pm_agent(tmp_path: Path, monkeypa
     # pm_agent leg
     pm_calls = [c for c in fake_client.invoke_calls if c.get("agent") == "pm_agent"]
     assert len(pm_calls) == 1
-    assert pm_calls[0]["message"].startswith("Оформи доску")
+    assert pm_calls[0]["message"].startswith("Синхронизируй доску по итогам встречи")
     assert "Всё ок" in pm_calls[0]["message"]
     assert pm_calls[0]["context"]["chat_id"] == "-100123"
 

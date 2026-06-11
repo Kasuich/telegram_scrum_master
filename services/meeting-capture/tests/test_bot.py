@@ -76,6 +76,10 @@ def test_parse_speaking_aria_label(label: str, expected: str | None) -> None:
 def test_is_noise_participant_name_filters_ui_chrome() -> None:
     assert is_noise_participant_name("Тарифы для бизнеса") is True
     assert is_noise_participant_name("Николай") is False
+    assert is_noise_participant_name("организатор") is True
+    assert is_noise_participant_name("Ссылка скопирована") is True
+    assert is_noise_participant_name("Николай Александров") is False
+    assert is_noise_participant_name("Демонстрация") is True
     assert (
         is_noise_participant_name(
             "PM Assistant (recording)",

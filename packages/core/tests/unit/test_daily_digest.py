@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, patch
 
 from core.daily_digest import (
     DAILY_DIGEST_JOB_NAME,
-    DigestIssue,
     DigestMember,
     DigestReport,
     build_daily_digest_report,
@@ -176,7 +175,7 @@ async def test_build_report_groups_by_registered_telegram_members() -> None:
             team_id=uuid.uuid4(),
             now=datetime(2026, 6, 8, 15, 0, tzinfo=timezone.utc),
             client_factory=lambda: client,
-    )
+        )
 
     assert report.queue == "DARKHORSE"
     assert report.members == []
@@ -188,10 +187,7 @@ async def test_build_report_uses_poll_tasks_when_tracker_sections_are_empty() ->
     team_id = uuid.uuid4()
     poll = SimpleNamespace(
         tracker_login="alice",
-        response_text=(
-            "задача 2 закрыта "
-            "задача 1 нужно больше информации"
-        ),
+        response_text=("задача 2 закрыта задача 1 нужно больше информации"),
         issues_json=[
             {
                 "number": 1,

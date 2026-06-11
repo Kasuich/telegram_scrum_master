@@ -43,6 +43,13 @@ _BACKLOG_MARKERS = (
     "из встречи",
     "заведи в трекер",
 )
+# Post-meeting reconciliation trigger (sync the board against discussion, not
+# a from-scratch backlog). Must win over backlog intent in the stage router.
+_MEETING_SYNC_MARKERS = (
+    "синхронизируй доску",
+    "синхронизация доски",
+    "итоги встречи",
+)
 _CLOSE_MARKERS = (
     "закрой",
     "закрыть",
@@ -95,6 +102,12 @@ def message_has_backlog_intent(text: str) -> bool:
     if len(text.strip()) >= min_chars:
         return True
     return False
+
+
+def message_has_meeting_sync_intent(text: str) -> bool:
+    """Post-meeting board sync: reconcile items against existing issues (update or create)."""
+    t = normalize_text(text)
+    return any(m in t for m in _MEETING_SYNC_MARKERS)
 
 
 def message_has_create_intent(text: str) -> bool:
@@ -285,10 +298,7 @@ def clarification_needed(
         if count == 0 and not find_result.get("issues"):
             return f"Не нашёл задачу по «{hint}». Уточни ключ задачи или исполнителя."
         if count > 1 and not _issue_keys_used_in_turn(turn_steps, 0):
-            return (
-                f"Нашёл несколько задач по «{hint}». "
-                "Уточни ключ задачи (например DARKHORSE-12)."
-            )
+            return f"Нашёл несколько задач по «{hint}». Уточни ключ задачи (например DARKHORSE-12)."
 
     if stage_value == "TRANSITION":
         transitions_seen = False

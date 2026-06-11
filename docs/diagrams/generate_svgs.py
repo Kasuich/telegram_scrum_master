@@ -26,7 +26,7 @@ def box(x: int, y: int, w: int, h: int, text: str, kind: str = "rect") -> str:
     t = esc(text)
     if kind == "diamond":
         cx, cy = x + w // 2, y + h // 2
-        pts = f"{cx},{y} {x+w},{cy} {cx},{y+h} {x},{cy}"
+        pts = f"{cx},{y} {x + w},{cy} {cx},{y + h} {x},{cy}"
         shape = f'<polygon points="{pts}" fill="#fff" stroke="#333" stroke-width="1.5"/>'
     elif kind == "terminal":
         shape = (
@@ -41,7 +41,7 @@ def box(x: int, y: int, w: int, h: int, text: str, kind: str = "rect") -> str:
     lines = t.split("\n")
     ty = y + h // 2 - (len(lines) - 1) * 8
     labels = "".join(
-        f'<text x="{x + w//2}" y="{ty + i*16}" text-anchor="middle" fill="#111">{line}</text>'
+        f'<text x="{x + w // 2}" y="{ty + i * 16}" text-anchor="middle" fill="#111">{line}</text>'
         for i, line in enumerate(lines)
     )
     return shape + labels
@@ -56,8 +56,7 @@ def arrow(x1: int, y1: int, x2: int, y2: int, label: str = "") -> str:
             f'fill="#555" font-size="11">{esc(label)}</text>'
         )
     return (
-        f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="#444" '
-        f'marker-end="url(#arr)"/>{lbl}'
+        f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="#444" marker-end="url(#arr)"/>{lbl}'
     )
 
 

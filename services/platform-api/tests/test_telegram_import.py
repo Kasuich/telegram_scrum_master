@@ -1,13 +1,7 @@
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
 from platform_api.telegram_import import (
     ImportStats,
-    ParsedMessage,
     _build_media_json,
     _extract_text,
     _message_kind_from_type,

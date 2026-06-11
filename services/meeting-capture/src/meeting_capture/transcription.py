@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +13,8 @@ import httpx
 
 from meeting_capture.bot import is_noise_participant_name, sanitize_participant_name
 from meeting_capture.config import CaptureSettings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -69,9 +72,10 @@ class SpeechKitTranscriber(Transcriber):
             )
             payload = await self._poll_result(client, operation_id)
 
+        segments = deduplicate_mirror_segments(parse_speechkit_segments(payload))
         return TranscriptionResult(
             source="speechkit",
-            segments=deduplicate_mirror_segments(parse_speechkit_segments(payload)),
+            segments=segments,
             participants_observed=participants_observed,
         )
 
@@ -277,6 +281,32 @@ def _normalize_segment_text(text: str) -> str:
     return " ".join(text.split())
 
 
+def _texts_are_mirror(text_a: str, text_b: str) -> bool:
+    """True when two diarized texts are the same utterance with a diverging tail."""
+    if text_a == text_b:
+        return True
+    shorter, longer = (text_a, text_b) if len(text_a) <= len(text_b) else (text_b, text_a)
+    if not shorter:
+        return False
+    if longer.startswith(shorter):
+        return True
+    return shorter in longer
+
+
+def _prefer_mirror_segment(
+    existing: dict[str, Any],
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    """Pick the richer mirror duplicate (longer text, then named speaker)."""
+    if len(candidate["text"]) > len(existing["text"]):
+        return candidate
+    if len(candidate["text"]) < len(existing["text"]):
+        return existing
+    if not existing.get("speaker_name") and candidate.get("speaker_name"):
+        return candidate
+    return existing
+
+
 # Mono Telemost mixes often get the same phrase on SPEAKER_01 and SPEAKER_02 with
 # slightly different SpeechKit time bounds — collapse those mirrors.
 _MIRROR_START_TOLERANCE_MS = 2_000
@@ -309,13 +339,14 @@ def deduplicate_mirror_segments(segments: list[dict[str, Any]]) -> list[dict[str
         text = seg["text"]
         replace_idx: int | None = None
         for idx, existing in enumerate(kept):
-            if existing["text"] != text:
+            if not _texts_are_mirror(existing["text"], text):
                 continue
             estart = int(existing.get("start_ms") or 0)
             if abs(start - estart) > _MIRROR_START_TOLERANCE_MS:
                 continue
             # Same phrase near the same time — mirror duplicate.
-            if not existing.get("speaker_name") and seg.get("speaker_name"):
+            chosen = _prefer_mirror_segment(existing, seg)
+            if chosen is seg:
                 replace_idx = idx
             else:
                 replace_idx = -1  # drop seg
@@ -346,19 +377,54 @@ def _clean_participant_roster(
     return roster
 
 
-def _map_speakers_from_roster(
-    segments: list[dict[str, Any]],
-    roster: list[str],
-) -> list[dict[str, Any]]:
-    """Fallback when DOM timeline is empty: map labels to roster by speech order."""
+def _labels_by_first_appearance(segments: list[dict[str, Any]]) -> list[str]:
     labels_order: list[str] = []
     for seg in sorted(segments, key=lambda item: int(item.get("start_ms") or 0)):
         label = str(seg.get("speaker_label") or "")
         if label and label not in labels_order:
             labels_order.append(label)
-    if not labels_order or len(labels_order) != len(roster):
+    return labels_order
+
+
+def _label_speech_duration_ms(segments: list[dict[str, Any]]) -> dict[str, int]:
+    durations: dict[str, int] = {}
+    for seg in segments:
+        label = str(seg.get("speaker_label") or "")
+        if not label:
+            continue
+        start = int(seg.get("start_ms") or 0)
+        end = int(seg.get("end_ms") or start)
+        durations[label] = durations.get(label, 0) + max(end - start, 0)
+    return durations
+
+
+def _map_speakers_from_roster(
+    segments: list[dict[str, Any]],
+    roster: list[str],
+) -> list[dict[str, Any]]:
+    """Fallback when DOM timeline is empty: map labels to roster by speech order."""
+    labels_order = _labels_by_first_appearance(segments)
+    if not labels_order or not roster:
         return [{**seg, "speaker_name": None} for seg in segments]
-    mapping = dict(zip(labels_order, roster, strict=True))
+
+    if len(labels_order) == len(roster):
+        mapping = dict(zip(labels_order, roster, strict=True))
+    else:
+        durations = _label_speech_duration_ms(segments)
+        dominant_labels = sorted(
+            labels_order,
+            key=lambda label: (-durations.get(label, 0), labels_order.index(label)),
+        )
+        pair_count = min(len(dominant_labels), len(roster))
+        mapping = dict(zip(dominant_labels[:pair_count], roster[:pair_count], strict=True))
+        logger.warning(
+            "Roster fallback heuristic: %d diarization labels vs %d roster names; "
+            "mapped top %d by total speech duration (order unreliable with >2 speakers)",
+            len(labels_order),
+            len(roster),
+            pair_count,
+        )
+
     return [
         {**seg, "speaker_name": mapping.get(str(seg.get("speaker_label") or ""))}
         for seg in segments

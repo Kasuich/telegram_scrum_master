@@ -285,9 +285,7 @@ class TestQueryStage:
             )
 
         tool_results = [
-            step.get("tool_name")
-            for step in result.steps
-            if step.get("kind") == "tool_result"
+            step.get("tool_name") for step in result.steps if step.get("kind") == "tool_result"
         ]
         assert tool_results == ["GetIssues", "BulkUpdate"]
         assert result.reply == "Оценил и обновил две задачи по 5 SP."
@@ -325,9 +323,7 @@ class TestQueryStage:
             )
 
         tool_results = [
-            step.get("tool_name")
-            for step in result.steps
-            if step.get("kind") == "tool_result"
+            step.get("tool_name") for step in result.steps if step.get("kind") == "tool_result"
         ]
         assert tool_results == ["GetIssues", "tracker_board_snapshot"]
         assert result.reply.startswith("Roman:")
@@ -552,9 +548,7 @@ class TestIntakeStage:
             )
 
         tool_results = [
-            step.get("tool_name")
-            for step in result.steps
-            if step.get("kind") == "tool_result"
+            step.get("tool_name") for step in result.steps if step.get("kind") == "tool_result"
         ]
         assert tool_results == ["CreateIssue", "ChangeIssueStatus", "UpdateIssue"]
         assert "Следующий вызов" not in (result.reply or "")
@@ -578,8 +572,7 @@ class TestIntakeStage:
             result = await runner.invoke("У кого больше всего задач?", "query-live-data")
 
         assert any(
-            step.get("kind") == "tool_result"
-            and step.get("tool_name") == "tracker_board_snapshot"
+            step.get("kind") == "tool_result" and step.get("tool_name") == "tracker_board_snapshot"
             for step in result.steps
         )
         assert result.reply == "У Артёма Цыканова больше всего задач: 13."

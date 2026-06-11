@@ -113,7 +113,9 @@ def render_telegram_html(text: str) -> str:
         _BARE_URL_RE,
         source,
         protected,
-        lambda match: f'<a href="{html.escape(match.group(0), quote=True)}">{html.escape(match.group(0))}</a>',
+        lambda match: (
+            f'<a href="{html.escape(match.group(0), quote=True)}">{html.escape(match.group(0))}</a>'
+        ),
     )
 
     escaped = html.escape(source)

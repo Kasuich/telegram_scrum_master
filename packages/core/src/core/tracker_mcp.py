@@ -124,9 +124,7 @@ class TrackerMCPClient:
     async def _post(self, client: httpx.AsyncClient, payload: dict[str, Any]) -> Any:
         response = await client.post(self._url, headers=self._headers(), json=payload)
         if response.status_code >= 400:
-            raise TrackerMCPError(
-                f"Tracker MCP HTTP {response.status_code}: {response.text[:300]}"
-            )
+            raise TrackerMCPError(f"Tracker MCP HTTP {response.status_code}: {response.text[:300]}")
         session_id = response.headers.get("mcp-session-id")
         if session_id:
             self._session_id = session_id
@@ -213,9 +211,7 @@ class TrackerMCPClient:
             json=payload,
         )
         if response.status_code >= 400:
-            raise TrackerMCPError(
-                f"Tracker MCP HTTP {response.status_code}: {response.text[:300]}"
-            )
+            raise TrackerMCPError(f"Tracker MCP HTTP {response.status_code}: {response.text[:300]}")
         if "id" not in payload:
             return None
 
@@ -272,8 +268,7 @@ class TrackerMCPClient:
                 if isinstance(initialized, dict) and initialized.get("error"):
                     error = initialized["error"]
                     raise TrackerMCPError(
-                        f"Tracker MCP initialize {error.get('code')}: "
-                        f"{error.get('message')}"
+                        f"Tracker MCP initialize {error.get('code')}: {error.get('message')}"
                     )
 
                 await self._legacy_rpc(
@@ -306,9 +301,7 @@ class TrackerMCPClient:
             data = await self._request_streamable(method, params)
         if isinstance(data, dict) and data.get("error"):
             error = data["error"]
-            raise TrackerMCPError(
-                f"Tracker MCP {error.get('code')}: {error.get('message')}"
-            )
+            raise TrackerMCPError(f"Tracker MCP {error.get('code')}: {error.get('message')}")
         return data.get("result") if isinstance(data, dict) else data
 
     async def list_tools(self) -> list[dict[str, Any]]:
@@ -362,12 +355,16 @@ def _normalize_tool_arguments(name: str, arguments: dict[str, Any]) -> dict[str,
             normalized["queue"] = queue
     elif name == "ChangeIssueStatus":
         resolution = str(normalized.get("resolution") or "").strip().lower()
-        status = str(
-            normalized.get("status")
-            or normalized.get("transition")
-            or normalized.get("transition_id")
-            or ""
-        ).strip().lower()
+        status = (
+            str(
+                normalized.get("status")
+                or normalized.get("transition")
+                or normalized.get("transition_id")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
         closes_issue = status in {"done", "closed", "close", "resolved", "закрыт", "закрыто"}
         if closes_issue and (
             not resolution
@@ -406,7 +403,8 @@ async def register_tracker_mcp_tools() -> list[str]:
                 func=invoke,
                 risk=_RISK_BY_TOOL.get(name, "medium"),
                 scopes=["tracker:read" if name in _READ_TOOLS else "tracker:write"],
-                input_schema=definition.get("inputSchema") or {
+                input_schema=definition.get("inputSchema")
+                or {
                     "type": "object",
                     "properties": {},
                 },

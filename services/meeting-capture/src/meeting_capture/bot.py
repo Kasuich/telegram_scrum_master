@@ -17,9 +17,46 @@ _NOISE_NAME_RE = re.compile(
     r"(тариф|поддержк|вопрос|микрофон|камер|чат|запись|participant|участник|"
     r"pm assistant|recording|продолжить|подключ|join|continue|browser|браузер|"
     r"ваше имя|your name|screen|экран|настрой|settings|выйти|leave|"
-    r"^\d+$|^[+]\d)",
+    r"^\d+$|^[+]\d|"
+    r"организатор|organizer|"
+    r"скопировать ссылку|ссылка скопирована|copy link|link copied|"
+    r"создать видеовстречу|запланировать|мобильное приложение|"
+    r"оцените качество|отправить|улучшить тариф|"
+    r"демонстрация|screen share|презентация)",
     re.I,
 )
+# Telemost Goloom grid (2026): active remote tile gets a rootStroke* wrapper; names
+# live on span[class*="TextName"][title] inside GoloomParticipantsRenderer.
+_GOLOOM_ACTIVE_SPEAKER_JS = """
+() => {
+  const renderer = document.querySelector('[class*="GoloomParticipantsRenderer"]');
+  if (!renderer) return null;
+  for (const root of renderer.querySelectorAll('[class*="rootStroke"]')) {
+    if (root.closest('[class*="selfView"]')) continue;
+    const nameEl = root.querySelector('span[class*="TextName"][title]');
+    const title = nameEl && nameEl.getAttribute('title');
+    if (title) return title;
+  }
+  return null;
+}
+"""
+_GOLOOM_PARTICIPANT_TITLES_JS = """
+() => {
+  const renderer = document.querySelector('[class*="GoloomParticipantsRenderer"]');
+  if (!renderer) return [];
+  const out = [];
+  const seen = new Set();
+  for (const el of renderer.querySelectorAll('span[class*="TextName"][title]')) {
+    const title = (el.getAttribute('title') || '').trim();
+    if (!title) continue;
+    const key = title.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(title);
+  }
+  return out;
+}
+"""
 _SPEAKING_ARIA_RES = (
     re.compile(r"^(.+?)(?:,|\s)+(?:говорит|speaking|is speaking)\b", re.I),
     re.compile(r"(?:говорит|speaking)[:\s]+(.+)$", re.I),
@@ -285,6 +322,10 @@ class PlaywrightTelemostBot(TelemostBot):
             return None
         bot_name = self.settings.bot_display_name
 
+        name = await self._active_speaker_from_goloom_grid()
+        if name:
+            return name
+
         for label in await self._collect_aria_labels():
             name = parse_speaking_aria_label(label)
             if name and not is_noise_participant_name(name, bot_display_name=bot_name):
@@ -320,6 +361,43 @@ class PlaywrightTelemostBot(TelemostBot):
             except Exception:
                 continue
         return None
+
+    async def _active_speaker_from_goloom_grid(self) -> str | None:
+        """Read the highlighted remote tile from the Telemost Goloom participant grid."""
+        if self._page is None:
+            return None
+        bot_name = self.settings.bot_display_name
+        try:
+            raw = await self._page.evaluate(_GOLOOM_ACTIVE_SPEAKER_JS)
+        except Exception:
+            return None
+        name = sanitize_participant_name(str(raw or ""))
+        if name and not is_noise_participant_name(name, bot_display_name=bot_name):
+            return name
+        return None
+
+    async def _participants_from_goloom_grid(self) -> list[dict[str, Any]]:
+        if self._page is None:
+            return []
+        bot_name = self.settings.bot_display_name
+        try:
+            titles = await self._page.evaluate(_GOLOOM_PARTICIPANT_TITLES_JS)
+        except Exception:
+            return []
+        if not isinstance(titles, list):
+            return []
+        names: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in titles:
+            name = sanitize_participant_name(str(raw))
+            key = name.casefold()
+            if not name or key in seen:
+                continue
+            if is_noise_participant_name(name, bot_display_name=bot_name):
+                continue
+            seen.add(key)
+            names.append({"display_name": name, "source": "telemost_goloom_grid"})
+        return names[:30]
 
     async def _try_open_participants_panel(self) -> None:
         """Open the participants drawer so names / speaking state are readable."""
@@ -460,8 +538,12 @@ class PlaywrightTelemostBot(TelemostBot):
         return False
 
     async def _participants_best_effort(self) -> list[dict[str, Any]]:
+        names = await self._participants_from_goloom_grid()
+        if names:
+            return names
+
         await self._try_open_participants_panel()
-        names: list[dict[str, Any]] = []
+        names = []
         seen: set[str] = set()
         bot_name = self.settings.bot_display_name
 

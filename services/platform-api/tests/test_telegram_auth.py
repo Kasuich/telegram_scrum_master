@@ -85,9 +85,7 @@ def test_authorization_message_supports_inline_buttons() -> None:
         status="active",
         settings={},
     )
-    reply_markup = {
-        "inline_keyboard": [[{"text": "Да, это я", "callback_data": "token"}]]
-    }
+    reply_markup = {"inline_keyboard": [[{"text": "Да, это я", "callback_data": "token"}]]}
 
     outbox = _enqueue_message(
         session,

@@ -18,7 +18,6 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field
 
-
 _S3_ENDPOINT = os.getenv("S3_ENDPOINT_URL", "")
 _S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY_ID", "")
 _S3_SECRET_KEY = os.getenv("S3_SECRET_ACCESS_KEY", "")
@@ -27,12 +26,24 @@ _S3_REGION = os.getenv("S3_REGION", "ru-central1")
 _PRESIGNED_URL_TTL_SECONDS = int(os.getenv("S3_PRESIGNED_TTL_SECONDS", "3600"))
 _MAX_FILE_SIZE_MB = int(os.getenv("S3_MAX_FILE_SIZE_MB", "100"))
 
-_ALLOWED_MIME_TYPES = frozenset({
-    "image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml",
-    "video/mp4", "video/mpeg", "video/quicktime", "video/webm",
-    "audio/ogg", "audio/mpeg", "audio/mp3", "audio/wav",
-    "application/pdf",
-})
+_ALLOWED_MIME_TYPES = frozenset(
+    {
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
+        "image/svg+xml",
+        "video/mp4",
+        "video/mpeg",
+        "video/quicktime",
+        "video/webm",
+        "audio/ogg",
+        "audio/mpeg",
+        "audio/mp3",
+        "audio/wav",
+        "application/pdf",
+    }
+)
 
 _OBJECT_KEY_PREFIX = "telegram"
 
