@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import random
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from prometheus_client import Counter, Gauge, Histogram
 
-from telegram_gateway.bot_api import BotAPIError, TelegramBotClient
+from telegram_gateway.bot_api import BotAPIError, SendResult, TelegramBotClient
 from telegram_gateway.bridge import (
     BridgeRequestError,
     LeaseItem,
@@ -16,6 +18,7 @@ from telegram_gateway.bridge import (
 from telegram_gateway.formatting import render_telegram_html
 from telegram_gateway.settings import GatewaySettings
 from telegram_gateway.spool import GatewaySpool
+from telegram_gateway.streaming import plan_pacing, status_frames, stream_output
 
 WEBHOOK_TOTAL = Counter("telegram_gateway_webhook_total", "Webhook requests received", ["status"])
 SPOOL_DEPTH = Gauge("telegram_gateway_spool_depth", "Queued inbound updates")
@@ -42,6 +45,15 @@ class GatewayRuntime:
     next_update_offset: int | None = None
     installation_id: str | None = None
     team_id: str | None = None
+    rng: random.Random = field(default_factory=random.Random)
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    draft_seq: int = 0
+
+    def _next_draft_id(self) -> int:
+        """Unique int32 draft id per stream (stable across updates of one
+        stream, distinct between streams)."""
+        self.draft_seq = (self.draft_seq + 1) % 2_147_483_647
+        return self.draft_seq + 1
 
     def _now(self) -> datetime:
         return datetime.now(tz=timezone.utc)
@@ -224,7 +236,10 @@ class GatewayRuntime:
 
         method = item.payload.get("method")
         if method == "sendMessage":
-            text = render_telegram_html(str(item.payload.get("text", "")))
+            raw_text = str(item.payload.get("text", ""))
+            text = render_telegram_html(raw_text)
+            if self._should_stream(item, raw_text, text):
+                return await self._deliver_streaming_reply(item, raw_text, text)
             return await self.bot_client.send_message(
                 chat_id=item.target_chat_id or item.target_user_id,
                 text=text,
@@ -246,6 +261,115 @@ class GatewayRuntime:
                 reply_markup=item.payload.get("reply_markup", {"inline_keyboard": []}),
             )
         return None
+
+    def _should_stream(self, item: LeaseItem, raw_text: str, rendered: str) -> bool:
+        """Cosmetic streaming applies only to flagged pm_agent conversation
+        replies that fit a single Telegram message and are worth animating."""
+        if not self.settings.stream_enabled or self.bot_client is None:
+            return False
+        metadata = item.payload.get("metadata") or {}
+        if not metadata.get("stream"):
+            return False
+        # No room for a typing effect on plain confirmations / buttons.
+        if item.payload.get("reply_markup"):
+            return False
+        if len(raw_text) < self.settings.stream_min_chars:
+            return False
+        # The committed message can't exceed the 4096-char limit.
+        return len(rendered) <= TelegramBotClient.MAX_MESSAGE_LENGTH
+
+    async def _deliver_streaming_reply(
+        self,
+        item: LeaseItem,
+        raw_text: str,
+        rendered: str,
+    ) -> SendResult | None:
+        """Status line (edited in place) → delete → native draft stream.
+
+        The reveal uses ``sendMessageDraft`` (Telegram draws the animated dots
+        natively); the answer is committed to history with a real
+        ``sendMessage`` carrying the HTML formatting. Any Bot API hiccup
+        degrades gracefully to a plain final message.
+        """
+        assert self.bot_client is not None
+        chat_id = item.target_chat_id or item.target_user_id
+        reply_to = item.payload.get("reply_to_message_id")
+        thread_id = item.payload.get("message_thread_id")
+        metadata = item.payload.get("metadata") or {}
+        stages = [str(key) for key in (metadata.get("stages") or [])]
+
+        async def _plain_send() -> SendResult:
+            return await self.bot_client.send_message(
+                chat_id=chat_id,
+                text=rendered,
+                reply_to_message_id=reply_to,
+                message_thread_id=thread_id,
+                parse_mode="HTML",
+            )
+
+        # 1. Status message, edited in place through a couple of stage beats.
+        frames = status_frames(stages, self.rng)
+        status_message_id: str | None = None
+        try:
+            status = await self.bot_client.send_message(
+                chat_id=chat_id,
+                text=frames[0],
+                reply_to_message_id=reply_to,
+                message_thread_id=thread_id,
+                parse_mode="HTML",
+            )
+            status_message_id = status.message_id
+            for frame in frames[1:]:
+                await self.sleep(self.settings.stream_status_interval)
+                await self.bot_client.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_message_id,
+                    text=frame,
+                    parse_mode="HTML",
+                )
+            await self.sleep(self.settings.stream_status_interval)
+        except BotAPIError:
+            # Status failed — abandon the effect, deliver the real answer.
+            if status_message_id is not None:
+                await self._try_delete(chat_id, status_message_id)
+            return await _plain_send()
+
+        # 2. Drop the status message before revealing the answer.
+        await self._try_delete(chat_id, status_message_id)
+
+        # 3. Stream the answer into a draft, then commit it with sendMessage.
+        chunk_size, delay = plan_pacing(
+            len(raw_text),
+            cps=self.settings.stream_cps,
+            interval=self.settings.stream_interval,
+            max_steps=self.settings.stream_max_steps,
+            max_duration=self.settings.stream_max_duration,
+        )
+        draft_id = self._next_draft_id()
+        accumulated = ""
+        try:
+            async for chunk in stream_output(
+                raw_text, chunk_size=chunk_size, delay=delay, sleep=self.sleep
+            ):
+                accumulated += chunk
+                # Plain text draft — Telegram appends the animated dots itself.
+                await self.bot_client.send_message_draft(
+                    chat_id=chat_id, draft_id=draft_id, text=accumulated
+                )
+        except BotAPIError:
+            # Draft stream failed mid-way — fall through and commit the answer.
+            pass
+
+        # The draft is ephemeral; a real send is required to persist the reply.
+        return await _plain_send()
+
+    async def _try_delete(self, chat_id: str | None, message_id: str) -> None:
+        if self.bot_client is None:
+            return
+        try:
+            await self.bot_client.delete_message(chat_id=chat_id, message_id=message_id)
+        except BotAPIError:
+            pass
 
     async def run(self, stop_event: asyncio.Event) -> None:
         await self.sync_transport_mode()

@@ -294,3 +294,120 @@ async def test_deliver_once_no_bridge_returns_zero(tmp_path: Path) -> None:
     delivered = await runtime.deliver_once()
 
     assert delivered == 0
+
+
+def _streaming_runtime(tmp_path: Path):
+    import random
+
+    runtime = make_runtime(tmp_path)
+    runtime.rng = random.Random(0)
+    runtime.sleep = AsyncMock()  # type: ignore[assignment]  # don't actually wait in tests
+
+    ids = iter(["s1", "a1"])
+    runtime.bot_client.send_message = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda **kw: SendResult(
+            message_id=next(ids),
+            chat_id=str(kw["chat_id"]),
+            text=str(kw["text"]),
+            sent_at=datetime.now(tz=timezone.utc),
+        )
+    )
+    runtime.bot_client.edit_message_text = AsyncMock()  # type: ignore[method-assign]
+    runtime.bot_client.delete_message = AsyncMock()  # type: ignore[method-assign]
+    runtime.bot_client.send_message_draft = AsyncMock()  # type: ignore[method-assign]
+    return runtime
+
+
+def _stream_lease(text: str) -> LeaseResponse:
+    return LeaseResponse(
+        items=[
+            LeaseItem(
+                delivery_id="delivery-stream",
+                team_id="team-1",
+                installation_id="inst-1",
+                category="agent_reply",
+                target_chat_id="-100123",
+                target_user_id="991",
+                payload={
+                    "method": "sendMessage",
+                    "text": text,
+                    "reply_to_message_id": "42",
+                    "metadata": {"stream": True, "stages": ["QUERY"]},
+                },
+                business_connection_id=None,
+                lease_expires_at=datetime.now(tz=timezone.utc),
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_streaming_reply_status_then_delete_then_draft(tmp_path: Path) -> None:
+    runtime = _streaming_runtime(tmp_path)
+    runtime.bridge.lease_outbox = AsyncMock(  # type: ignore[method-assign]
+        return_value=_stream_lease("Нашла три задачи в очереди, держи список.")
+    )
+
+    delivered = await runtime.deliver_once()
+
+    assert delivered == 1
+    # Two real messages sent: the status line, then the committed answer.
+    assert runtime.bot_client.send_message.await_count == 2
+    status_send = runtime.bot_client.send_message.await_args_list[0]
+    assert status_send.kwargs["text"].startswith("<i>")
+    assert status_send.kwargs["parse_mode"] == "HTML"
+    # The status message is deleted before the answer is revealed.
+    runtime.bot_client.delete_message.assert_awaited_once_with(
+        chat_id="-100123", message_id="s1"
+    )
+    # The answer streams as a native draft (animated dots), growing text.
+    assert runtime.bot_client.send_message_draft.await_count >= 1
+    draft_calls = runtime.bot_client.send_message_draft.await_args_list
+    draft_id = draft_calls[0].kwargs["draft_id"]
+    assert all(c.kwargs["draft_id"] == draft_id for c in draft_calls)  # one stream
+    assert len(draft_calls[-1].kwargs["text"]) >= len(draft_calls[0].kwargs["text"])
+    # The reply is committed with a real sendMessage carrying HTML.
+    final_send = runtime.bot_client.send_message.await_args_list[-1]
+    assert final_send.kwargs["parse_mode"] == "HTML"
+    # Acked as sent with the committed message's provider id.
+    runtime.bridge.ack_outbox.assert_awaited_once()
+    assert runtime.bridge.ack_outbox.await_args.kwargs["provider_message_id"] == "a1"
+
+
+@pytest.mark.asyncio
+async def test_streaming_skipped_for_short_reply(tmp_path: Path) -> None:
+    runtime = _streaming_runtime(tmp_path)
+    runtime.bridge.lease_outbox = AsyncMock(  # type: ignore[method-assign]
+        return_value=_stream_lease("ок")
+    )
+
+    delivered = await runtime.deliver_once()
+
+    assert delivered == 1
+    # Plain single send, no status / draft animation.
+    runtime.bot_client.send_message.assert_awaited_once()
+    runtime.bot_client.delete_message.assert_not_called()
+    runtime.bot_client.send_message_draft.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_streaming_disabled_by_settings(tmp_path: Path) -> None:
+    runtime = _streaming_runtime(tmp_path)
+    runtime.settings = GatewaySettings(
+        bot_token=runtime.settings.bot_token,
+        webhook_secret=runtime.settings.webhook_secret,
+        main_bridge_url=runtime.settings.main_bridge_url,
+        bridge_key_id=runtime.settings.bridge_key_id,
+        bridge_key_secret=runtime.settings.bridge_key_secret,
+        spool_path=runtime.settings.spool_path,
+        stream_enabled=False,
+    )
+    runtime.bridge.lease_outbox = AsyncMock(  # type: ignore[method-assign]
+        return_value=_stream_lease("Нашла три задачи в очереди, держи список.")
+    )
+
+    delivered = await runtime.deliver_once()
+
+    assert delivered == 1
+    runtime.bot_client.send_message.assert_awaited_once()
+    runtime.bot_client.send_message_draft.assert_not_called()

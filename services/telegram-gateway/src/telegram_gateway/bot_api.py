@@ -173,6 +173,51 @@ class TelegramBotClient:
             sent_at=datetime.now(tz=timezone.utc),
         )
 
+    async def send_message_draft(
+        self,
+        chat_id: str | int,
+        draft_id: int,
+        text: str,
+    ) -> dict[str, object]:
+        """Push/refresh a streaming draft (Bot API ``sendMessageDraft``).
+
+        Telegram shows the draft with native animated dots while it keeps being
+        updated under the same ``draft_id``. The draft is *not* persisted to the
+        chat history — a real ``sendMessage`` must follow to commit the answer.
+        Sent as plain text on purpose (no ``parse_mode``) so partial Markdown
+        never produces broken tags mid-stream.
+        """
+        return await self._request(
+            "sendMessageDraft",
+            {"chat_id": chat_id, "draft_id": draft_id, "text": text},
+        )
+
+    async def edit_message_text(
+        self,
+        chat_id: str | int,
+        message_id: str | int,
+        text: str,
+        parse_mode: str | None = None,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        return await self._request("editMessageText", payload)
+
+    async def delete_message(
+        self,
+        chat_id: str | int,
+        message_id: str | int,
+    ) -> dict[str, object]:
+        return await self._request(
+            "deleteMessage",
+            {"chat_id": chat_id, "message_id": message_id},
+        )
+
     async def answer_callback_query(
         self,
         callback_query_id: str,

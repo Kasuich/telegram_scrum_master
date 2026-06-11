@@ -41,6 +41,14 @@ class GatewaySettings:
     max_attempts: int = 8
     bridge_timeout_seconds: float = 10.0
     webhook_secret_header: str = "X-Telegram-Bot-Api-Secret-Token"
+    # Cosmetic streaming for pm_agent replies (status line + mocked typing).
+    stream_enabled: bool = True
+    stream_cps: float = 6.0
+    stream_interval: float = 0.8
+    stream_max_steps: int = 10
+    stream_max_duration: float = 6.0
+    stream_status_interval: float = 0.5
+    stream_min_chars: int = 16
 
     @classmethod
     def from_env(cls) -> "GatewaySettings":
@@ -63,4 +71,12 @@ class GatewaySettings:
             lease_seconds=int(os.getenv("TELEGRAM_OUTBOX_LEASE_SECONDS", "60")),
             max_attempts=int(os.getenv("GATEWAY_MAX_ATTEMPTS", "8")),
             bridge_timeout_seconds=float(os.getenv("GATEWAY_BRIDGE_TIMEOUT", "10")),
+            stream_enabled=os.getenv("TELEGRAM_STREAM_ENABLED", "true").strip().lower()
+            not in {"0", "false", "no", "off"},
+            stream_cps=float(os.getenv("TELEGRAM_STREAM_CPS", "6")),
+            stream_interval=float(os.getenv("TELEGRAM_STREAM_INTERVAL", "0.8")),
+            stream_max_steps=int(os.getenv("TELEGRAM_STREAM_MAX_STEPS", "10")),
+            stream_max_duration=float(os.getenv("TELEGRAM_STREAM_MAX_DURATION", "6")),
+            stream_status_interval=float(os.getenv("TELEGRAM_STREAM_STATUS_INTERVAL", "0.5")),
+            stream_min_chars=int(os.getenv("TELEGRAM_STREAM_MIN_CHARS", "16")),
         )
