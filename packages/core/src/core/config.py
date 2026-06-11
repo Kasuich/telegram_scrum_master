@@ -391,6 +391,78 @@ class StandupPollConfig(BaseSettings):
         ]
 
 
+class DeadlineReminderConfig(BaseSettings):
+    """Per-assignee deadline reminder DMs + lead summary via Telegram outbox."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="deadline_reminder_",
+        extra="ignore",
+    )
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable the deadline reminder scheduled job",
+    )
+
+    cron_expr: str = Field(
+        default="0 * * * *",
+        description=(
+            "UTC cron expression. Phase 1 (hourly): '0 * * * *'; "
+            "Phase 2 (daily 16:00 MSK): '0 13 * * *'"
+        ),
+    )
+
+    timezone: str = Field(
+        default="Europe/Moscow",
+        description="Timezone for 'today' reference and day window",
+    )
+
+    soon_days: int = Field(
+        default=3,
+        ge=0,
+        le=30,
+        description="Days ahead counted as 'due soon'",
+    )
+
+    max_issues_per_member: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Cap on issues included per per-assignee DM",
+    )
+
+    notify_assignees: bool = Field(
+        default=True,
+        description="Send per-assignee private DMs",
+    )
+
+    notify_lead: bool = Field(
+        default=True,
+        description="Send consolidated lead summary DM",
+    )
+
+    lead_roles: str = Field(
+        default="lead,admin",
+        description=(
+            "Comma-separated team_memberships.role values that receive the lead summary"
+        ),
+    )
+
+    lead_login: str = Field(
+        default="nukolaus",
+        description=(
+            "Fallback tracker_login for lead summary when no member holds a lead role"
+        ),
+    )
+
+    def lead_role_list(self) -> list[str]:
+        return [
+            part.strip()
+            for part in self.lead_roles.replace(";", ",").split(",")
+            if part.strip()
+        ]
+
+
 class RuntimeConfig(BaseSettings):
     """Runtime configuration that can be overridden per team."""
 
@@ -472,6 +544,7 @@ class Config(BaseSettings):
     backlog: BacklogConfig = Field(default_factory=BacklogConfig)
     daily_digest: DailyDigestConfig = Field(default_factory=DailyDigestConfig)
     standup_poll: StandupPollConfig = Field(default_factory=StandupPollConfig)
+    deadline_reminder: DeadlineReminderConfig = Field(default_factory=DeadlineReminderConfig)
 
     # Database URL shortcut (delegates to database.database_url)
     @property
@@ -602,6 +675,7 @@ __all__ = [
     "AppConfig",
     "RuntimeConfig",
     "DailyDigestConfig",
+    "DeadlineReminderConfig",
     "StandupPollConfig",
     "get_config",
     "reload_config",

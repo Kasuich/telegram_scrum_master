@@ -142,6 +142,16 @@ class SchedulerDaemon:
                     raise RuntimeError("team_standup_poll job requires team_id")
                 await send_team_standup_poll(session, team_id=str(team_id))
                 logger.info("Scheduler fired standup poll job %s (team_id=%s)", job.id, team_id)
+            elif job_type == "team_deadline_reminder":
+                from core.deadline_reminders import send_team_deadline_reminders
+
+                team_id = payload.get("team_id") or getattr(self._svc, "_team_id", None)
+                if not team_id:
+                    raise RuntimeError("team_deadline_reminder job requires team_id")
+                await send_team_deadline_reminders(session, team_id=str(team_id))
+                logger.info(
+                    "Scheduler fired deadline reminder job %s (team_id=%s)", job.id, team_id
+                )
             else:
                 agent_name: str = payload.get("agent", "pm_agent")
                 message: str = payload.get("message", "")
