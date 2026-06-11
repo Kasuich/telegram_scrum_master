@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import httpx
-from prometheus_client import Counter, Histogram
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +303,8 @@ class TelegramBotClient:
 
 
 # ── Metrics ─────────────────────────────────────────────────────────────────────
+
+from prometheus_client import Counter, Histogram
 
 _bot_api_total = Counter(
     "telegram_gateway_bot_api_total",

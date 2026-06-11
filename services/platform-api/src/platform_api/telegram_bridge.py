@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import re
 import time
@@ -46,6 +47,8 @@ from platform_api.telegram_auth import (
 )
 from platform_api.telegram_import import ImportReport, ImportRequest
 from platform_api.telegram_media import PresignedUploadRequest
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/internal/telegram/v1", tags=["telegram-bridge"])
 
@@ -435,6 +438,53 @@ def _build_invocation_context(
     )
 
 
+async def _enqueue_thinking_status(
+    *,
+    installation: TelegramInstallation,
+    chat: TelegramChat,
+    message: TelegramMessage,
+    telegram_user: TelegramUser | None,
+) -> None:
+    """Post an early "thinking" status, committed in its own transaction.
+
+    The agent invoke below runs inside the caller's (still-open) ingest
+    transaction, so a status row added there wouldn't be visible to the gateway
+    until the agent already finished. Committing it separately lets the gateway
+    lease and show it *while* the agent is still working. Best-effort: a failure
+    here must never block the actual reply.
+    """
+    try:
+        async with get_session() as status_session:
+            status_session.add(
+                TelegramOutbox(
+                    team_id=installation.team_id,
+                    installation_id=installation.id,
+                    chat_id=chat.id,
+                    category="agent_status",
+                    target_chat_id=chat.external_chat_id,
+                    target_user_id=(
+                        telegram_user.external_user_id
+                        if telegram_user is not None and chat.type == "private"
+                        else None
+                    ),
+                    dedupe_key=f"telegram:status:{message.id}",
+                    # Lower priority value → leased before the priority-100 reply.
+                    priority=10,
+                    status="pending",
+                    attempts=0,
+                    payload={
+                        "method": "sendMessage",
+                        "text": "",
+                        "message_thread_id": message.external_thread_id,
+                        "reply_to_message_id": message.external_message_id,
+                        "metadata": {"status": True},
+                    },
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 — cosmetic, never block the reply
+        logger.warning("Failed to enqueue thinking status: %s", exc)
+
+
 def _streaming_metadata(result: Any) -> dict[str, Any]:
     """Flag a pm_agent conversational reply for the gateway's cosmetic
     streaming (status line + mocked typing) and pass along the ordered stages
@@ -639,6 +689,13 @@ async def _route_inbound_message(
             reply = f"Не удалось отправить бота на встречу: {exc}"
         result = SimpleNamespace(reply=reply, pending_confirm=None)
     else:
+        # Show a "thinking" status while the (potentially slow) agent runs.
+        await _enqueue_thinking_status(
+            installation=installation,
+            chat=chat,
+            message=message,
+            telegram_user=telegram_user,
+        )
         result = await rpc_client.invoke(
             "pm_agent",
             body,
@@ -1152,7 +1209,9 @@ async def _upsert_business_connection(
     )
     bc = (await session.execute(stmt)).scalar_one_or_none()
 
-    user_stmt = select(TelegramUser).where(TelegramUser.external_user_id == user_external_id)
+    user_stmt = select(TelegramUser).where(
+        TelegramUser.external_user_id == user_external_id
+    )
     telegram_user = (await session.execute(user_stmt)).scalar_one_or_none()
 
     if bc is None:
@@ -1351,7 +1410,9 @@ async def lease_outbox(session: AsyncSession, data: LeaseRequest) -> list[LeaseI
             )
             bc = (await session.execute(bc_stmt)).scalar_one_or_none()
 
-            if bc is None or not _can_send_via_business_connection(bc, row.target_chat_id):
+            if bc is None or not _can_send_via_business_connection(
+                bc, row.target_chat_id
+            ):
                 # Skip this item, mark as cancelled
                 row.status = "cancelled"
                 row.last_error = "business_connection_revoked"
@@ -1460,15 +1521,12 @@ async def resolve_installation_by_token(
 
     from core.models import TelegramInstallation
 
-    _token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     # For now, resolve by external_bot_id pattern or return first active installation
     # In production this would look up a separate onboarding_tokens table
-    stmt = (
-        select(TelegramInstallation)
-        .where(TelegramInstallation.status == "active")
-        .order_by(TelegramInstallation.created_at.desc())
-        .limit(1)
-    )
+    stmt = select(TelegramInstallation).where(
+        TelegramInstallation.status == "active"
+    ).order_by(TelegramInstallation.created_at.desc()).limit(1)
 
     installation = (await session.execute(stmt)).scalar_one_or_none()
     if installation is None:
@@ -1523,13 +1581,17 @@ async def business_connection_connect(
     Stores the connection and permissions.
     """
 
-    stmt = select(TelegramInstallation).where(TelegramInstallation.status == "active").limit(1)
+    stmt = select(TelegramInstallation).where(
+        TelegramInstallation.status == "active"
+    ).limit(1)
     installation = (await session.execute(stmt)).scalar_one_or_none()
 
     if installation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No active installation")
 
-    user_stmt = select(TelegramUser).where(TelegramUser.external_user_id == payload.user_id)
+    user_stmt = select(TelegramUser).where(
+        TelegramUser.external_user_id == payload.user_id
+    )
     telegram_user = (await session.execute(user_stmt)).scalar_one_or_none()
 
     if telegram_user is None:
@@ -1687,7 +1749,10 @@ async def list_messages(
     """Query normalized message corpus with cursor-based pagination."""
     from core.repositories import MessageCursor, MessageQueryOptions, TelegramMessageRepository
 
-    await verify_bridge_request(request)
+    if not _verify_hmac(request):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature"
+        )
 
     try:
         team_uuid = uuid.UUID(team_id)
@@ -1695,7 +1760,9 @@ async def list_messages(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid team_id")
 
     if direction and direction not in ("inbound", "outbound"):
-        raise HTTPException(status_code=400, detail="direction must be 'inbound' or 'outbound'")
+        raise HTTPException(
+            status_code=400, detail="direction must be 'inbound' or 'outbound'"
+        )
 
     if access_mode and access_mode not in ("workspace_bot", "secretary", "import"):
         raise HTTPException(status_code=400, detail="Invalid access_mode")
@@ -1734,7 +1801,8 @@ async def create_import(
     session: AsyncSession = Depends(_db_session),
 ) -> ImportReport:
     """Create a new Telegram Desktop import job."""
-    await verify_bridge_request(request)
+    if not _verify_hmac(request):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature")
 
     try:
         team_uuid = uuid.UUID(body.team_id)
@@ -1783,7 +1851,8 @@ async def presign_upload(
     body: PresignedUploadRequest,
 ) -> dict:
     """Generate presigned URL for gateway to upload Telegram media to S3."""
-    await verify_bridge_request(request)
+    if not _verify_hmac(request):
+        raise HTTPException(status_code=401, detail="Invalid signature")
 
     installation_id = request.headers.get("X-Installation-Id", "")
     if not installation_id:
@@ -1791,7 +1860,6 @@ async def presign_upload(
 
     try:
         from platform_api.telegram_media import generate_presigned_upload
-
         result = generate_presigned_upload(body, installation_id)
         return result.model_dump()
     except ValueError as exc:
@@ -1807,7 +1875,8 @@ async def get_import(
     session: AsyncSession = Depends(_db_session),
 ) -> ImportReport:
     """Get import job status and report."""
-    await verify_bridge_request(request)
+    if not _verify_hmac(request):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature")
 
     try:
         job_uuid = uuid.UUID(job_id)
@@ -1850,11 +1919,12 @@ async def replay_dead_letter(
     Admin-only — requires valid HMAC signature. Use to recover from permanent
     failures after the underlying issue (bad token, banned bot, etc.) is fixed.
     """
-    await verify_bridge_request(request)
+    if not _verify_hmac(request):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature")
 
-    stmt: Select = (
-        select(TelegramOutbox).where(TelegramOutbox.status == "dead_letter").limit(body.limit)
-    )
+    stmt: Select = select(TelegramOutbox).where(
+        TelegramOutbox.status == "dead_letter"
+    ).limit(body.limit)
 
     if body.team_id:
         try:

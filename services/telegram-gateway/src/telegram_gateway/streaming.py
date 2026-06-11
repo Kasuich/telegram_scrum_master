@@ -1,20 +1,20 @@
 """Cosmetic streaming effects for pm_agent replies.
 
-Two small touches, applied only to ``agent_reply`` items that the orchestrator
-flagged as a live conversation with ``pm_agent``:
+Two small touches for live conversations with ``pm_agent``:
 
-1. A single *status* message in italic + emoji describing the current stage
-   ("планирую действия", "ищу задачи", "готовлю ответ"). Unknown stages — or a
-   small random share of known ones — turn into a playful line ("колдую…").
-   The same message is edited in place; the bot never spams a new one.
-2. When the answer is ready the status message is deleted and the final text is
-   revealed with the native ``sendMessageDraft`` stream (Telegram draws the
-   animated dots), then committed with a real ``sendMessage``.
+1. A *thinking* status message in italic + emoji describing the current stage
+   ("планирую действия", "ищу задачи", "готовлю ответ"). It is sent **early**
+   (while the agent is still working, before the answer exists) and the same
+   message is edited in place through a few stage beats — the bot never spams a
+   new one. Unknown stages — or a small random share of known ones — turn into a
+   playful line ("колдую…").
+2. When the answer is ready the status message is deleted and the text is
+   revealed with a typing effect: one message grown via repeated
+   ``editMessageText`` (the reliable, universally-supported mechanism), then a
+   final edit that applies the HTML formatting.
 
-The reveal is driven by :func:`stream_output`, a mock "LLM" that yields the
-answer in chunks — a stand-in for piping a real model's token stream straight
-into the draft. Pacing is computed by the pure :func:`plan_pacing` so the
-runtime orchestration stays trivial to unit-test.
+The pure helpers here (:func:`status_html`, :func:`reveal_frames`) keep the
+runtime orchestration trivial to unit-test.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from __future__ import annotations
 import html
 import math
 import random
-from collections.abc import AsyncIterator, Awaitable, Callable
 
 # Human-language stage labels. Keys map both real pm_agent stage ids
 # (see core.stage_graph.StageId) and the synthetic "plan"/"respond" bookends.
@@ -40,6 +39,11 @@ STAGE_PHRASES: dict[str, str] = {
     "DIALOG": "💬 формулирую ответ",
 }
 
+# Order the thinking status cycles through while the agent works. Real stages
+# aren't known until the agent finishes, so the early animation uses a sensible
+# generic arc: plan → search → prepare answer (then loops).
+THINKING_SEQUENCE: tuple[str, ...] = ("plan", "QUERY", "respond")
+
 # Shown when the stage is unknown, or — with FUN_PROBABILITY — instead of a
 # perfectly good known stage, just for character.
 FUN_PHRASES: list[str] = [
@@ -52,7 +56,10 @@ FUN_PHRASES: list[str] = [
     "🧩 собираю мысли в кучу…",
 ]
 
-FUN_PROBABILITY = 0.25
+FUN_PROBABILITY = 0.2
+
+# Typing cursor appended to intermediate (not-yet-final) reveal frames.
+CURSOR = "▍"
 
 
 def status_html(stage_key: str | None, rng: random.Random) -> str:
@@ -63,52 +70,32 @@ def status_html(stage_key: str | None, rng: random.Random) -> str:
     return f"<i>{html.escape(phrase)}</i>"
 
 
-def status_frames(
-    stage_keys: list[str],
-    rng: random.Random,
-    *,
-    max_frames: int = 2,
-) -> list[str]:
-    """Build the ordered list of status frames to edit through.
-
-    Always starts with a "planning" beat and ends on "preparing the answer",
-    optionally folding in the first real stage the agent actually visited. Kept
-    short so the cosmetic flow adds little latency. Consecutive duplicates are
-    collapsed.
-    """
-    keys: list[str] = ["plan"]
-    for key in stage_keys:
-        if key not in ("plan", "respond"):
-            keys.append(key)
-            break
-    keys.append("respond")
-    keys = keys[:max_frames]
-
-    frames: list[str] = []
-    for key in keys:
-        frame = status_html(key, rng)
-        if not frames or frame != frames[-1]:
-            frames.append(frame)
-    return frames
+def thinking_html(index: int, rng: random.Random) -> str:
+    """Render the ``index``-th thinking beat, cycling :data:`THINKING_SEQUENCE`."""
+    key = THINKING_SEQUENCE[index % len(THINKING_SEQUENCE)]
+    return status_html(key, rng)
 
 
-def plan_pacing(
-    total: int,
+def reveal_frames(
+    text: str,
     *,
     cps: float,
     interval: float,
     max_steps: int,
     max_duration: float,
-) -> tuple[int, float]:
-    """Pick a ``(chunk_size, delay)`` for revealing ``total`` characters.
+) -> list[str]:
+    """Plan the intermediate typing frames for ``text``.
 
-    Targets roughly ``cps`` characters per second with one draft update every
-    ``delay`` seconds, but never more than ``max_steps`` updates nor longer than
-    ``max_duration`` seconds — long answers simply stream in bigger chunks so
-    the effect stays snappy instead of crawling at a literal 5-6 chars/second.
+    Reveals progressively at roughly ``cps`` characters per second, one edit
+    every ``interval`` seconds, but never more than ``max_steps`` edits nor
+    longer than ``max_duration`` seconds — long answers simply reveal in bigger
+    chunks so the effect stays snappy instead of crawling at a literal 5-6
+    chars/second. Each frame is a strict, growing prefix with a typing cursor;
+    the caller renders the final full text as HTML separately.
     """
-    if total <= 0:
-        return (1, interval)
+    total = len(text)
+    if total == 0:
+        return []
 
     chunk = max(1, round(cps * interval))
     steps = math.ceil(total / chunk)
@@ -116,34 +103,22 @@ def plan_pacing(
     if steps * interval > max_duration:
         steps = max(1, int(max_duration / interval))
     chunk = math.ceil(total / steps)
-    return (chunk, interval)
 
-
-async def stream_output(
-    text: str,
-    *,
-    chunk_size: int,
-    delay: float,
-    sleep: Callable[[float], Awaitable[None]],
-) -> AsyncIterator[str]:
-    """Mock LLM token stream: yield ``text`` in ``chunk_size`` pieces.
-
-    Stands in for piping a real model's streamed tokens into the draft — swap
-    this for the model SDK's async iterator and the runtime is unchanged. The
-    injected ``sleep`` keeps it deterministic under test.
-    """
-    step = max(1, chunk_size)
-    for start in range(0, len(text), step):
-        yield text[start : start + step]
-        await sleep(delay)
+    frames: list[str] = []
+    pos = chunk
+    while pos < total:
+        frames.append(text[:pos] + CURSOR)
+        pos += chunk
+    return frames
 
 
 __all__ = [
+    "CURSOR",
     "FUN_PHRASES",
     "FUN_PROBABILITY",
     "STAGE_PHRASES",
-    "plan_pacing",
-    "status_frames",
+    "THINKING_SEQUENCE",
+    "reveal_frames",
     "status_html",
-    "stream_output",
+    "thinking_html",
 ]

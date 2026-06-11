@@ -18,7 +18,7 @@ from telegram_gateway.bridge import (
 from telegram_gateway.formatting import render_telegram_html
 from telegram_gateway.settings import GatewaySettings
 from telegram_gateway.spool import GatewaySpool
-from telegram_gateway.streaming import plan_pacing, status_frames, stream_output
+from telegram_gateway.streaming import reveal_frames, thinking_html
 
 WEBHOOK_TOTAL = Counter("telegram_gateway_webhook_total", "Webhook requests received", ["status"])
 SPOOL_DEPTH = Gauge("telegram_gateway_spool_depth", "Queued inbound updates")
@@ -47,13 +47,9 @@ class GatewayRuntime:
     team_id: str | None = None
     rng: random.Random = field(default_factory=random.Random)
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
-    draft_seq: int = 0
-
-    def _next_draft_id(self) -> int:
-        """Unique int32 draft id per stream (stable across updates of one
-        stream, distinct between streams)."""
-        self.draft_seq = (self.draft_seq + 1) % 2_147_483_647
-        return self.draft_seq + 1
+    # chat_id → (status message_id, background animation task) for the early
+    # "thinking" status, so the reply delivery can cancel + delete it.
+    status_messages: dict[str, tuple[str, "asyncio.Task[None]"]] = field(default_factory=dict)
 
     def _now(self) -> datetime:
         return datetime.now(tz=timezone.utc)
@@ -237,6 +233,9 @@ class GatewayRuntime:
         method = item.payload.get("method")
         if method == "sendMessage":
             raw_text = str(item.payload.get("text", ""))
+            metadata = item.payload.get("metadata") or {}
+            if metadata.get("status"):
+                return await self._deliver_status(item)
             text = render_telegram_html(raw_text)
             if self._should_stream(item, raw_text, text):
                 return await self._deliver_streaming_reply(item, raw_text, text)
@@ -278,25 +277,90 @@ class GatewayRuntime:
         # The committed message can't exceed the 4096-char limit.
         return len(rendered) <= TelegramBotClient.MAX_MESSAGE_LENGTH
 
+    async def _deliver_status(self, item: LeaseItem) -> SendResult | None:
+        """Deliver the early "thinking" status and animate it in the background.
+
+        This item is enqueued by platform-api *before* the agent runs, so it
+        reaches the user while the agent is still working. The first beat is sent
+        now; subsequent stage beats are edited in by a background task so the
+        delivery loop isn't blocked. The reply delivery later cancels that task
+        and removes the message.
+        """
+        assert self.bot_client is not None
+        chat_id = item.target_chat_id or item.target_user_id
+        reply_to = item.payload.get("reply_to_message_id")
+        thread_id = item.payload.get("message_thread_id")
+
+        # A late status is worse than none: if the reply already cleared this
+        # chat (fast agent), don't post an orphan.
+        try:
+            status = await self.bot_client.send_message(
+                chat_id=chat_id,
+                text=thinking_html(0, self.rng),
+                reply_to_message_id=reply_to,
+                message_thread_id=thread_id,
+                parse_mode="HTML",
+            )
+        except BotAPIError:
+            return None
+
+        key = str(chat_id)
+        await self._clear_status(key)  # never keep two statuses for one chat
+        task = asyncio.create_task(self._animate_status(key, status.message_id))
+        self.status_messages[key] = (status.message_id, task)
+        return status
+
+    async def _animate_status(self, chat_id: str, message_id: str) -> None:
+        """Edit the status message through stage beats until cancelled."""
+        if self.bot_client is None:
+            return
+        for index in range(1, self.settings.stream_status_max_frames):
+            await self.sleep(self.settings.stream_status_interval)
+            try:
+                await self.bot_client.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=thinking_html(index, self.rng),
+                    parse_mode="HTML",
+                )
+            except BotAPIError:
+                # e.g. "message is not modified" or rate limit — keep cycling.
+                continue
+
+    async def _clear_status(self, chat_id: str) -> None:
+        """Cancel the animation and delete the thinking status for a chat."""
+        entry = self.status_messages.pop(chat_id, None)
+        if entry is None:
+            return
+        message_id, task = entry
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        await self._try_delete(chat_id, message_id)
+
     async def _deliver_streaming_reply(
         self,
         item: LeaseItem,
         raw_text: str,
         rendered: str,
     ) -> SendResult | None:
-        """Status line (edited in place) → delete → native draft stream.
+        """Drop the thinking status → reveal the answer with a typing effect.
 
-        The reveal uses ``sendMessageDraft`` (Telegram draws the animated dots
-        natively); the answer is committed to history with a real
-        ``sendMessage`` carrying the HTML formatting. Any Bot API hiccup
-        degrades gracefully to a plain final message.
+        The reveal grows one message via repeated ``editMessageText`` (the
+        reliable, universally-supported mechanism) and a final edit applies the
+        HTML formatting. Any Bot API hiccup degrades to a plain final message.
         """
         assert self.bot_client is not None
         chat_id = item.target_chat_id or item.target_user_id
         reply_to = item.payload.get("reply_to_message_id")
         thread_id = item.payload.get("message_thread_id")
-        metadata = item.payload.get("metadata") or {}
-        stages = [str(key) for key in (metadata.get("stages") or [])]
+
+        # Remove the early "thinking" status before revealing the answer.
+        await self._clear_status(str(chat_id))
 
         async def _plain_send() -> SendResult:
             return await self.bot_client.send_message(
@@ -307,61 +371,48 @@ class GatewayRuntime:
                 parse_mode="HTML",
             )
 
-        # 1. Status message, edited in place through a couple of stage beats.
-        frames = status_frames(stages, self.rng)
-        status_message_id: str | None = None
-        try:
-            status = await self.bot_client.send_message(
-                chat_id=chat_id,
-                text=frames[0],
-                reply_to_message_id=reply_to,
-                message_thread_id=thread_id,
-                parse_mode="HTML",
-            )
-            status_message_id = status.message_id
-            for frame in frames[1:]:
-                await self.sleep(self.settings.stream_status_interval)
-                await self.bot_client.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_message_id,
-                    text=frame,
-                    parse_mode="HTML",
-                )
-            await self.sleep(self.settings.stream_status_interval)
-        except BotAPIError:
-            # Status failed — abandon the effect, deliver the real answer.
-            if status_message_id is not None:
-                await self._try_delete(chat_id, status_message_id)
-            return await _plain_send()
-
-        # 2. Drop the status message before revealing the answer.
-        await self._try_delete(chat_id, status_message_id)
-
-        # 3. Stream the answer into a draft, then commit it with sendMessage.
-        chunk_size, delay = plan_pacing(
-            len(raw_text),
+        frames = reveal_frames(
+            raw_text,
             cps=self.settings.stream_cps,
             interval=self.settings.stream_interval,
             max_steps=self.settings.stream_max_steps,
             max_duration=self.settings.stream_max_duration,
         )
-        draft_id = self._next_draft_id()
-        accumulated = ""
-        try:
-            async for chunk in stream_output(
-                raw_text, chunk_size=chunk_size, delay=delay, sleep=self.sleep
-            ):
-                accumulated += chunk
-                # Plain text draft — Telegram appends the animated dots itself.
-                await self.bot_client.send_message_draft(
-                    chat_id=chat_id, draft_id=draft_id, text=accumulated
-                )
-        except BotAPIError:
-            # Draft stream failed mid-way — fall through and commit the answer.
-            pass
+        if not frames:
+            return await _plain_send()
 
-        # The draft is ephemeral; a real send is required to persist the reply.
-        return await _plain_send()
+        try:
+            # Intermediate frames are plain text (no parse_mode) so partial
+            # Markdown never produces broken HTML mid-stream.
+            first = await self.bot_client.send_message(
+                chat_id=chat_id,
+                text=frames[0],
+                reply_to_message_id=reply_to,
+                message_thread_id=thread_id,
+            )
+            answer_message_id = first.message_id
+            for frame in frames[1:]:
+                await self.sleep(self.settings.stream_interval)
+                await self.bot_client.edit_message_text(
+                    chat_id=chat_id, message_id=answer_message_id, text=frame
+                )
+            await self.sleep(self.settings.stream_interval)
+            # Final edit applies the HTML formatting.
+            await self.bot_client.edit_message_text(
+                chat_id=chat_id,
+                message_id=answer_message_id,
+                text=rendered,
+                parse_mode="HTML",
+            )
+            return SendResult(
+                message_id=answer_message_id,
+                chat_id=str(chat_id),
+                text=rendered,
+                sent_at=self._now(),
+            )
+        except BotAPIError:
+            # Mid-reveal failure — make sure the user still gets the answer.
+            return await _plain_send()
 
     async def _try_delete(self, chat_id: str | None, message_id: str) -> None:
         if self.bot_client is None:

@@ -47,7 +47,8 @@ class GatewaySettings:
     stream_interval: float = 0.8
     stream_max_steps: int = 10
     stream_max_duration: float = 6.0
-    stream_status_interval: float = 0.5
+    stream_status_interval: float = 1.4
+    stream_status_max_frames: int = 12
     stream_min_chars: int = 16
 
     @classmethod
@@ -62,7 +63,9 @@ class GatewaySettings:
             bridge_key_id=os.environ["TELEGRAM_BRIDGE_HMAC_KEY_ID"],
             bridge_key_secret=_bridge_key_secret_from_env(),
             transport_mode=transport_mode,
-            spool_path=Path(os.getenv("GATEWAY_SPOOL_PATH", "/var/lib/telegram-gateway/spool.db")),
+            spool_path=Path(
+                os.getenv("GATEWAY_SPOOL_PATH", "/var/lib/telegram-gateway/spool.db")
+            ),
             gateway_id=os.getenv("GATEWAY_ID", "telegram-gateway"),
             version=os.getenv("GATEWAY_VERSION", "0.1.0"),
             webhook_path=os.getenv("TELEGRAM_WEBHOOK_PATH", "/webhook"),
@@ -77,6 +80,7 @@ class GatewaySettings:
             stream_interval=float(os.getenv("TELEGRAM_STREAM_INTERVAL", "0.8")),
             stream_max_steps=int(os.getenv("TELEGRAM_STREAM_MAX_STEPS", "10")),
             stream_max_duration=float(os.getenv("TELEGRAM_STREAM_MAX_DURATION", "6")),
-            stream_status_interval=float(os.getenv("TELEGRAM_STREAM_STATUS_INTERVAL", "0.5")),
+            stream_status_interval=float(os.getenv("TELEGRAM_STREAM_STATUS_INTERVAL", "1.4")),
+            stream_status_max_frames=int(os.getenv("TELEGRAM_STREAM_STATUS_MAX_FRAMES", "12")),
             stream_min_chars=int(os.getenv("TELEGRAM_STREAM_MIN_CHARS", "16")),
         )
