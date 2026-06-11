@@ -186,4 +186,4 @@ def test_format_transcript_prefers_name_over_label(tmp_path: Path) -> None:
     )
     text = disp._format_transcript(transcription)
     assert "[00:00] Алиса: привет" in text
-    assert "[01:05] SPEAKER_01: ага" in text
+    assert "[01:05] Неизвестный участник: ага" in text

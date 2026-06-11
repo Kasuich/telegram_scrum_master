@@ -398,37 +398,158 @@ def _label_speech_duration_ms(segments: list[dict[str, Any]]) -> dict[str, int]:
     return durations
 
 
-def _map_speakers_from_roster(
-    segments: list[dict[str, Any]],
-    roster: list[str],
+SPEAKER_SOURCE_DOM_SEGMENT = "dom_segment_overlap"
+SPEAKER_SOURCE_UNKNOWN = "unknown"
+UNKNOWN_SPEAKER_DISPLAY = "Неизвестный участник"
+
+_MIN_SEGMENT_SPEAKER_CONFIDENCE = 0.25
+_COLLAPSED_TOP_LABEL_SHARE = 0.90
+_TIMELINE_OFFSET_MS: tuple[int, ...] = (0, -500, 500, -1000, 1000, -1500, 1500)
+_MERGE_TIMELINE_GAP_MS = 400
+
+
+def _segment_duration_ms(seg: dict[str, Any]) -> int:
+    start = int(seg.get("start_ms") or 0)
+    end = int(seg.get("end_ms") or start)
+    return max(end - start, 0)
+
+
+def _overlap_ms(s_start: int, s_end: int, w_start: int, w_end: int) -> int:
+    return max(min(s_end, w_end) - max(s_start, w_start), 0)
+
+
+def merge_speaker_timeline_windows(
+    timeline: list[dict[str, Any]],
+    *,
+    merge_gap_ms: int = _MERGE_TIMELINE_GAP_MS,
 ) -> list[dict[str, Any]]:
-    """Fallback when DOM timeline is empty: map labels to roster by speech order."""
-    labels_order = _labels_by_first_appearance(segments)
-    if not labels_order or not roster:
-        return [{**seg, "speaker_name": None} for seg in segments]
-
-    if len(labels_order) == len(roster):
-        mapping = dict(zip(labels_order, roster, strict=True))
-    else:
-        durations = _label_speech_duration_ms(segments)
-        dominant_labels = sorted(
-            labels_order,
-            key=lambda label: (-durations.get(label, 0), labels_order.index(label)),
+    """Merge adjacent windows with the same speaker (and source) separated by small gaps."""
+    if not timeline:
+        return []
+    ordered = sorted(
+        timeline,
+        key=lambda w: (int(w.get("start_ms") or 0), int(w.get("end_ms") or 0)),
+    )
+    merged: list[dict[str, Any]] = []
+    for window in ordered:
+        name = str(window.get("display_name") or "").strip()
+        if not name:
+            continue
+        start = int(window.get("start_ms") or 0)
+        end = int(window.get("end_ms") or start)
+        source = window.get("source")
+        samples = int(window.get("samples") or 1)
+        if (
+            merged
+            and merged[-1]["display_name"] == name
+            and merged[-1].get("source") == source
+            and start - int(merged[-1]["end_ms"]) <= merge_gap_ms
+        ):
+            merged[-1]["end_ms"] = max(int(merged[-1]["end_ms"]), end)
+            merged[-1]["samples"] = int(merged[-1].get("samples") or 1) + samples
+            continue
+        merged.append(
+            {
+                "start_ms": start,
+                "end_ms": end,
+                "display_name": name,
+                "source": source,
+                "samples": samples,
+            }
         )
-        pair_count = min(len(dominant_labels), len(roster))
-        mapping = dict(zip(dominant_labels[:pair_count], roster[:pair_count], strict=True))
-        logger.warning(
-            "Roster fallback heuristic: %d diarization labels vs %d roster names; "
-            "mapped top %d by total speech duration (order unreliable with >2 speakers)",
-            len(labels_order),
-            len(roster),
-            pair_count,
-        )
+    return merged
 
-    return [
-        {**seg, "speaker_name": mapping.get(str(seg.get("speaker_label") or ""))}
-        for seg in segments
-    ]
+
+def _unique_timeline_names(timeline: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for window in timeline:
+        name = str(window.get("display_name") or "").strip()
+        key = name.casefold()
+        if name and key not in seen:
+            seen.add(key)
+            names.append(name)
+    return names
+
+
+def _diarization_stats(segments: list[dict[str, Any]]) -> tuple[int, float]:
+    """Return (unique_label_count, top_label_share_by_duration)."""
+    durations = _label_speech_duration_ms(segments)
+    if not durations:
+        return 0, 0.0
+    total = sum(durations.values()) or 1
+    top = max(durations.values())
+    return len(durations), top / total
+
+
+def diarization_collapsed(
+    segments: list[dict[str, Any]],
+    *,
+    participants_count: int,
+) -> bool:
+    """True when SpeechKit diarization is too coarse for label→name mapping."""
+    unique_labels, top_share = _diarization_stats(segments)
+    if participants_count >= 2 and unique_labels <= 1:
+        return True
+    if participants_count >= 2 and unique_labels >= 2 and top_share >= _COLLAPSED_TOP_LABEL_SHARE:
+        return True
+    return False
+
+
+def _best_name_for_segment(
+    seg: dict[str, Any],
+    timeline: list[dict[str, Any]],
+    *,
+    offset_ms: int = 0,
+) -> tuple[str | None, float]:
+    """Pick display name for one STT segment from DOM timeline overlap."""
+    s_start = int(seg.get("start_ms") or 0) + offset_ms
+    s_end = int(seg.get("end_ms") or 0) + offset_ms
+    duration = max(s_end - s_start, 1)
+    best_name: str | None = None
+    best_overlap = 0
+    for window in timeline:
+        name = str(window.get("display_name") or "").strip()
+        if not name:
+            continue
+        w_start = int(window.get("start_ms") or 0)
+        w_end = int(window.get("end_ms") or w_start)
+        overlap = _overlap_ms(s_start, s_end, w_start, w_end)
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_name = name
+    confidence = best_overlap / duration if best_name else 0.0
+    return best_name, confidence
+
+
+def _pick_timeline_offset_ms(
+    segments: list[dict[str, Any]],
+    timeline: list[dict[str, Any]],
+) -> int:
+    """Choose DOM↔STT offset that maximizes confident segment coverage."""
+    if not segments or not timeline:
+        return 0
+    best_offset = 0
+    best_score = -1.0
+    for offset in _TIMELINE_OFFSET_MS:
+        score = 0.0
+        for seg in segments:
+            _, confidence = _best_name_for_segment(seg, timeline, offset_ms=offset)
+            if confidence >= _MIN_SEGMENT_SPEAKER_CONFIDENCE:
+                score += confidence
+        if score > best_score:
+            best_score = score
+            best_offset = offset
+    return best_offset
+
+
+def _annotate_segment_unknown(seg: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **seg,
+        "speaker_name": None,
+        "speaker_confidence": 0.0,
+        "speaker_source": SPEAKER_SOURCE_UNKNOWN,
+    }
 
 
 def map_speakers_to_names(
@@ -438,59 +559,89 @@ def map_speakers_to_names(
     participants_observed: list[dict[str, Any]] | None = None,
     bot_display_name: str = "",
 ) -> list[dict[str, Any]]:
-    """Attach a human ``speaker_name`` to each diarized segment.
+    """Attach ``speaker_name`` per STT segment via DOM timeline overlap.
 
-    SpeechKit gives anonymous diarization labels (SPEAKER_00, ...). The bot
-    records an active-speaker timeline from the Telemost DOM as a list of
-    ``{"start_ms", "end_ms", "display_name"}`` windows (same time base as the
-    audio — both relative to recording start).
-
-    For each transcript segment we accumulate, per timeline name, how much its
-    window overlaps the segment; the name with the largest total overlap across
-    ALL segments of a given ``speaker_label`` wins (majority by duration). This
-    is robust to small misalignments and to the occasional missing window.
-
-    Returns NEW segment dicts with ``speaker_name`` added (``None`` when the
-    timeline is empty or no overlap was found — callers fall back to the label).
+    SpeechKit diarization labels are kept for diagnostics only — names come from
+    the Telemost active-speaker timeline (one name per segment, not per label).
+    Low-confidence overlaps and collapsed diarization without timeline yield
+    ``speaker_name=None`` (callers show «Неизвестный участник»).
     """
+    del bot_display_name  # roster heuristics disabled for attribution
     if not segments:
         return segments
-    if not speaker_timeline:
-        roster = _clean_participant_roster(
-            participants_observed,
-            bot_display_name=bot_display_name,
+
+    timeline = merge_speaker_timeline_windows(speaker_timeline)
+
+    if not timeline:
+        logger.warning(
+            "Active-speaker timeline empty; leaving speaker_name unset for %d segments",
+            len(segments),
         )
-        if roster:
-            return _map_speakers_from_roster(segments, roster)
-        return [{**seg, "speaker_name": None} for seg in segments]
+        return [_annotate_segment_unknown(seg) for seg in segments]
 
-    # Tally overlap(label -> name -> ms) across all segments.
-    tally: dict[str, dict[str, int]] = {}
+    offset_ms = _pick_timeline_offset_ms(segments, timeline)
+    if offset_ms:
+        logger.info("Speaker mapping: applying DOM↔STT offset %d ms", offset_ms)
+
+    mapped: list[dict[str, Any]] = []
     for seg in segments:
-        label = str(seg.get("speaker_label") or "")
-        s_start = int(seg.get("start_ms") or 0)
-        s_end = int(seg.get("end_ms") or s_start)
-        for window in speaker_timeline:
-            name = window.get("display_name")
-            if not name:
-                continue
-            w_start = int(window.get("start_ms") or 0)
-            w_end = int(window.get("end_ms") or w_start)
-            overlap = min(s_end, w_end) - max(s_start, w_start)
-            if overlap <= 0:
-                continue
-            tally.setdefault(label, {})[name] = tally.setdefault(label, {}).get(name, 0) + overlap
+        name, confidence = _best_name_for_segment(seg, timeline, offset_ms=offset_ms)
+        if confidence < _MIN_SEGMENT_SPEAKER_CONFIDENCE or not name:
+            mapped.append(_annotate_segment_unknown(seg))
+            continue
+        mapped.append(
+            {
+                **seg,
+                "speaker_name": name,
+                "speaker_confidence": round(confidence, 3),
+                "speaker_source": SPEAKER_SOURCE_DOM_SEGMENT,
+            }
+        )
+    return mapped
 
-    # Pick the dominant name per label.
-    label_to_name: dict[str, str] = {}
-    for label, names in tally.items():
-        if names:
-            label_to_name[label] = max(names.items(), key=lambda kv: kv[1])[0]
 
-    return [
-        {**seg, "speaker_name": label_to_name.get(str(seg.get("speaker_label") or ""))}
-        for seg in segments
-    ]
+def compute_speaker_diagnostics(
+    segments: list[dict[str, Any]],
+    speaker_timeline: list[dict[str, Any]],
+    *,
+    participants_observed: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Summary for GET /meetings/{id} debugging."""
+    roster = _clean_participant_roster(participants_observed)
+    participant_count = len(roster) or len(_unique_timeline_names(speaker_timeline))
+    unique_labels, top_share = _diarization_stats(segments)
+    collapsed = diarization_collapsed(segments, participants_count=participant_count)
+
+    if collapsed:
+        quality = "collapsed"
+    elif unique_labels >= 2:
+        quality = "ok"
+    else:
+        quality = "weak"
+
+    timeline = merge_speaker_timeline_windows(speaker_timeline)
+    total_speech_ms = sum(_segment_duration_ms(seg) for seg in segments) or 1
+    covered_ms = 0
+    for seg in segments:
+        if seg.get("speaker_source") == SPEAKER_SOURCE_DOM_SEGMENT:
+            covered_ms += _segment_duration_ms(seg)
+    timeline_coverage = covered_ms / total_speech_ms
+
+    by_source: dict[str, int] = {}
+    for seg in segments:
+        source = str(seg.get("speaker_source") or SPEAKER_SOURCE_UNKNOWN)
+        by_source[source] = by_source.get(source, 0) + 1
+
+    return {
+        "participants_observed_count": participant_count,
+        "speechkit_unique_labels": unique_labels,
+        "top_label_share": round(top_share, 3),
+        "diarization_quality": quality,
+        "diarization_collapsed": collapsed,
+        "timeline_windows": len(timeline),
+        "timeline_coverage": round(timeline_coverage, 3),
+        "segments_by_source": by_source,
+    }
 
 
 def _iter_dicts(value: Any):
@@ -546,11 +697,17 @@ def _speaker_from_words(words: Any) -> Any:
 
 
 __all__ = [
+    "SPEAKER_SOURCE_DOM_SEGMENT",
+    "SPEAKER_SOURCE_UNKNOWN",
+    "UNKNOWN_SPEAKER_DISPLAY",
     "SpeechKitTranscriber",
     "Transcriber",
     "TranscriptionResult",
+    "compute_speaker_diagnostics",
     "deduplicate_mirror_segments",
+    "diarization_collapsed",
     "empty_transcription_user_message",
     "map_speakers_to_names",
+    "merge_speaker_timeline_windows",
     "parse_speechkit_segments",
 ]

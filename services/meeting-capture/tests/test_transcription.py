@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from meeting_capture.transcription import (
+    SPEAKER_SOURCE_DOM_SEGMENT,
+    SPEAKER_SOURCE_UNKNOWN,
+    compute_speaker_diagnostics,
     deduplicate_mirror_segments,
+    diarization_collapsed,
     empty_transcription_user_message,
     map_speakers_to_names,
+    merge_speaker_timeline_windows,
     parse_speechkit_segments,
 )
 
@@ -71,7 +76,7 @@ def test_parse_ignores_empty_final_alternatives() -> None:
     assert parse_speechkit_segments({"final": {"alternatives": [{"text": ""}]}}) == []
 
 
-def test_map_speakers_assigns_names_by_overlap() -> None:
+def test_map_speakers_assigns_names_per_segment() -> None:
     segments = [
         {"start_ms": 0, "end_ms": 1000, "speaker_label": "SPEAKER_00", "text": "привет"},
         {"start_ms": 1000, "end_ms": 2000, "speaker_label": "SPEAKER_01", "text": "ага"},
@@ -83,33 +88,32 @@ def test_map_speakers_assigns_names_by_overlap() -> None:
     result = map_speakers_to_names(segments, timeline)
     assert result[0]["speaker_name"] == "Алиса"
     assert result[1]["speaker_name"] == "Боб"
-    # Original fields preserved.
-    assert result[0]["text"] == "привет"
-    assert result[0]["speaker_label"] == "SPEAKER_00"
+    assert result[0]["speaker_source"] == SPEAKER_SOURCE_DOM_SEGMENT
+    assert result[0]["speaker_confidence"] == 1.0
 
 
-def test_map_speakers_majority_wins_per_label() -> None:
-    # Same label across two segments — the name with more total overlap wins.
+def test_map_speakers_per_segment_not_majority_per_label() -> None:
     segments = [
         {"start_ms": 0, "end_ms": 1000, "speaker_label": "SPEAKER_00", "text": "a"},
         {"start_ms": 1000, "end_ms": 5000, "speaker_label": "SPEAKER_00", "text": "b"},
     ]
     timeline = [
         {"start_ms": 0, "end_ms": 1000, "display_name": "Алиса"},
-        {"start_ms": 1000, "end_ms": 5000, "display_name": "Боб"},  # 4000ms > 1000ms
+        {"start_ms": 1000, "end_ms": 5000, "display_name": "Боб"},
     ]
     result = map_speakers_to_names(segments, timeline)
-    assert {seg["speaker_name"] for seg in result} == {"Боб"}
+    assert result[0]["speaker_name"] == "Алиса"
+    assert result[1]["speaker_name"] == "Боб"
 
 
-def test_map_speakers_empty_timeline_sets_none() -> None:
+def test_map_speakers_empty_timeline_sets_unknown() -> None:
     segments = [{"start_ms": 0, "end_ms": 1000, "speaker_label": "SPEAKER_00", "text": "x"}]
     result = map_speakers_to_names(segments, [])
     assert result[0]["speaker_name"] is None
-    assert result[0]["speaker_label"] == "SPEAKER_00"
+    assert result[0]["speaker_source"] == SPEAKER_SOURCE_UNKNOWN
 
 
-def test_map_speakers_roster_fallback_when_timeline_empty() -> None:
+def test_map_speakers_roster_fallback_disabled_when_timeline_empty() -> None:
     segments = [
         {"start_ms": 0, "end_ms": 1000, "speaker_label": "SPEAKER_01", "text": "привет"},
         {"start_ms": 1000, "end_ms": 2000, "speaker_label": "SPEAKER_02", "text": "ага"},
@@ -117,7 +121,6 @@ def test_map_speakers_roster_fallback_when_timeline_empty() -> None:
     roster = [
         {"display_name": "Коля", "source": "telemost_ui"},
         {"display_name": "Рома", "source": "telemost_ui"},
-        {"display_name": "Поддержка", "source": "telemost_ui"},
     ]
     result = map_speakers_to_names(
         segments,
@@ -125,8 +128,7 @@ def test_map_speakers_roster_fallback_when_timeline_empty() -> None:
         participants_observed=roster,
         bot_display_name="PM Assistant (recording)",
     )
-    assert result[0]["speaker_name"] == "Коля"
-    assert result[1]["speaker_name"] == "Рома"
+    assert all(seg["speaker_name"] is None for seg in result)
 
 
 def test_deduplicate_mirror_segments_collapses_speaker_doubles() -> None:
@@ -152,7 +154,6 @@ def test_deduplicate_mirror_segments_collapses_speaker_doubles() -> None:
 
 
 def test_deduplicate_mirror_segments_ignores_end_ms_and_near_start() -> None:
-    """SpeechKit mirrors often differ in end_ms or start by a few hundred ms."""
     segments = [
         {"start_ms": 64000, "end_ms": 64200, "speaker_label": "SPEAKER_02", "text": "Ничего"},
         {"start_ms": 64000, "end_ms": 64800, "speaker_label": "SPEAKER_01", "text": "Ничего"},
@@ -183,15 +184,22 @@ def test_deduplicate_mirror_segments_keeps_distinct_same_second_phrases() -> Non
     assert len(result) == 2
 
 
-def test_map_speakers_no_overlap_sets_none() -> None:
+def test_map_speakers_no_overlap_sets_unknown() -> None:
     segments = [{"start_ms": 0, "end_ms": 1000, "speaker_label": "SPEAKER_00", "text": "x"}]
     timeline = [{"start_ms": 5000, "end_ms": 6000, "display_name": "Алиса"}]
+    result = map_speakers_to_names(segments, timeline)
+    assert result[0]["speaker_name"] is None
+    assert result[0]["speaker_source"] == SPEAKER_SOURCE_UNKNOWN
+
+
+def test_map_speakers_weak_overlap_sets_unknown() -> None:
+    segments = [{"start_ms": 10000, "end_ms": 15000, "speaker_label": "SPEAKER_00", "text": "x"}]
+    timeline = [{"start_ms": 10000, "end_ms": 10100, "display_name": "Алиса"}]
     result = map_speakers_to_names(segments, timeline)
     assert result[0]["speaker_name"] is None
 
 
 def test_deduplicate_mirror_segments_collapses_diverging_tail() -> None:
-    """Real mono-mix case: same phrase with a trailing laugh on one label."""
     segments = [
         {
             "start_ms": 9000,
@@ -211,24 +219,52 @@ def test_deduplicate_mirror_segments_collapses_diverging_tail() -> None:
     assert result[0]["text"] == "9000 ха ха ха"
 
 
-def test_map_speakers_roster_fallback_when_label_count_mismatches_roster() -> None:
-    """When label count != roster count, map dominant labels to roster order."""
+def test_merge_speaker_timeline_windows() -> None:
+    raw = [
+        {"start_ms": 0, "end_ms": 400, "display_name": "Алиса", "source": "goloom_grid"},
+        {"start_ms": 500, "end_ms": 1000, "display_name": "Алиса", "source": "goloom_grid"},
+        {"start_ms": 2000, "end_ms": 3000, "display_name": "Боб", "source": "panel"},
+    ]
+    merged = merge_speaker_timeline_windows(raw)
+    assert len(merged) == 2
+    assert merged[0]["end_ms"] == 1000
+    assert merged[0]["samples"] == 2
+
+
+def test_diarization_collapsed_detects_single_label_multi_party() -> None:
     segments = [
-        {"start_ms": 0, "end_ms": 5000, "speaker_label": "SPEAKER_01", "text": "длинная речь"},
-        {"start_ms": 5000, "end_ms": 5500, "speaker_label": "SPEAKER_02", "text": "коротко"},
-        {"start_ms": 5500, "end_ms": 5600, "speaker_label": "SPEAKER_03", "text": "эхо"},
+        {"start_ms": 0, "end_ms": 5000, "speaker_label": "SPEAKER_00", "text": "a"},
+        {"start_ms": 5000, "end_ms": 6000, "speaker_label": "SPEAKER_00", "text": "b"},
     ]
-    roster = [
-        {"display_name": "Алиса", "source": "telemost_ui"},
-        {"display_name": "Боб", "source": "telemost_ui"},
+    assert diarization_collapsed(segments, participants_count=3) is True
+
+
+def test_compute_speaker_diagnostics() -> None:
+    segments = [
+        {
+            "start_ms": 0,
+            "end_ms": 1000,
+            "speaker_label": "SPEAKER_00",
+            "speaker_name": "Алиса",
+            "speaker_source": SPEAKER_SOURCE_DOM_SEGMENT,
+            "text": "hi",
+        },
+        {
+            "start_ms": 1000,
+            "end_ms": 2000,
+            "speaker_label": "SPEAKER_00",
+            "speaker_name": None,
+            "speaker_source": SPEAKER_SOURCE_UNKNOWN,
+            "text": "there",
+        },
     ]
-    result = map_speakers_to_names(
+    diag = compute_speaker_diagnostics(
         segments,
-        [],
-        participants_observed=roster,
-        bot_display_name="PM Assistant (recording)",
+        [{"start_ms": 0, "end_ms": 1000, "display_name": "Алиса"}],
+        participants_observed=[{"display_name": "Алиса"}, {"display_name": "Боб"}],
     )
-    by_label = {seg["speaker_label"]: seg["speaker_name"] for seg in result}
-    assert by_label["SPEAKER_01"] == "Алиса"
-    assert by_label["SPEAKER_02"] == "Боб"
-    assert by_label["SPEAKER_03"] is None
+    assert diag["participants_observed_count"] == 2
+    assert diag["speechkit_unique_labels"] == 1
+    assert diag["diarization_quality"] == "collapsed"
+    assert diag["segments_by_source"][SPEAKER_SOURCE_DOM_SEGMENT] == 1
+    assert diag["segments_by_source"][SPEAKER_SOURCE_UNKNOWN] == 1
