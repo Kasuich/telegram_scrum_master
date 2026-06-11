@@ -18,7 +18,12 @@ from core.backlog_plan import (
 )
 from core.backlog_scheduler import compute_deadlines, sort_tasks_for_scheduling
 from core.config import get_config
-from core.issue_dedup import dedup_enabled_for_backlog, find_duplicate_issue
+from core.issue_dedup import (
+    PlannedIssueForDedup,
+    apply_duplicate_merge,
+    dedup_enabled_for_backlog,
+    resolve_planned_issues_dedup,
+)
 from core.tools import platform_tool
 from core.tracker import TrackerClient, TrackerError
 from core.tracker_tools import _effective_queue, _resolve_login
@@ -191,7 +196,7 @@ async def _apply_plan_impl(
 
         id_map: dict[str, str] = {}
         created: list[dict[str, Any]] = []
-        skipped: list[dict[str, Any]] = []
+        merged: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
 
         sorted_tasks = sort_tasks_for_scheduling(plan)
@@ -200,6 +205,70 @@ async def _apply_plan_impl(
             start_date=start,
             velocity_sp_per_week=velocity,
         )
+
+        planned_specs: list[PlannedIssueForDedup] = []
+        planned_order: list[tuple[Any, str | None, str | None]] = []
+
+        def _parent_summary(local_id: str | None) -> str | None:
+            if not local_id:
+                return None
+            if plan.epic and plan.epic.local_id == local_id:
+                return plan.epic.summary
+            for story in plan.stories:
+                if story.local_id == local_id:
+                    return story.summary
+            for task in plan.tasks:
+                if task.local_id == local_id:
+                    return task.summary
+            return None
+
+        def _register_planned(
+            issue: Any,
+            *,
+            parent_local_id: str | None,
+            deadline: str | None,
+        ) -> None:
+            type_key, _ = resolve_issue_type_key(issue.issue_type, type_keys)
+            priority = resolve_priority_key(issue.priority, priority_keys)
+            planned_specs.append(
+                PlannedIssueForDedup(
+                    planned_id=issue.local_id,
+                    summary=issue.summary,
+                    issue_type=type_key,
+                    parent_summary=_parent_summary(parent_local_id),
+                    description=issue.description or "",
+                    deadline=deadline,
+                    priority=priority,
+                )
+            )
+            planned_order.append((issue, parent_local_id, deadline))
+
+        if plan.create_epic and plan.epic:
+            _register_planned(plan.epic, parent_local_id=None, deadline=None)
+
+        for story in sorted(plan.stories, key=lambda s: s.order):
+            parent_local = plan.epic.local_id if plan.epic and plan.create_epic else None
+            _register_planned(story, parent_local_id=parent_local, deadline=None)
+
+        for task in sorted_tasks:
+            parent_local = task.parent_local_id
+            if not parent_local and plan.stories:
+                parent_local = plan.stories[0].local_id
+            _register_planned(
+                task,
+                parent_local_id=parent_local,
+                deadline=deadlines.get(task.local_id),
+            )
+
+        dedup_by_id: dict[str, Any] = {}
+        existing_by_key: dict[str, dict[str, Any]] = {}
+        if dedup_enabled_for_backlog() and planned_specs:
+            resolutions, existing_by_key = await resolve_planned_issues_dedup(
+                client,
+                queue,
+                planned_specs,
+            )
+            dedup_by_id = {r.planned_id: r for r in resolutions}
 
         async def create_planned(
             issue: Any,
@@ -219,27 +288,45 @@ async def _apply_plan_impl(
             if issue.parent_local_id and issue.parent_local_id in id_map:
                 parent = id_map[issue.parent_local_id]
 
-            if dedup_enabled_for_backlog():
-                dup = await find_duplicate_issue(
-                    client,
-                    queue,
-                    summary=issue.summary,
-                    issue_type=type_key,
-                    parent_key=parent,
+            res = dedup_by_id.get(issue.local_id)
+            if res and res.action == "merge" and res.duplicate_key:
+                existing = existing_by_key.get(res.duplicate_key)
+                if not existing:
+                    existing = await client.get_issue(res.duplicate_key)
+                planned = next(
+                    (p for p in planned_specs if p.planned_id == issue.local_id),
+                    PlannedIssueForDedup(
+                        planned_id=issue.local_id,
+                        summary=issue.summary,
+                        issue_type=type_key,
+                    ),
                 )
-                if dup:
-                    key = str(dup.get("key") or "")
-                    id_map[issue.local_id] = key
-                    skipped.append(
-                        {
-                            "local_id": issue.local_id,
-                            "key": key,
-                            "summary": issue.summary,
-                            "status": (dup.get("status") or {}).get("display"),
-                            "reason": "duplicate",
-                        }
-                    )
-                    return
+                merged_issue = await apply_duplicate_merge(
+                    client,
+                    res.duplicate_key,
+                    existing,
+                    planned=planned,
+                    description=issue.description or "",
+                    comment=res.comment,
+                    target_status=res.target_status,
+                    deadline=deadline,
+                    priority=priority,
+                    assignee=assignee_login,
+                    story_points=issue.story_points,
+                )
+                key = str(merged_issue.get("key") or res.duplicate_key)
+                id_map[issue.local_id] = key
+                merged.append(
+                    {
+                        "local_id": issue.local_id,
+                        "key": key,
+                        "summary": issue.summary,
+                        "status": (merged_issue.get("status") or {}).get("display"),
+                        "updates_applied": merged_issue.get("updates_applied") or [],
+                        "reason": res.reason or "duplicate",
+                    }
+                )
+                return
 
             try:
                 raw = await client.create_issue(
@@ -277,26 +364,9 @@ async def _apply_plan_impl(
                     }
                 )
 
-        if plan.create_epic and plan.epic:
-            await create_planned(plan.epic, parent_key=None, deadline=None)
-
-        for story in sorted(plan.stories, key=lambda s: s.order):
-            parent_key = None
-            if plan.epic and plan.create_epic:
-                parent_key = id_map.get(plan.epic.local_id)
-            await create_planned(story, parent_key=parent_key, deadline=None)
-
-        for task in sorted_tasks:
-            parent_key = None
-            if task.parent_local_id:
-                parent_key = id_map.get(task.parent_local_id)
-            elif plan.stories:
-                parent_key = id_map.get(plan.stories[0].local_id)
-            await create_planned(
-                task,
-                parent_key=parent_key,
-                deadline=deadlines.get(task.local_id),
-            )
+        for issue, parent_local_id, deadline in planned_order:
+            parent_key = id_map.get(parent_local_id) if parent_local_id else None
+            await create_planned(issue, parent_key=parent_key, deadline=deadline)
 
     tree_lines: list[str] = []
     if plan.create_epic and plan.epic:
@@ -316,10 +386,12 @@ async def _apply_plan_impl(
 
     return {
         "created_count": len(created),
-        "skipped_count": len(skipped),
+        "merged_count": len(merged),
+        "skipped_count": len(merged),
         "error_count": len(errors),
         "created": created,
-        "skipped": skipped,
+        "merged": merged,
+        "skipped": merged,
         "errors": errors,
         "id_map": id_map,
         "tree": tree_lines,

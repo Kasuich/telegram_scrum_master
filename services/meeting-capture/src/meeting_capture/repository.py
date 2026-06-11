@@ -170,6 +170,13 @@ def artifact_to_dto(artifact: MeetingArtifact) -> ArtifactDTO:
 
 
 def meeting_to_dto(meeting: Meeting) -> MeetingDTO:
+    from meeting_capture.schemas import SpeakerDiagnosticsDTO
+
+    metadata = meeting.metadata_json or {}
+    raw_diag = metadata.get("speaker_diagnostics")
+    speaker_diagnostics = (
+        SpeakerDiagnosticsDTO.model_validate(raw_diag) if isinstance(raw_diag, dict) else None
+    )
     return MeetingDTO(
         id=str(meeting.id),
         telemost_url=meeting.telemost_url,
@@ -178,7 +185,8 @@ def meeting_to_dto(meeting: Meeting) -> MeetingDTO:
         language=meeting.language,
         consent_ack=meeting.consent_ack,
         error=meeting.error,
-        metadata_json=meeting.metadata_json or {},
+        metadata_json=metadata,
+        speaker_diagnostics=speaker_diagnostics,
         scheduled_at=_iso(meeting.scheduled_at),
         joined_at=_iso(meeting.joined_at),
         recording_started_at=_iso(meeting.recording_started_at),

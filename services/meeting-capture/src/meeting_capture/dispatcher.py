@@ -191,13 +191,21 @@ class MeetingDispatcher:
                     uploaded,
                     participants_observed=join_result.participants_observed,
                 )
-            from meeting_capture.transcription import map_speakers_to_names
+            from meeting_capture.transcription import (
+                compute_speaker_diagnostics,
+                map_speakers_to_names,
+            )
 
             named_segments = map_speakers_to_names(
                 transcription.segments,
                 speaker_timeline,
                 participants_observed=join_result.participants_observed,
                 bot_display_name=self.settings.bot_display_name,
+            )
+            speaker_diagnostics = compute_speaker_diagnostics(
+                named_segments,
+                speaker_timeline,
+                participants_observed=join_result.participants_observed,
             )
             transcription = TranscriptionResult(
                 source=transcription.source,
@@ -210,6 +218,7 @@ class MeetingDispatcher:
                 transcription,
                 target_chat_id=target_chat_id,
                 summarize=True,
+                speaker_diagnostics=speaker_diagnostics,
             )
         except Exception as exc:
             logger.exception("Meeting capture failed for %s", meeting_id)
@@ -268,7 +277,10 @@ class MeetingDispatcher:
             )
             raise
 
-        from meeting_capture.transcription import map_speakers_to_names
+        from meeting_capture.transcription import (
+            compute_speaker_diagnostics,
+            map_speakers_to_names,
+        )
 
         speaker_timeline = metadata.get("speaker_timeline") or []
         named_segments = map_speakers_to_names(
@@ -276,6 +288,11 @@ class MeetingDispatcher:
             speaker_timeline,
             participants_observed=participants_observed,
             bot_display_name=self.settings.bot_display_name,
+        )
+        speaker_diagnostics = compute_speaker_diagnostics(
+            named_segments,
+            speaker_timeline,
+            participants_observed=participants_observed,
         )
         transcription = TranscriptionResult(
             source=transcription.source,
@@ -288,6 +305,7 @@ class MeetingDispatcher:
             transcription,
             target_chat_id=target_chat_id,
             summarize=summarize,
+            speaker_diagnostics=speaker_diagnostics,
         )
         return transcription
 
@@ -307,6 +325,7 @@ class MeetingDispatcher:
         *,
         target_chat_id: str | None,
         summarize: bool,
+        speaker_diagnostics: dict[str, Any] | None = None,
     ) -> None:
         await self.repository.save_transcript(
             meeting_id=meeting_id,
@@ -315,7 +334,14 @@ class MeetingDispatcher:
             participants_observed=transcription.participants_observed,
         )
         await self._persist_transcript_artifacts(meeting_id, transcription)
-        await self.repository.set_status(meeting_id, "ready")
+        metadata_update: dict[str, Any] = {}
+        if speaker_diagnostics:
+            metadata_update["speaker_diagnostics"] = speaker_diagnostics
+        await self.repository.set_status(
+            meeting_id,
+            "ready",
+            metadata_update=metadata_update or None,
+        )
         if transcription.segments:
             if summarize:
                 await self._summarize_and_fanout(
@@ -538,9 +564,11 @@ class MeetingDispatcher:
 
     def _format_transcript(self, transcription: TranscriptionResult) -> str:
         """One line per segment: ``[mm:ss] Speaker: text`` (name if resolved)."""
+        from meeting_capture.transcription import UNKNOWN_SPEAKER_DISPLAY
+
         lines: list[str] = []
         for s in transcription.segments:
-            who = s.get("speaker_name") or s.get("speaker_label") or "SPEAKER"
+            who = s.get("speaker_name") or UNKNOWN_SPEAKER_DISPLAY
             lines.append(f"[{_fmt_ts(s.get('start_ms', 0))}] {who}: {s.get('text', '')}")
         return "\n".join(lines)
 

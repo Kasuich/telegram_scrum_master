@@ -19,7 +19,12 @@ from core.assignee_resolver import (
     resolve_assignee as match_assignee,
 )
 from core.config import get_config
-from core.issue_dedup import dedup_enabled_for_create, find_duplicate_issues
+from core.issue_dedup import (
+    PlannedIssueForDedup,
+    apply_duplicate_merge,
+    dedup_enabled_for_create,
+    resolve_planned_issues_dedup,
+)
 from core.tools import platform_tool
 from core.tracker import TrackerClient, TrackerError
 from core.tracker_tool_helpers import (
@@ -420,8 +425,9 @@ async def tracker_create_issue(
     Use when the user asks to CREATE/ADD a task (создай, заведи, поставь задачу).
     assignee: login or display name — matched to nearest queue team member.
     Optional: description, priority, issue_type, tags, deadline, story_points, sprint, parent, …
-    By default returns similar issues (field `duplicates`) without creating, when found.
-    Set allow_duplicate=true ONLY on explicit user request to create despite duplicates.
+    When a duplicate is found, updates the existing issue (comment/status/fields)
+    instead of creating.
+    Set allow_duplicate=true ONLY on explicit user request to create a second copy.
     """
     extra = parse_custom_fields_json(custom_fields)
     if "error" in extra:
@@ -455,31 +461,41 @@ async def tracker_create_issue(
 
         resolved_type = issue_type or None
         if dedup_enabled_for_create() and not allow_duplicate:
-            dups = await find_duplicate_issues(
-                client,
-                q,
+            planned = PlannedIssueForDedup(
+                planned_id="0",
                 summary=summary,
                 issue_type=issue_type or "",
                 parent_key=parent.strip() or None,
+                description=description or "",
+                deadline=deadline_val,
+                priority=priority or None,
             )
-            if dups:
-                best = dups[0]
-                out = issue_summary(best, detailed=True)
-                out.update(assignee_meta)
-                out.get("key", "")
-                out["skipped_duplicate"] = True
-                out["message"] = (
-                    f"Не создавал — нашёл похожие ({len(dups)}). "
-                    "Покажи их пользователю и спроси, что делать."
+            resolutions, by_key = await resolve_planned_issues_dedup(client, q, [planned])
+            res = resolutions[0]
+            if res.action == "merge" and res.duplicate_key:
+                existing = by_key.get(res.duplicate_key)
+                if not existing:
+                    existing = await client.get_issue(res.duplicate_key)
+                out = await apply_duplicate_merge(
+                    client,
+                    res.duplicate_key,
+                    existing,
+                    planned=planned,
+                    description=description or "",
+                    comment=res.comment,
+                    target_status=res.target_status,
+                    deadline=deadline_val,
+                    priority=priority or None,
+                    assignee=assignee_login,
+                    story_points=sp_val,
                 )
-                out["duplicates"] = [
-                    {
-                        "key": d.get("key"),
-                        "summary": d.get("summary"),
-                        "status": (d.get("status") or {}).get("display"),
-                    }
-                    for d in dups
-                ]
+                out.update(assignee_meta)
+                applied = ", ".join(out.get("updates_applied") or []) or "без изменений"
+                out["message"] = (
+                    f"Не создавал новую — обновил существующую {res.duplicate_key} ({applied})."
+                )
+                if res.reason:
+                    out["dedup_reason"] = res.reason
                 return out
 
         issue = await client.create_issue(

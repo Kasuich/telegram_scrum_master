@@ -60,6 +60,12 @@ class CaptureSettings(BaseSettings):
     # Hard ceiling on the whole transcribe step so a hung SpeechKit poll cannot
     # leave a meeting stuck in "transcribing". Slightly above speechkit_timeout.
     transcribe_timeout_sec: int = Field(default=3900, ge=30, alias="CAPTURE_TRANSCRIBE_TIMEOUT_SEC")
+    speaker_poll_interval_sec: float = Field(
+        default=0.4,
+        ge=0.1,
+        le=2.0,
+        alias="CAPTURE_SPEAKER_POLL_INTERVAL_SEC",
+    )
 
     meeting_capture_url: str = Field(
         default="http://meeting-capture:8003",

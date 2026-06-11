@@ -51,6 +51,17 @@ class ArtifactDTO(BaseModel):
     created_at: str
 
 
+class SpeakerDiagnosticsDTO(BaseModel):
+    participants_observed_count: int = 0
+    speechkit_unique_labels: int = 0
+    top_label_share: float = 0.0
+    diarization_quality: str = "unknown"
+    diarization_collapsed: bool = False
+    timeline_windows: int = 0
+    timeline_coverage: float = 0.0
+    segments_by_source: dict[str, int] = Field(default_factory=dict)
+
+
 class MeetingDTO(BaseModel):
     id: str
     telemost_url: str
@@ -60,6 +71,7 @@ class MeetingDTO(BaseModel):
     consent_ack: bool
     error: str | None
     metadata_json: dict[str, Any]
+    speaker_diagnostics: SpeakerDiagnosticsDTO | None = None
     scheduled_at: str | None
     joined_at: str | None
     recording_started_at: str | None
@@ -87,6 +99,8 @@ class TranscriptSegmentDTO(BaseModel):
     end_ms: int
     speaker_label: str
     speaker_name: str | None = None
+    speaker_confidence: float | None = None
+    speaker_source: str | None = None
     text: str
 
 
@@ -104,6 +118,7 @@ __all__ = [
     "MeetingDTO",
     "MeetingStatus",
     "RetranscribeResponse",
+    "SpeakerDiagnosticsDTO",
     "StopMeetingResponse",
     "TranscriptDTO",
     "TranscriptSegmentDTO",
