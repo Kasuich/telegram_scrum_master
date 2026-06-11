@@ -35,3 +35,14 @@ def test_prompt_explains_tool_schema_and_bulk_completion():
     assert "WaitForBulkChange" in PROMPT
     assert "Запуск bulk ещё не" in PROMPT
     assert "означает готовый результат" in PROMPT
+
+
+def test_prompt_covers_sprint_lifecycle_and_auto_naming():
+    assert "## Спринты" in PROMPT
+    assert "tracker_create_sprint" in PROMPT
+    # The agent must leave the name empty for auto-numbering, not invent one.
+    assert "оставь" in PROMPT and "name" in PROMPT
+    assert "Sprint N+1" in PROMPT
+    assert "tracker_open_sprint" in PROMPT
+    assert "tracker_close_sprint" in PROMPT
+    assert "tracker_rollover_sprint" in PROMPT

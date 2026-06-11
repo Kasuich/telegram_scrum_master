@@ -672,6 +672,92 @@ class TestTrackerTools:
         assert result["board_id"] == "3"
 
     @patch.dict("os.environ", ENV)
+    async def test_tracker_create_sprint_auto_numbers_when_name_missing(self):
+        from core.tracker_tools import tracker_create_sprint
+
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.list_sprints.return_value = [
+                {**SPRINT_RESPONSE, "id": 41, "name": "Sprint 9"},
+                {**SPRINT_RESPONSE, "id": 42, "name": "Sprint 10"},
+            ]
+            client.create_sprint.return_value = {**SPRINT_RESPONSE, "name": "Sprint 11"}
+
+            with _actor("lead", board_id="3"):
+                result = await tracker_create_sprint(
+                    start_date="2026-07-01",
+                    end_date="2026-07-14",
+                )
+
+        client.list_sprints.assert_awaited_once_with("3")
+        assert client.create_sprint.await_args.kwargs["name"] == "Sprint 11"
+        assert result["name"] == "Sprint 11"
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_create_sprint_auto_numbers_first_sprint(self):
+        from core.tracker_tools import tracker_create_sprint
+
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.list_sprints.return_value = []
+            client.create_sprint.return_value = {**SPRINT_RESPONSE, "name": "Sprint 1"}
+
+            with _actor("lead", board_id="3"):
+                result = await tracker_create_sprint(
+                    start_date="2026-07-01",
+                    end_date="2026-07-14",
+                )
+
+        assert client.create_sprint.await_args.kwargs["name"] == "Sprint 1"
+        assert result["name"] == "Sprint 1"
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_create_sprint_auto_dates_when_missing(self):
+        from core.tracker_tools import tracker_create_sprint
+
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.list_sprints.return_value = [
+                {**SPRINT_RESPONSE, "id": 41, "name": "Sprint 9", "endDate": "2099-01-14"},
+            ]
+            client.create_sprint.return_value = SPRINT_RESPONSE
+
+            with _actor("lead", board_id="3"):
+                await tracker_create_sprint(name="Sprint 10")
+
+        kwargs = client.create_sprint.await_args.kwargs
+        # Starts the day after the latest sprint ends, spans 14 days inclusive.
+        assert kwargs["start_date"] == "2099-01-15"
+        assert kwargs["end_date"] == "2099-01-28"
+
+    @patch.dict("os.environ", ENV)
+    async def test_tracker_create_sprint_keeps_explicit_args_without_listing(self):
+        from core.tracker_tools import tracker_create_sprint
+
+        with patch("core.tracker_tools.TrackerClient") as mock_cls:
+            client = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = client
+            client.create_sprint.return_value = SPRINT_RESPONSE
+
+            with _actor("lead", board_id="3"):
+                await tracker_create_sprint(
+                    "Sprint 1",
+                    start_date="2026-06-10",
+                    end_date="2026-06-24",
+                )
+
+        client.list_sprints.assert_not_awaited()
+        client.create_sprint.assert_awaited_once_with(
+            name="Sprint 1",
+            board_id="3",
+            start_date="2026-06-10",
+            end_date="2026-06-24",
+        )
+
+    @patch.dict("os.environ", ENV)
     async def test_tracker_create_issue_blocks_epic_for_user(self):
         from core.tracker_tools import tracker_create_issue
 
