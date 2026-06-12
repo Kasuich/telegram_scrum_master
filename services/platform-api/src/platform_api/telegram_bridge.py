@@ -666,7 +666,16 @@ async def _route_inbound_message(
     )
     body = context.raw_text_without_mention or _message_text(message_payload)
 
-    if chat.type == "private" and (chat.ingest_mode or "").strip().lower() == "direct":
+    # A Telemost link is always a meeting-capture intent, never a standup
+    # answer — resolve it before the standup branch so it short-circuits
+    # straight to the recording bot (and avoids a needless poll lookup).
+    telemost_url = extract_telemost_url(body)
+
+    if (
+        telemost_url is None
+        and chat.type == "private"
+        and (chat.ingest_mode or "").strip().lower() == "direct"
+    ):
         standup_reply = await handle_standup_response(
             session,
             team_id=installation.team_id,
@@ -692,7 +701,6 @@ async def _route_inbound_message(
             }
 
     # Short-circuit: a Telemost link goes straight to the recording bot.
-    telemost_url = extract_telemost_url(body)
     if telemost_url is not None:
         try:
             data = await schedule_meeting_capture(
