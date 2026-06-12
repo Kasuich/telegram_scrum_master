@@ -377,6 +377,8 @@ export const api = {
   teamMembers: (teamId: string) => request<TeamMember[]>(`/teams/${teamId}/members`),
   teamHealth: (teamId: string, window = 14) =>
     request<TeamHealth>(`/teams/${teamId}/health?window=${window}`),
+  teamAudit: (teamId: string, window = 14) =>
+    request<ChatResponse>(`/teams/${teamId}/audit?window=${window}`, { method: "POST" }),
   uploadAvatar: async (file: File): Promise<Profile> => {
     const response = await fetch(`${API_BASE}/me/avatar`, {
       method: "POST",

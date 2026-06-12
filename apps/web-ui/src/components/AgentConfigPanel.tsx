@@ -92,8 +92,18 @@ export function AgentConfigPanel({
           <input value={model} onChange={(event) => setModel(event.target.value)} />
         </label>
         <label className="field mt-4">
-          <span>Промпт</span>
-          <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+          <span>
+            Промпт{" "}
+            <span className="mono-chip">
+              {config.has_spec ? "переопределён" : "базовый промпт класса"}
+            </span>{" "}
+            <span className="text-xs text-muted">{prompt.length} символов</span>
+          </span>
+          <textarea
+            value={prompt}
+            rows={Math.min(28, Math.max(8, prompt.split("\n").length + 1))}
+            onChange={(event) => setPrompt(event.target.value)}
+          />
         </label>
       </section>
 

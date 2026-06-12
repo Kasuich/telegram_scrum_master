@@ -1101,3 +1101,111 @@
     grid-template-columns: 1fr;
   }
 }
+
+@layer components {
+  .audit-report {
+    margin-bottom: 16px;
+    border: 1px solid #dbe2ea;
+    background: #fbfcfe;
+  }
+
+  .audit-status {
+    display: grid;
+    gap: 6px;
+    margin: 8px 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 13px;
+    color: #64748b;
+  }
+
+  .audit-status li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .audit-status li.active {
+    color: #4338ca;
+    font-weight: 500;
+  }
+
+  .audit-status li.done {
+    color: #0d9488;
+  }
+
+  .audit-body {
+    margin-top: 12px;
+    line-height: 1.55;
+    color: #1e293b;
+  }
+
+  .audit-trace {
+    margin-top: 14px;
+    border-top: 1px solid #e5e9f0;
+    padding-top: 10px;
+  }
+
+  .audit-trace summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: #475569;
+  }
+
+  .caret {
+    display: inline-block;
+    animation: blink 1s steps(2, start) infinite;
+    color: #6366f1;
+  }
+
+  @keyframes blink {
+    to {
+      visibility: hidden;
+    }
+  }
+
+  .spin {
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .markdown h2,
+  .markdown h3,
+  .markdown h4 {
+    margin: 14px 0 6px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .markdown h2 {
+    font-size: 18px;
+  }
+
+  .markdown h3 {
+    font-size: 15px;
+  }
+
+  .markdown h4 {
+    font-size: 14px;
+    color: #334155;
+  }
+
+  .markdown p {
+    margin: 6px 0;
+  }
+
+  .markdown ul,
+  .markdown ol {
+    margin: 6px 0;
+    padding-left: 20px;
+  }
+
+  .markdown li {
+    margin: 3px 0;
+  }
+}
