@@ -96,6 +96,8 @@ def test_format_standup_poll_message_numbers_tasks() -> None:
 
     assert "1. TEST-1" in text
     assert "задача 1 закрыта" in text
+    assert "что вы сделали за последний час" in text
+    assert "Через 10 минут" in text
 
 
 def test_parse_standup_response() -> None:
@@ -389,7 +391,7 @@ async def test_handle_standup_response_closes_all_active_snapshot_tasks() -> Non
     ]
 
 
-async def test_handle_standup_response_keeps_ambiguous_update() -> None:
+async def test_handle_standup_response_accepts_freeform_update() -> None:
     team_id = uuid.uuid4()
     telegram_user_id = uuid.uuid4()
     poll = TelegramStandupPoll(
@@ -409,10 +411,11 @@ async def test_handle_standup_response_keeps_ambiguous_update() -> None:
         _ResponseSession(poll),
         team_id=team_id,
         telegram_user_id=telegram_user_id,
-        text="done",
+        text="Провёл ревью, обсудил макеты и подготовил демо",
         client_factory=lambda: _FakeTracker(),
     )
 
-    assert reply is not None
-    assert poll.status == "ambiguous"
-    assert poll.applied_json["events"][0]["kind"] == "not_applied"
+    assert reply == "Принял статус. Добавлю его в ближайший командный отчёт."
+    assert poll.status == "answered"
+    assert poll.response_text == "Провёл ревью, обсудил макеты и подготовил демо"
+    assert poll.applied_json["events"] == []

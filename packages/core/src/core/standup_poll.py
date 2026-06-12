@@ -280,7 +280,8 @@ def format_standup_poll_message(
 ) -> str:
     board = f" ({participant.board_name})" if participant.board_name else ""
     lines = [
-        (f"{participant.display}, короткий статус перед дайджестом {local_hour}{board}:"),
+        f"⏱ **{participant.display}, что вы сделали за последний час?**",
+        f"Через 10 минут соберу командный отчёт{board}.",
         "",
     ]
     if issues:
@@ -913,9 +914,6 @@ async def handle_standup_response(
     text: str,
     client_factory: Callable[[], TrackerClient] = TrackerClient,
 ) -> str | None:
-    if not is_standup_response(text):
-        return None
-
     poll = await find_pending_poll_for_response(
         session,
         team_id=team_id,
@@ -956,16 +954,6 @@ async def handle_standup_response(
                             "error": str(exc),
                         }
                     )
-    else:
-        results.append(
-            {
-                "kind": "not_applied",
-                "text": text,
-                "ok": False,
-                "error": "ambiguous",
-            }
-        )
-
     responded_at = datetime.now(timezone.utc)
     events = [
         _event_from_result(actions[index] if index < len(actions) else None, result)
@@ -979,9 +967,11 @@ async def handle_standup_response(
         events=events,
         responded_at=responded_at,
     )
-    poll.status = "answered" if any(event.get("ok") for event in events) else "ambiguous"
+    poll.status = "answered"
     poll.responded_at = responded_at
     await session.flush()
+    if not actions:
+        return "Принял статус. Добавлю его в ближайший командный отчёт."
     return _format_apply_report(results)
 
 

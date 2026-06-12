@@ -7,10 +7,14 @@ from unittest.mock import AsyncMock, patch
 
 from core.daily_digest import (
     DAILY_DIGEST_JOB_NAME,
+    DigestChatUpdate,
+    DigestIssue,
     DigestMember,
     DigestReport,
+    DigestSprint,
     build_daily_digest_report,
     build_done_today_yql,
+    completed_hour_window_utc,
     day_window_utc,
     ensure_daily_digest_scheduled_job,
     format_daily_digest,
@@ -33,6 +37,8 @@ def _cfg(
         telegram_chat_id="",
         in_progress_statuses=statuses,
         max_issues_per_section=max_issues,
+        max_sprint_issues=30,
+        max_chat_messages=20,
         in_progress_status_list=lambda: [
             part.strip() for part in statuses.split(",") if part.strip()
         ],
@@ -146,6 +152,181 @@ def test_day_window_uses_moscow_date() -> None:
     assert end_utc == datetime(2026, 6, 8, 21, 0, tzinfo=timezone.utc)
 
 
+def test_completed_hour_window_uses_previous_clock_hour() -> None:
+    start, end = completed_hour_window_utc(
+        datetime(2026, 6, 8, 8, 0, 12, tzinfo=timezone.utc)
+    )
+
+    assert start == datetime(2026, 6, 8, 7, 0, tzinfo=timezone.utc)
+    assert end == datetime(2026, 6, 8, 8, 0, tzinfo=timezone.utc)
+
+
+async def test_load_current_sprints_uses_registered_board_and_sprint_tasks() -> None:
+    from core.daily_digest import _load_current_sprints
+
+    class Client:
+        def __init__(self) -> None:
+            self.query = ""
+
+        async def list_sprints(self, board_id):
+            assert board_id == "3"
+            return [
+                {
+                    "id": 44,
+                    "name": "Sprint 9",
+                    "archived": True,
+                    "startDate": "2026-05-25",
+                    "endDate": "2026-06-07",
+                },
+                {
+                    "id": 45,
+                    "name": "Sprint 10",
+                    "archived": False,
+                    "status": "inProgress",
+                    "startDate": "2026-06-08",
+                    "endDate": "2026-06-21",
+                },
+            ]
+
+        async def get_board(self, board_id):
+            assert board_id == "3"
+            return {"query": 'Queue: "PRODUCT"'}
+
+        async def search_all_issues(self, query, *, queue, page_size):
+            self.query = query
+            assert queue is None
+            assert page_size == 30
+            return [
+                {
+                    "key": "TEST-7",
+                    "summary": "Prepare demo",
+                    "status": {"display": "In Progress"},
+                    "assignee": {"login": "alice", "display": "Alice"},
+                    "sprint": [{"id": "45"}],
+                }
+            ]
+
+    client = Client()
+    sprints = await _load_current_sprints(
+        client,
+        queue="TEST",
+        members=[SimpleNamespace(board_id="3", board_name="Product")],
+        local_date=datetime(2026, 6, 8).date(),
+        max_issues=30,
+    )
+
+    assert client.query == '(Queue: "PRODUCT") AND (Sprint: "Sprint 10")'
+    assert len(sprints) == 1
+    assert sprints[0].sprint_name == "Sprint 10"
+    assert sprints[0].issues[0].key == "TEST-7"
+
+
+async def test_load_chat_updates_returns_messages_for_completed_hour() -> None:
+    from core.daily_digest import _load_chat_updates
+
+    message = SimpleNamespace(
+        id=uuid.uuid4(),
+        text="Обновили макеты и договорились о демо",
+        caption=None,
+        sent_at=datetime(2026, 6, 8, 7, 25, tzinfo=timezone.utc),
+    )
+    user = SimpleNamespace(first_name="Alice", last_name=None, username="alice")
+
+    class Session:
+        async def execute(self, stmt):
+            del stmt
+
+            class Result:
+                def all(self):
+                    return [(message, user)]
+
+            return Result()
+
+    updates = await _load_chat_updates(
+        Session(),
+        team_id=uuid.uuid4(),
+        chat_id=uuid.uuid4(),
+        start_utc=datetime(2026, 6, 8, 7, 0, tzinfo=timezone.utc),
+        end_utc=datetime(2026, 6, 8, 8, 0, tzinfo=timezone.utc),
+        timezone_name="Europe/Moscow",
+        limit=20,
+    )
+
+    assert updates == [
+        DigestChatUpdate(
+            author="Alice",
+            text="Обновили макеты и договорились о демо",
+            local_time="10:25",
+        )
+    ]
+
+
+def test_format_hourly_digest_includes_sprint_responses_and_chat() -> None:
+    issue = DigestIssue(
+        key="TEST-7",
+        summary="Prepare demo",
+        status="In Progress",
+        assignee_login="alice",
+        assignee_display="Alice",
+        url="https://tracker.yandex.ru/TEST-7",
+    )
+    report = DigestReport(
+        team_id=uuid.uuid4(),
+        queue="TEST",
+        local_date="2026-06-08",
+        local_hour="2026-06-08T11",
+        timezone="Europe/Moscow",
+        members=[
+            DigestMember(
+                login="alice",
+                display="Alice",
+                in_progress=[],
+                done_today=[],
+                standup_response="Сделала ревью и подготовила демо",
+                board_name="Product",
+                responded=True,
+            ),
+            DigestMember(
+                login="bob",
+                display="Bob",
+                in_progress=[],
+                done_today=[],
+                board_name="Product",
+                responded=False,
+            ),
+        ],
+        sprints=[
+            DigestSprint(
+                board_id="3",
+                board_name="Product",
+                sprint_id="45",
+                sprint_name="Sprint 10",
+                status="inProgress",
+                start_date="2026-06-08",
+                end_date="2026-06-21",
+                issues=[issue],
+            )
+        ],
+        chat_updates=[
+            DigestChatUpdate(
+                author="Alice",
+                text="Демо перенесли на 15:00",
+                local_time="10:25",
+            )
+        ],
+    )
+
+    with patch("core.daily_digest.get_config", return_value=_cfg()):
+        text = format_daily_digest(report)
+
+    assert "Ежечасный отчёт · 11:00" in text
+    assert "Product · Sprint 10" in text
+    assert "TEST-7" in text
+    assert "Сделала ревью и подготовила демо" in text
+    assert "ответа на опрос нет" in text
+    assert "Демо перенесли на 15:00" in text
+
+
 def test_done_today_yql_uses_tracker_date_literals() -> None:
     yql = build_done_today_yql("DARKHORSE", "2026-06-08")
 
@@ -178,7 +359,8 @@ async def test_build_report_groups_by_registered_telegram_members() -> None:
         )
 
     assert report.queue == "DARKHORSE"
-    assert report.members == []
+    assert [member.login for member in report.members] == ["alice", "bob"]
+    assert all(not member.responded for member in report.members)
     assert client.queries == []
 
 
@@ -395,7 +577,8 @@ async def test_build_report_ignores_reported_polls() -> None:
             client_factory=lambda: client,
         )
 
-    assert report.members == []
+    assert len(report.members) == 1
+    assert report.members[0].responded is False
 
 
 def test_format_report_omits_empty_sections() -> None:
@@ -439,7 +622,7 @@ def test_format_report_shows_single_empty_period_line() -> None:
     with patch("core.daily_digest.get_config", return_value=_cfg()):
         text = format_daily_digest(report)
 
-    assert "За период нет обновлений." in text
+    assert "зарегистрированные участники не найдены" in text
 
 
 async def test_mark_standup_polls_reported_closes_period() -> None:
