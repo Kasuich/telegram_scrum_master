@@ -301,6 +301,10 @@ class TelegramBotClient:
             {"drop_pending_updates": drop_pending_updates},
         )
 
+    async def set_my_commands(self, commands: list[dict[str, str]]) -> None:
+        """Register the bot command list shown in Telegram's "/" menu."""
+        await self._request("setMyCommands", {"commands": commands})
+
 
 # ── Metrics ─────────────────────────────────────────────────────────────────────
 

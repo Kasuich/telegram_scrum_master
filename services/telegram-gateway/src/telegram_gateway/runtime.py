@@ -82,6 +82,24 @@ class GatewayRuntime:
                 secret_token=self.settings.webhook_secret,
             )
 
+    async def register_commands(self) -> None:
+        """Publish the bot's slash-command menu on startup (best-effort).
+
+        Commands work by text parsing regardless of this; setMyCommands only
+        populates Telegram's "/" autocomplete. Registered globally, so /audit
+        is visible to everyone — non-leads get a polite refusal when they run
+        it (access is enforced server-side, not by hiding the command).
+        """
+        if self.bot_client is None:
+            return
+        commands = [
+            {"command": "audit", "description": "Аудит доски (для тимлидов)"},
+        ]
+        try:
+            await self.bot_client.set_my_commands(commands)
+        except BotAPIError:
+            pass
+
     async def resolve_installation_once(self) -> None:
         if self.bridge is None or self.bot_client is None:
             return
@@ -432,6 +450,7 @@ class GatewayRuntime:
 
     async def run(self, stop_event: asyncio.Event) -> None:
         await self.sync_transport_mode()
+        await self.register_commands()
         while not stop_event.is_set():
             try:
                 await self.poll_updates_once(
