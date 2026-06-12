@@ -20,6 +20,35 @@ gh workflow run deploy-telegram-gateway.yml -f environment=telegram-staging -f a
 gh workflow run deploy-telegram-gateway.yml -f environment=telegram-staging -f action=rollback
 ```
 
+## Public Entrypoint (nginx + TLS)
+
+The tunnel server (`misisdarkhorse.ru`) terminates TLS and reverse-proxies
+everything. It is provisioned automatically by the `Provision nginx + TLS` step
+of `deploy-telegram-gateway.yml` (script: `scripts/setup-tunnel-nginx.sh`,
+idempotent, re-runs each deploy):
+
+| Public URL | Backend |
+|---|---|
+| `https://misisdarkhorse.ru/telegram/webhook` | local gateway `127.0.0.1:8080/webhook` |
+| `https://misisdarkhorse.ru/grafana/` | Grafana on main over WireGuard (`MAIN_WG_IP:3000`) |
+| `https://misisdarkhorse.ru/` | web-ui GUI on main over WireGuard (`MAIN_WG_IP:5173`) |
+
+Transport is **webhook** mode: the gateway registers the webhook with Telegram
+on startup (`set_webhook` in `runtime.sync_transport_mode`) using
+`TELEGRAM_WEBHOOK_BASE_URL` + `TELEGRAM_WEBHOOK_PATH`. Grafana is served under a
+sub-path via `GF_SERVER_SERVE_FROM_SUB_PATH=true` + `GRAFANA_URL=.../grafana` on
+the main server.
+
+Certificates: Let's Encrypt via certbot webroot (`/var/www/certbot`), renewed by
+certbot's systemd timer. Required deploy secrets: `TG_DOMAIN`, `CERTBOT_EMAIL`,
+`MAIN_WG_IP`, `TELEGRAM_WEBHOOK_BASE_URL`.
+
+Check it:
+```bash
+curl -sf https://misisdarkhorse.ru/grafana/api/health
+curl -s "https://api.telegram.org/bot$TOKEN/getWebhookInfo" | python3 -m json.tool
+```
+
 ## Outage Scenarios
 
 ### Telegram outage (api.telegram.org unreachable)

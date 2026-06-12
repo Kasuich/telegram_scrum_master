@@ -51,7 +51,8 @@ jobs:
             TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
             GRAFANA_USER=${{ secrets.GRAFANA_USER }}
             GRAFANA_PASSWORD=${{ secrets.GRAFANA_PASSWORD }}
-            GRAFANA_URL=http://${{ secrets.VPS_HOST }}:3000
+            GRAFANA_URL=${{ secrets.GRAFANA_URL || format('https://{0}/grafana', secrets.TG_DOMAIN || vars.TG_DOMAIN) }}
+            GRAFANA_SERVE_FROM_SUB_PATH=true
             ENVIRONMENT=test
             LOG_LEVEL=DEBUG
             TELEGRAM_BRIDGE_ENABLED=${{ secrets.TELEGRAM_BRIDGE_ENABLED }}

@@ -108,6 +108,16 @@ jobs:
           source: docker-compose.telegram-gateway.yml
           target: /opt/telegram-gateway
 
+      - name: Upload nginx provisioning script
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.TG_VPS_HOST || vars.TG_VPS_HOST }}
+          username: ${{ secrets.TG_VPS_USER || vars.TG_VPS_USER }}
+          key: ${{ secrets.TG_VPS_SSH_KEY }}
+          source: scripts/setup-tunnel-nginx.sh
+          target: /opt/telegram-gateway
+          strip_components: 1
+
       - name: Update WireGuard tunnel config
         uses: appleboy/ssh-action@v1
         if: ${{ vars.WG_MAIN_SERVER_PUBLIC_KEY != '' && vars.WG_MAIN_SERVER_ENDPOINT != '' }}
@@ -195,6 +205,36 @@ jobs:
               sleep 5
             done
             echo "=== Deploy complete: $IMAGE ==="
+
+      - name: Provision nginx + TLS (public entrypoint)
+        uses: appleboy/ssh-action@v1
+        env:
+          DOMAIN: ${{ secrets.TG_DOMAIN || vars.TG_DOMAIN }}
+          CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL || vars.CERTBOT_EMAIL }}
+          MAIN_WG_IP: ${{ secrets.MAIN_WG_IP || vars.MAIN_WG_IP }}
+        with:
+          host: ${{ secrets.TG_VPS_HOST || vars.TG_VPS_HOST }}
+          username: ${{ secrets.TG_VPS_USER || vars.TG_VPS_USER }}
+          key: ${{ secrets.TG_VPS_SSH_KEY }}
+          envs: DOMAIN,CERTBOT_EMAIL,MAIN_WG_IP
+          script: |
+            set -e
+            chmod +x /opt/telegram-gateway/setup-tunnel-nginx.sh
+            DOMAIN="$DOMAIN" CERTBOT_EMAIL="$CERTBOT_EMAIL" MAIN_WG_IP="$MAIN_WG_IP" \
+              bash /opt/telegram-gateway/setup-tunnel-nginx.sh
+
+      - name: Verify webhook registration
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.TG_VPS_HOST || vars.TG_VPS_HOST }}
+          username: ${{ secrets.TG_VPS_USER || vars.TG_VPS_USER }}
+          key: ${{ secrets.TG_VPS_SSH_KEY }}
+          script: |
+            set -e
+            source /opt/telegram-gateway/.env
+            echo "=== getWebhookInfo ==="
+            curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" \
+              | python3 -m json.tool || true
 
   rollback:
     if: ${{ inputs.action == 'rollback' }}

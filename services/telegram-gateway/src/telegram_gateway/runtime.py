@@ -73,6 +73,14 @@ class GatewayRuntime:
             return
         if self.settings.transport_mode == "polling":
             await self.bot_client.delete_webhook(drop_pending_updates=False)
+        elif self.settings.transport_mode == "webhook" and self.settings.webhook_url:
+            # Register (or refresh) the webhook with Telegram on startup so it
+            # points at the current public URL. Idempotent: Telegram accepts the
+            # same URL repeatedly. Skipped when no public base URL is configured.
+            await self.bot_client.set_webhook(
+                url=self.settings.webhook_url,
+                secret_token=self.settings.webhook_secret,
+            )
 
     async def resolve_installation_once(self) -> None:
         if self.bridge is None or self.bot_client is None:

@@ -288,6 +288,38 @@ async def test_sync_transport_mode_deletes_webhook_for_polling(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_sync_transport_mode_registers_webhook(tmp_path: Path) -> None:
+    runtime = make_runtime(tmp_path)
+    runtime.settings = replace(
+        runtime.settings,
+        transport_mode="webhook",
+        webhook_base_url="https://misisdarkhorse.ru",
+        webhook_path="/telegram/webhook",
+    )
+    runtime.bot_client.set_webhook = AsyncMock()  # type: ignore[method-assign]
+    runtime.bot_client.delete_webhook = AsyncMock()  # type: ignore[method-assign]
+
+    await runtime.sync_transport_mode()
+
+    runtime.bot_client.set_webhook.assert_awaited_once_with(
+        url="https://misisdarkhorse.ru/telegram/webhook",
+        secret_token=runtime.settings.webhook_secret,
+    )
+    runtime.bot_client.delete_webhook.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sync_transport_mode_webhook_noop_without_base_url(tmp_path: Path) -> None:
+    runtime = make_runtime(tmp_path)
+    # Default webhook mode but no public base URL configured (e.g. tests).
+    runtime.bot_client.set_webhook = AsyncMock()  # type: ignore[method-assign]
+
+    await runtime.sync_transport_mode()
+
+    runtime.bot_client.set_webhook.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_deliver_once_no_bridge_returns_zero(tmp_path: Path) -> None:
     runtime = make_runtime(tmp_path)
     runtime.bridge = None
