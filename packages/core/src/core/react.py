@@ -182,6 +182,7 @@ class AgentResult(BaseModel):
     pending_confirm: PendingConfirm | None = None
     session_id: str
     steps: list[dict[str, Any]] = Field(default_factory=list)
+    eval_artifacts: dict[str, Any] | None = None
 
 
 @dataclass

@@ -309,6 +309,115 @@ export interface ChatResponse {
   steps: TraceStep[];
 }
 
+export interface EvalRunSummary {
+  id: string;
+  name: string;
+  status: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  total_cases: number;
+  completed_cases: number;
+  passed_cases: number;
+  failed_cases: number;
+  timeout_cases: number;
+  pass_rate: number | null;
+  avg_latency_sec: number | null;
+  p95_latency_sec: number | null;
+  avg_agent_latency_sec: number | null;
+  p95_agent_latency_sec: number | null;
+}
+
+export interface EvalMetricsSummary {
+  avg_weighted_score?: number | null;
+  avg_score?: number | null;
+  criteria_avg?: Record<string, number>;
+  criteria_by_suite?: Record<
+    string,
+    { n: number; weighted_score: number | null; action_correctness: number | null }
+  >;
+  pass_rate?: number;
+  [key: string]: unknown;
+}
+
+export interface EvalRunDetail extends EvalRunSummary {
+  config?: Record<string, unknown>;
+  metrics_summary?: EvalMetricsSummary;
+  error_summary?: Record<string, unknown>;
+  generator_model?: string;
+  judge_model?: string;
+  git_commit?: string;
+}
+
+export interface JudgeCriterionScore {
+  score: number;
+  weight: number;
+  reason: string;
+}
+
+export interface JudgeEvaluation {
+  criteria: Record<string, JudgeCriterionScore>;
+  weighted_score: number;
+  passed: boolean;
+  score: number;
+  explanation: string;
+}
+
+export interface EvalCaseRow {
+  id: string;
+  suite: string;
+  difficulty: string;
+  status: string;
+  passed: boolean | null;
+  score: number | null;
+  weighted_score: number | null;
+  action_correctness: number | null;
+  criteria_summary: Record<string, number> | null;
+  agent_latency_sec: number | null;
+  latency_sec: number | null;
+  main_error: string | null;
+  user_text: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface EvalCaseDetail {
+  case_id: string;
+  run_id: string;
+  suite: string;
+  difficulty: string;
+  status: string;
+  passed: boolean | null;
+  score: number | null;
+  weighted_score: number | null;
+  action_correctness: number | null;
+  criteria_summary: Record<string, number> | null;
+  criteria: Record<string, JudgeCriterionScore> | null;
+  judge_explanation: string | null;
+  agent_latency_sec: number | null;
+  user_text: string | null;
+  generated_scenario: unknown;
+  llm_judge_evaluation: JudgeEvaluation | null;
+  deterministic_evaluation: unknown;
+  final_evaluation: unknown;
+  [key: string]: unknown;
+}
+
+export interface CreateEvalRunBody {
+  name: string;
+  n_cases: number;
+  suites: string[];
+  scenario_generation_concurrency: number;
+  user_text_generation_concurrency: number;
+  agent_concurrency: number;
+  judge_concurrency: number;
+  timeout_sec_per_case: number;
+  generator_model: string;
+  judge_model: string;
+  use_llm_judge: boolean;
+  use_real_tracker: boolean;
+}
+
 const API_BASE = import.meta.env.VITE_CONSOLE_API_URL ?? "/api";
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -430,6 +539,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ message, session_id }),
     }),
+  evalRuns: (offset = 0, limit = 50) =>
+    request<{ items: EvalRunSummary[]; total: number }>(`/eval-runs?offset=${offset}&limit=${limit}`),
+  createEvalRun: (body: CreateEvalRunBody) =>
+    request<{ run_id: string; status: string }>("/eval-runs", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  evalRun: (id: string) => request<EvalRunDetail>(`/eval-runs/${id}`),
+  cancelEvalRun: (id: string) =>
+    request<{ run_id: string; status: string }>(`/eval-runs/${id}/cancel`, { method: "POST" }),
+  evalCases: (runId: string, params: URLSearchParams) =>
+    request<{ items: EvalCaseRow[]; total: number }>(`/eval-runs/${runId}/cases?${params}`),
+  evalCase: (runId: string, caseId: string) =>
+    request<EvalCaseDetail>(`/eval-runs/${runId}/cases/${caseId}`),
+  evalReport: (runId: string) => request<Record<string, unknown>>(`/eval-runs/${runId}/report`),
 };
 
 function localizeError(status: number, raw: string): string {

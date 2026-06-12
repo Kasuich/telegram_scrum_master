@@ -21,3 +21,6 @@ asyncio_mode = "auto"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"packages/core/src/core/eval/judge.py" = ["E501"]

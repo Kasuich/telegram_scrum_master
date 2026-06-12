@@ -116,6 +116,7 @@ services:
       CONSOLE_ADMIN_PASSWORD: ${CONSOLE_ADMIN_PASSWORD:-admin}
       CONSOLE_LOGIN_CODE_SECRET: ${CONSOLE_LOGIN_CODE_SECRET}
       CONSOLE_CORS_ORIGINS: ${CONSOLE_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      ALLOW_REAL_TRACKER_EVAL: ${ALLOW_REAL_TRACKER_EVAL:-false}
       CONSOLE_AVATAR_DIR: ${CONSOLE_AVATAR_DIR:-/data/avatars}
       PET_FAST_MODE: ${PET_FAST_MODE:-true}
       PET_DEV_TOOLS: ${PET_DEV_TOOLS:-false}
@@ -175,6 +176,31 @@ services:
       retries: 10
       start_period: 30s
     depends_on:
+      postgres:
+        condition: service_healthy
+
+  eval-runner:
+    build:
+      context: .
+      dockerfile: services/eval-runner/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      ORCHESTRATOR_URL: http://pm-orchestrator:8001
+      YC_API_KEY: ${YC_API_KEY}
+      YC_FOLDER_ID: ${YC_FOLDER_ID}
+      TRACKER_TOKEN: ${TRACKER_TOKEN}
+      TRACKER_ORG_ID: ${TRACKER_ORG_ID}
+      TRACKER_ORG_TYPE: ${TRACKER_ORG_TYPE:-360}
+      ALLOW_REAL_TRACKER_EVAL: ${ALLOW_REAL_TRACKER_EVAL:-false}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ENVIRONMENT: ${ENVIRONMENT}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8004:8004"
+    depends_on:
+      pm-orchestrator:
+        condition: service_healthy
       postgres:
         condition: service_healthy
 

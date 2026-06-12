@@ -193,6 +193,12 @@ class TrackerClient:
         return backoff + random.uniform(0, _RETRY_BASE_DELAY)
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        from core.eval.fake_tracker import get_fake_tracker_store
+
+        store = get_fake_tracker_store()
+        if store is not None:
+            return await store.request(method, path, **kwargs)
+
         self._ensure_configured()
         url = f"{self._base}/{path.lstrip('/')}"
         headers = self._headers()
