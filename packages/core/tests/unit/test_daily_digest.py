@@ -12,6 +12,7 @@ from core.daily_digest import (
     DigestMember,
     DigestReport,
     DigestSprint,
+    _resolve_digest_chat,
     build_daily_digest_report,
     build_done_today_yql,
     completed_hour_window_utc,
@@ -21,6 +22,46 @@ from core.daily_digest import (
     split_telegram_text,
 )
 from core.models import ScheduledJob, TelegramOutbox
+from sqlalchemy.dialects import postgresql
+
+
+class _StmtCapture:
+    """Async session stub that records the executed statement and returns no rows."""
+
+    def __init__(self) -> None:
+        self.stmt = None
+
+    async def execute(self, stmt):
+        self.stmt = stmt
+        return _EmptyResult()
+
+
+class _EmptyResult:
+    def scalars(self):
+        return self
+
+    def all(self):
+        return []
+
+
+def _compiled_sql(stmt) -> str:
+    return str(
+        stmt.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+
+async def test_resolve_digest_chat_does_not_filter_on_installation_mode() -> None:
+    # Regression: prod installation.mode was "webhook" (transport bookkeeping),
+    # which the old query required to equal "workspace_bot" — silently yielding
+    # zero digest chats. The authoritative signal is chat.access_mode.
+    session = _StmtCapture()
+    await _resolve_digest_chat(session, team_id=uuid.uuid4())
+    sql = _compiled_sql(session.stmt)
+    assert "telegram_installations.mode = 'workspace_bot'" not in sql
+    assert "telegram_chats.access_mode = 'workspace_bot'" in sql
 
 
 def _cfg(

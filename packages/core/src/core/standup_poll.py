@@ -206,7 +206,11 @@ async def load_registered_participants(
             TelegramUserLink.status == "active",
             TeamMembership.tracker_match_status == "confirmed",
             TelegramInstallation.status == "active",
-            TelegramInstallation.mode == "workspace_bot",
+            # No TelegramInstallation.mode filter — kept consistent with
+            # deadline_reminders.load_reminder_recipients. installation.mode is
+            # transport bookkeeping (e.g. "webhook") and filtering on it here
+            # silently yielded zero participants, so no standup polls were sent
+            # and the digest team-status section was empty.
             TelegramUser.is_bot.is_(False),
             TelegramUser.is_blocked.is_(False),
         )

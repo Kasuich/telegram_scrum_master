@@ -902,7 +902,12 @@ async def _resolve_digest_chat(
         .where(
             TelegramInstallation.team_id == team_id,
             TelegramInstallation.status == "active",
-            TelegramInstallation.mode == "workspace_bot",
+            # NB: do NOT filter on TelegramInstallation.mode here. That column is
+            # transport-agnostic bookkeeping (it has held values like "webhook" in
+            # prod) and is unrelated to whether a chat is a workspace-bot chat —
+            # TelegramChat.access_mode below is the authoritative signal. Filtering
+            # on it silently produced zero digest chats. Deadline reminders never
+            # had this filter, which is why they kept working.
             TelegramChat.active.is_(True),
             TelegramChat.access_mode == "workspace_bot",
         )
