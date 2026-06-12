@@ -100,9 +100,10 @@ server {
 }
 
 server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    http2 on;
+    # Old-style http2 flag on listen: the standalone "http2 on;" directive only
+    # exists in nginx >= 1.25.1; Debian bookworm ships 1.22.
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name ${DOMAIN};
 
     ssl_certificate     ${LIVE_DIR}/fullchain.pem;
