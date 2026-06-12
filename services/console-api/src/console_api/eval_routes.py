@@ -9,7 +9,16 @@ from typing import Any, Literal
 
 from core.config import get_config
 from core.db import get_session
-from core.eval.constants import DEFAULT_GENERATOR_MODEL, DEFAULT_JUDGE_MODEL
+from core.eval.constants import (
+    DEFAULT_AGENT_CONCURRENCY,
+    DEFAULT_GENERATOR_MODEL,
+    DEFAULT_JUDGE_CONCURRENCY,
+    DEFAULT_JUDGE_MODEL,
+    DEFAULT_JUDGE_SAMPLES,
+    DEFAULT_SCENARIO_CONCURRENCY,
+    DEFAULT_USER_TEXT_CONCURRENCY,
+    MAX_JUDGE_SAMPLES,
+)
 from core.eval.export import failed_cases_export, report_to_markdown
 from core.eval.repository import EvalRepository
 from core.eval.schemas import EvalRunConfig
@@ -27,15 +36,21 @@ class CreateEvalRunRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     n_cases: int = Field(default=50, ge=1, le=500)
     suites: list[str] = Field(default_factory=lambda: EvalRunConfig().suites)
-    scenario_generation_concurrency: int = Field(default=20, ge=1, le=100)
-    user_text_generation_concurrency: int = Field(default=20, ge=1, le=100)
-    agent_concurrency: int = Field(default=20, ge=1, le=100)
-    judge_concurrency: int = Field(default=20, ge=1, le=100)
+    scenario_generation_concurrency: int = Field(default=DEFAULT_SCENARIO_CONCURRENCY, ge=1, le=100)
+    user_text_generation_concurrency: int = Field(
+        default=DEFAULT_USER_TEXT_CONCURRENCY, ge=1, le=100
+    )
+    agent_concurrency: int = Field(default=DEFAULT_AGENT_CONCURRENCY, ge=1, le=100)
+    judge_concurrency: int = Field(default=DEFAULT_JUDGE_CONCURRENCY, ge=1, le=100)
     timeout_sec_per_case: int = Field(default=180, ge=30, le=600)
     generator_model: str = DEFAULT_GENERATOR_MODEL
     judge_model: str = DEFAULT_JUDGE_MODEL
     use_llm_judge: bool = True
     use_real_tracker: bool = False
+    judge_samples: int = Field(default=DEFAULT_JUDGE_SAMPLES, ge=1, le=MAX_JUDGE_SAMPLES)
+    simulate_tool_latency: bool = True
+    simulate_tracker_errors: bool = False
+    tool_latency_scale: float = Field(default=1.0, ge=0.0, le=10.0)
 
 
 class EvalRunSummaryDTO(BaseModel):
@@ -66,7 +81,11 @@ class EvalCaseRowDTO(BaseModel):
     score: float | None
     weighted_score: float | None = None
     action_correctness: float | None = None
+    faithfulness: float | None = None
     criteria_summary: dict[str, float] | None = None
+    confidence: float | None = None
+    low_confidence: bool | None = None
+    failure_modes: list[str] = []
     agent_latency_sec: float | None
     latency_sec: float | None
     main_error: str | None
@@ -80,9 +99,14 @@ def _judge_fields(judge_json: dict[str, Any] | None) -> dict[str, Any]:
         return {
             "weighted_score": None,
             "action_correctness": None,
+            "faithfulness": None,
             "criteria_summary": None,
             "criteria": None,
             "judge_explanation": None,
+            "confidence": None,
+            "low_confidence": None,
+            "failure_modes": [],
+            "samples": None,
         }
     criteria_raw = judge_json.get("criteria") or {}
     criteria_summary = {
@@ -91,12 +115,18 @@ def _judge_fields(judge_json: dict[str, Any] | None) -> dict[str, Any]:
         if isinstance(item, dict) and "score" in item
     }
     action = criteria_raw.get("action_correctness") or {}
+    faithfulness = criteria_raw.get("faithfulness") or {}
     return {
         "weighted_score": judge_json.get("weighted_score"),
         "action_correctness": action.get("score") if isinstance(action, dict) else None,
+        "faithfulness": faithfulness.get("score") if isinstance(faithfulness, dict) else None,
         "criteria_summary": criteria_summary or None,
         "criteria": criteria_raw or None,
         "judge_explanation": judge_json.get("explanation"),
+        "confidence": judge_json.get("confidence"),
+        "low_confidence": judge_json.get("low_confidence"),
+        "failure_modes": judge_json.get("failure_modes") or [],
+        "samples": judge_json.get("samples"),
     }
 
 
@@ -156,6 +186,10 @@ async def create_eval_run(
         judge_model=body.judge_model,
         use_llm_judge=body.use_llm_judge,
         use_real_tracker=body.use_real_tracker,
+        judge_samples=body.judge_samples,
+        simulate_tool_latency=body.simulate_tool_latency,
+        simulate_tracker_errors=body.simulate_tracker_errors,
+        tool_latency_scale=body.tool_latency_scale,
     )
     async with get_session() as session:
         repo = EvalRepository(session)
@@ -262,7 +296,11 @@ async def list_eval_cases(
                     score=result.score if result else None,
                     weighted_score=judge_fields["weighted_score"],
                     action_correctness=judge_fields["action_correctness"],
+                    faithfulness=judge_fields["faithfulness"],
                     criteria_summary=judge_fields["criteria_summary"],
+                    confidence=judge_fields["confidence"],
+                    low_confidence=judge_fields["low_confidence"],
+                    failure_modes=judge_fields["failure_modes"],
                     agent_latency_sec=result.agent_latency_sec if result else None,
                     latency_sec=result.latency_sec if result else None,
                     main_error=main_error,
@@ -288,6 +326,12 @@ async def get_eval_case(
             raise HTTPException(status_code=404, detail="Case not found")
         result = case.result
         judge_fields = _judge_fields(result.llm_judge_evaluation_json if result else None)
+        tool_latency = None
+        raw_output = result.agent_raw_output_json if result else None
+        if isinstance(raw_output, dict):
+            artifacts = raw_output.get("eval_artifacts") or {}
+            if isinstance(artifacts, dict):
+                tool_latency = artifacts.get("tool_latency")
         return {
             "case_id": str(case.id),
             "run_id": str(case.run_id),
@@ -311,7 +355,13 @@ async def get_eval_case(
             "criteria": judge_fields["criteria"],
             "criteria_summary": judge_fields["criteria_summary"],
             "action_correctness": judge_fields["action_correctness"],
+            "faithfulness": judge_fields["faithfulness"],
             "judge_explanation": judge_fields["judge_explanation"],
+            "confidence": judge_fields["confidence"],
+            "low_confidence": judge_fields["low_confidence"],
+            "failure_modes": judge_fields["failure_modes"],
+            "samples": judge_fields["samples"],
+            "tool_latency": tool_latency,
             "latency_sec": result.latency_sec if result else None,
             "agent_latency_sec": result.agent_latency_sec if result else None,
             "judge_latency_sec": result.judge_latency_sec if result else None,

@@ -264,17 +264,28 @@ class EvalRepository:
         )
         rows = []
         for case, result in (await self.session.execute(stmt)).all():
+            raw_output = result.agent_raw_output_json or {}
+            tool_latency = None
+            if isinstance(raw_output, dict):
+                artifacts = raw_output.get("eval_artifacts") or {}
+                if isinstance(artifacts, dict):
+                    tool_latency = artifacts.get("tool_latency")
             rows.append(
                 {
                     "suite": case.suite,
+                    "difficulty": case.difficulty,
                     "status": case.status,
+                    "user_text": case.user_text,
                     "passed": result.passed,
                     "score": result.score,
                     "latency_sec": result.latency_sec,
                     "agent_latency_sec": result.agent_latency_sec,
+                    "judge_latency_sec": result.judge_latency_sec,
                     "final_evaluation": result.final_evaluation_json,
                     "deterministic_evaluation": result.deterministic_evaluation_json,
                     "llm_judge_evaluation": result.llm_judge_evaluation_json,
+                    "agent_normalized_output": result.agent_normalized_output_json,
+                    "tool_latency": tool_latency,
                 }
             )
         return rows

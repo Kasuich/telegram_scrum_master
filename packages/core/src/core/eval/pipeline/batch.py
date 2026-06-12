@@ -8,11 +8,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from core.eval.analysis import build_failure_analysis, run_diagnosis
 from core.eval.deterministic import evaluate_deterministic
 from core.eval.generator import generate_scenario, generate_user_text, today_iso
 from core.eval.judge import build_judge_errors, run_heuristic_judge, run_llm_judge
 from core.eval.metrics import compute_run_metrics
-from core.eval.normalizer import normalize_agent_output
+from core.eval.normalizer import normalize_agent_output, summarize_trajectory
 from core.eval.pipeline.base import PipelineContext, with_db
 from core.eval.redaction import redact_output
 from core.eval.schemas import EvalRunConfig, FinalEvaluation
@@ -44,27 +45,34 @@ class BatchStagesPipeline:
                     return case.id
 
                 case_id = await with_db(ctx, _create)
-                scenario = await generate_scenario(
-                    suite=suite,
-                    difficulty=difficulty,
-                    current_date=current_date,
-                    model=cfg.generator_model,
-                    index=i,
-                )
-
-                async def _save_scenario() -> None:
-                    await ctx.repo.update_case(
-                        case_id,
-                        status="scenario_generated",
-                        generated_scenario_json=scenario.model_dump(),
-                        initial_state_json=scenario.initial_state,
-                        expected_operations_json=scenario.expected_operations,
-                        forbidden_operations_json=scenario.forbidden_operations,
-                        expected_final_state_json=scenario.expected_final_state,
-                        metadata_json=scenario.metadata,
+                # One bad scenario must not abort the whole batch — the case
+                # survives without a scenario and later stages skip it.
+                try:
+                    scenario = await generate_scenario(
+                        suite=suite,
+                        difficulty=difficulty,
+                        current_date=current_date,
+                        model=cfg.generator_model,
+                        index=i,
                     )
 
-                await with_db(ctx, _save_scenario)
+                    async def _save_scenario() -> None:
+                        await ctx.repo.update_case(
+                            case_id,
+                            status="scenario_generated",
+                            generated_scenario_json=scenario.model_dump(),
+                            initial_state_json=scenario.initial_state,
+                            expected_operations_json=scenario.expected_operations,
+                            forbidden_operations_json=scenario.forbidden_operations,
+                            expected_final_state_json=scenario.expected_final_state,
+                            metadata_json=scenario.metadata,
+                        )
+
+                    await with_db(ctx, _save_scenario)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Scenario generation failed for case %s", case_id)
                 return case_id
 
         tasks = [gen_one(i, suite, diff) for i, (suite, diff) in enumerate(plan)]
@@ -153,6 +161,9 @@ class BatchStagesPipeline:
                 "eval_case_id": str(case_id),
                 "initial_state": initial_state,
                 "current_date": current_date,
+                "simulate_tool_latency": cfg.simulate_tool_latency,
+                "simulate_tracker_errors": cfg.simulate_tracker_errors,
+                "tool_latency_scale": cfg.tool_latency_scale,
             },
         }
         try:
@@ -249,6 +260,11 @@ class BatchStagesPipeline:
         judge_latency = None
         fake_state = detail.result.final_fake_tracker_state_json if detail.result else None
         scenario = detail.generated_scenario_json or {}
+        # Compact reasoning trajectory so the judge can see *how* the agent acted.
+        raw_output = (
+            getattr(detail.result, "agent_raw_output_json", None) if detail.result else None
+        )
+        agent_trace = summarize_trajectory(raw_output or {})
         t0 = time.monotonic()
         if cfg.use_llm_judge:
             judge_eval = await run_llm_judge(
@@ -260,7 +276,9 @@ class BatchStagesPipeline:
                 expected_final_state=detail.expected_final_state_json,
                 normalized=normalized,
                 final_fake_tracker_state=fake_state,
+                agent_trace=agent_trace,
                 model=cfg.judge_model,
+                samples=cfg.judge_samples,
             )
         else:
             judge_eval = run_heuristic_judge(
@@ -315,8 +333,20 @@ class BatchStagesPipeline:
         await with_db(ctx, _save_judge)
 
     async def _finalize(self, ctx: PipelineContext) -> None:
+        cfg = ctx.config
         rows = await with_db(ctx, lambda: ctx.repo.collect_case_metric_rows(ctx.run_id))
-        metrics = compute_run_metrics(rows)
+        metrics = compute_run_metrics(rows, judge_model=cfg.judge_model)
+
+        # Deterministic failure analysis (always) + LLM diagnosis "where it's
+        # dumb" (one call, only when there are failures to explain).
+        analysis = build_failure_analysis(rows, metrics)
+        metrics["analysis"] = analysis
+        if cfg.use_llm_judge and analysis.get("failed_count"):
+            try:
+                diagnosis = await run_diagnosis(rows, metrics, model=cfg.judge_model)
+                metrics["diagnosis"] = diagnosis.model_dump()
+            except Exception:
+                logger.exception("Diagnosis pass failed for run %s", ctx.run_id)
 
         async def _save_run_metrics() -> None:
             await ctx.repo.update_run_counters(
@@ -338,7 +368,14 @@ class BatchStagesPipeline:
                 ("avg_agent_latency_sec", float(metrics.get("avg_agent_latency_sec") or 0), None),
                 ("p95_agent_latency_sec", float(metrics.get("p95_agent_latency_sec") or 0), None),
                 ("avg_weighted_score", float(metrics.get("avg_weighted_score") or 0), None),
+                ("hallucination_rate", float(metrics.get("hallucination_rate") or 0), None),
+                ("low_confidence_rate", float(metrics.get("low_confidence_rate") or 0), None),
+                ("total_tool_latency_sec", float(metrics.get("total_tool_latency_sec") or 0), None),
             ]
+            for key in ("faithfulness_avg", "avg_judge_confidence", "judge_cost_usd"):
+                value = metrics.get(key)
+                if value is not None:
+                    metric_rows.append((key, float(value), None))
             for criterion, value in (metrics.get("criteria_avg") or {}).items():
                 metric_rows.append(("criteria_avg", float(value), {"criterion": str(criterion)}))
             for suite, stats in (metrics.get("agent_latency_by_suite") or {}).items():

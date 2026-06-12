@@ -328,6 +328,58 @@ export interface EvalRunSummary {
   p95_agent_latency_sec: number | null;
 }
 
+export interface FailureMode {
+  mode: string;
+  label: string;
+  count: number;
+  suites?: Record<string, number>;
+}
+
+export interface WeakSpot {
+  kind: "suite" | "criterion";
+  name: string;
+  severity?: "high" | "medium";
+  pass_rate?: number;
+  avg_score?: number;
+  n?: number;
+}
+
+export interface DiagnosisProblem {
+  title: string;
+  severity: "high" | "medium" | "low";
+  evidence?: string;
+  failure_modes?: string[];
+  affected_suites?: string[];
+}
+
+export interface DiagnosisImprovement {
+  area: "prompt" | "tools" | "model" | "data" | "other";
+  suggestion: string;
+  rationale?: string;
+  priority: "P0" | "P1" | "P2";
+}
+
+export interface DiagnosisReport {
+  summary?: string;
+  top_problems?: DiagnosisProblem[];
+  improvements?: DiagnosisImprovement[];
+  generated_by?: string | null;
+}
+
+export interface EvalAnalysis {
+  failure_modes?: FailureMode[];
+  weak_spots?: WeakSpot[];
+  failed_count?: number;
+  low_confidence_count?: number;
+  heuristic_judged_count?: number;
+}
+
+export interface ToolLatencyOp {
+  calls: number;
+  total_sec: number;
+  avg_sec: number | null;
+}
+
 export interface EvalMetricsSummary {
   avg_weighted_score?: number | null;
   avg_score?: number | null;
@@ -336,7 +388,26 @@ export interface EvalMetricsSummary {
     string,
     { n: number; weighted_score: number | null; action_correctness: number | null }
   >;
+  suite_stats?: Record<string, { n: number; passed: number; pass_rate: number }>;
+  agent_latency_by_suite?: Record<string, { n: number; avg: number | null; p95: number | null }>;
+  top_errors?: Array<[string, number]>;
   pass_rate?: number;
+  faithfulness_avg?: number | null;
+  hallucination_rate?: number;
+  avg_judge_confidence?: number | null;
+  low_confidence_rate?: number;
+  judge_trust?: { llm_judged: number; heuristic_judged: number };
+  tool_latency_by_op?: Record<string, ToolLatencyOp>;
+  total_tool_latency_sec?: number;
+  tool_time_share?: number | null;
+  judge_cost_usd?: number | null;
+  judge_tokens?: { prompt: number; completion: number };
+  completed_cases?: number;
+  passed_cases?: number;
+  failed_cases?: number;
+  timeout_cases?: number;
+  analysis?: EvalAnalysis;
+  diagnosis?: DiagnosisReport;
   [key: string]: unknown;
 }
 
@@ -361,6 +432,20 @@ export interface JudgeEvaluation {
   passed: boolean;
   score: number;
   explanation: string;
+  samples?: number;
+  confidence?: number;
+  low_confidence?: boolean;
+  weighted_score_stddev?: number | null;
+  criteria_stddev?: Record<string, number>;
+  failure_modes?: string[];
+  judge_model?: string | null;
+}
+
+export interface ToolLatencySummary {
+  enabled: boolean;
+  total_sec: number;
+  calls: number;
+  by_op: Record<string, { count: number; total_sec: number; avg_sec: number; p50_sec: number; p95_sec: number }>;
 }
 
 export interface EvalCaseRow {
@@ -372,7 +457,11 @@ export interface EvalCaseRow {
   score: number | null;
   weighted_score: number | null;
   action_correctness: number | null;
+  faithfulness: number | null;
   criteria_summary: Record<string, number> | null;
+  confidence: number | null;
+  low_confidence: boolean | null;
+  failure_modes: string[];
   agent_latency_sec: number | null;
   latency_sec: number | null;
   main_error: string | null;
@@ -391,12 +480,25 @@ export interface EvalCaseDetail {
   score: number | null;
   weighted_score: number | null;
   action_correctness: number | null;
+  faithfulness: number | null;
   criteria_summary: Record<string, number> | null;
   criteria: Record<string, JudgeCriterionScore> | null;
   judge_explanation: string | null;
+  confidence: number | null;
+  low_confidence: boolean | null;
+  failure_modes: string[];
+  samples: number | null;
+  tool_latency: ToolLatencySummary | null;
   agent_latency_sec: number | null;
+  judge_latency_sec: number | null;
   user_text: string | null;
   generated_scenario: unknown;
+  initial_state: unknown;
+  expected_operations: unknown;
+  forbidden_operations: unknown;
+  agent_raw_output: { steps?: TraceStep[]; reply?: string; [k: string]: unknown } | null;
+  agent_normalized_output: unknown;
+  final_fake_tracker_state: unknown;
   llm_judge_evaluation: JudgeEvaluation | null;
   deterministic_evaluation: unknown;
   final_evaluation: unknown;
@@ -416,6 +518,10 @@ export interface CreateEvalRunBody {
   judge_model: string;
   use_llm_judge: boolean;
   use_real_tracker: boolean;
+  judge_samples: number;
+  simulate_tool_latency: boolean;
+  simulate_tracker_errors: boolean;
+  tool_latency_scale: number;
 }
 
 export interface BattleCombatant {
@@ -589,6 +695,12 @@ export const api = {
   evalCase: (runId: string, caseId: string) =>
     request<EvalCaseDetail>(`/eval-runs/${runId}/cases/${caseId}`),
   evalReport: (runId: string) => request<Record<string, unknown>>(`/eval-runs/${runId}/report`),
+  evalExportMarkdown: (runId: string) =>
+    request<{ markdown: string }>(`/eval-runs/${runId}/export?format=markdown`),
+  rerunFailed: (runId: string) =>
+    request<{ run_id: string; status: string }>(`/eval-runs/${runId}/rerun-failed`, {
+      method: "POST",
+    }),
   // Telegram Mini App
   authTelegramWebApp: (initData: string) =>
     request<{ user: User }>("/auth/telegram/webapp", {

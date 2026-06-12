@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import random
 import re
 from contextvars import ContextVar, Token
 from typing import Any
 
+from core.eval.tracker_profile import ToolLatencyProfile, classify_request, classify_tool
 from core.tracker_tool_helpers import issue_summary
 
 _fake_store_var: ContextVar[FakeTrackerStore | None] = ContextVar(
@@ -17,11 +20,23 @@ _fake_store_var: ContextVar[FakeTrackerStore | None] = ContextVar(
 class FakeTrackerStore:
     """Isolated in-memory Tracker state for a single eval case."""
 
-    def __init__(self, *, queue: str = "TEST", initial_state: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        queue: str = "TEST",
+        initial_state: dict[str, Any] | None = None,
+        latency_profile: ToolLatencyProfile | None = None,
+        seed: str | None = None,
+    ) -> None:
         self.queue = queue.upper()
         self._tasks: dict[str, dict[str, Any]] = {}
         self._comments: dict[str, list[dict[str, Any]]] = {}
         self._counter = 0
+        # Per-case seeded RNG → identical latency replay across runs. random.Random
+        # hashes a str/bytes seed deterministically, so the case id works directly.
+        self._latency = latency_profile
+        self._rng = random.Random(seed)
+        self._latency_samples: dict[str, list[float]] = {}
         if initial_state:
             self.seed(initial_state)
 
@@ -78,11 +93,48 @@ class FakeTrackerStore:
     def dump_state(self) -> dict[str, Any]:
         return {"tasks": [copy.deepcopy(t) for t in self._tasks.values()]}
 
+    # -- Latency simulation --
+
+    async def _simulate(self, op: str) -> None:
+        """Sleep a realistic, seeded wall-time for one tool call of kind ``op``."""
+        if self._latency is None:
+            return
+        ms = self._latency.sample_ms(op, self._rng)
+        seconds = ms / 1000.0
+        self._latency_samples.setdefault(op, []).append(seconds)
+        if seconds > 0:
+            await asyncio.sleep(seconds)
+
+    def latency_summary(self) -> dict[str, Any]:
+        """Per-op + overall simulated latency, for the per-tool latency report."""
+        from core.eval.metrics import percentile
+
+        by_op: dict[str, Any] = {}
+        all_samples: list[float] = []
+        for op, samples in self._latency_samples.items():
+            if not samples:
+                continue
+            all_samples.extend(samples)
+            by_op[op] = {
+                "count": len(samples),
+                "total_sec": round(sum(samples), 3),
+                "avg_sec": round(sum(samples) / len(samples), 3),
+                "p50_sec": round(percentile(samples, 0.5) or 0.0, 3),
+                "p95_sec": round(percentile(samples, 0.95) or 0.0, 3),
+            }
+        return {
+            "enabled": self._latency is not None,
+            "total_sec": round(sum(all_samples), 3),
+            "calls": len(all_samples),
+            "by_op": by_op,
+        }
+
     # -- REST-like API used by TrackerClient routing --
 
     async def request(self, method: str, path: str, **kwargs: Any) -> Any:
         method = method.upper()
         body = kwargs.get("json") or {}
+        await self._simulate(classify_request(method, path))
 
         if method == "GET" and path.startswith("/issues/") and "/comments" not in path:
             key = path.split("/issues/", 1)[1].split("/", 1)[0].upper()
@@ -228,6 +280,7 @@ class FakeTrackerStore:
     async def mcp_call(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         name = tool_name.strip()
         args = arguments or {}
+        await self._simulate(classify_tool(name))
 
         if name in {"GetIssue"}:
             key = str(args.get("issueKey") or args.get("key") or "").upper()
@@ -292,5 +345,17 @@ def seed_fake_tracker_from_metadata(
 ) -> FakeTrackerStore:
     initial = metadata.get("initial_state") or {}
     queue = str(initial.get("queue") or default_queue).upper()
-    store = FakeTrackerStore(queue=queue, initial_state=initial)
-    return store
+    profile: ToolLatencyProfile | None = None
+    if metadata.get("simulate_tool_latency"):
+        profile = ToolLatencyProfile(
+            scale=float(metadata.get("tool_latency_scale") or 1.0),
+            simulate_errors=bool(metadata.get("simulate_tracker_errors")),
+        )
+    # Seed off the case id so each case replays its latencies identically.
+    seed = metadata.get("eval_case_id") or metadata.get("eval_run_id")
+    return FakeTrackerStore(
+        queue=queue,
+        initial_state=initial,
+        latency_profile=profile,
+        seed=str(seed) if seed else None,
+    )

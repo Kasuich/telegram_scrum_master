@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bot,
-  FlaskConical,
   Home,
   LayoutDashboard,
   LayoutGrid,
   ListChecks,
   LogOut,
   PawPrint,
+  ShieldCheck,
   TerminalSquare,
   UserRound,
   Users,
@@ -144,8 +144,8 @@ const ROUTES: RouteDef[] = [
   },
   {
     path: "/eval",
-    label: "Eval",
-    icon: FlaskConical,
+    label: "Штурм",
+    icon: ShieldCheck,
     min: "developer",
     nav: true,
     element: () => <EvalListPage />,

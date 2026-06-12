@@ -126,3 +126,68 @@ def normalize_agent_output(raw: dict[str, Any]) -> NormalizedAgentOutput:
                 operations.append(op)
 
     return NormalizedAgentOutput(operations=operations, final_answer=final or None)
+
+
+_TRACE_KINDS = frozenset(
+    {"stage", "tool_call", "tool_result", "tool_error", "confirm_wait", "clarification", "final"}
+)
+_MAX_TRACE_STEPS = 60
+
+
+def _trim(value: Any, limit: int = 120) -> Any:
+    if isinstance(value, str):
+        return value if len(value) <= limit else value[:limit] + "…"
+    if isinstance(value, dict):
+        return {k: _trim(v, limit) for k, v in list(value.items())[:12]}
+    if isinstance(value, list):
+        return [_trim(v, limit) for v in value[:8]]
+    return value
+
+
+def _result_status(result: Any) -> str:
+    if result is None:
+        return "empty"
+    if isinstance(result, dict):
+        if result.get("error"):
+            return f"error: {str(result['error'])[:80]}"
+        if "count" in result:
+            return f"ok (count={result.get('count')})"
+        return "ok"
+    if isinstance(result, list):
+        return f"ok (n={len(result)})"
+    return "ok"
+
+
+def summarize_trajectory(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compact, judge-friendly view of the agent's reasoning trajectory.
+
+    Surfaces stage transitions, tool calls (with trimmed args), tool results
+    (ok/error/empty/count), and errors — enough for a judge to see *how* the
+    agent reasoned and where it looped, retried, or stalled, without dumping raw
+    payloads. Bounded so a runaway loop can't blow up the judge prompt.
+    """
+    steps = raw.get("steps") or []
+    out: list[dict[str, Any]] = []
+    for i, step in enumerate(steps):
+        kind = step.get("kind")
+        if kind not in _TRACE_KINDS:
+            continue
+        entry: dict[str, Any] = {"i": i, "kind": kind}
+        if kind == "stage":
+            entry["stage"] = step.get("stage")
+        tool = step.get("tool_name")
+        if tool:
+            entry["tool"] = tool
+        if kind == "tool_call":
+            args = step.get("tool_args") or step.get("arguments") or {}
+            if isinstance(args, dict):
+                entry["args"] = _trim(args)
+        elif kind == "tool_result":
+            entry["result"] = _result_status(step.get("result"))
+        elif kind == "tool_error":
+            entry["error"] = str(step.get("error") or "")[:160]
+        out.append(entry)
+        if len(out) >= _MAX_TRACE_STEPS:
+            out.append({"truncated": True, "total_steps": len(steps)})
+            break
+    return out

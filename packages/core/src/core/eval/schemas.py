@@ -7,7 +7,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from core.eval.constants import DEFAULT_GENERATOR_MODEL, DEFAULT_JUDGE_MODEL
+from core.eval.constants import (
+    DEFAULT_AGENT_CONCURRENCY,
+    DEFAULT_GENERATOR_MODEL,
+    DEFAULT_JUDGE_CONCURRENCY,
+    DEFAULT_JUDGE_MODEL,
+    DEFAULT_JUDGE_SAMPLES,
+    DEFAULT_SCENARIO_CONCURRENCY,
+    DEFAULT_USER_TEXT_CONCURRENCY,
+    MAX_JUDGE_SAMPLES,
+)
 
 
 class EvalSuite(str, Enum):
@@ -52,15 +61,25 @@ class EvalRunConfig(BaseModel):
     suites: list[str] = Field(
         default_factory=lambda: [s.value for s in EvalSuite],
     )
-    scenario_generation_concurrency: int = Field(default=20, ge=1, le=100)
-    user_text_generation_concurrency: int = Field(default=20, ge=1, le=100)
-    agent_concurrency: int = Field(default=20, ge=1, le=100)
-    judge_concurrency: int = Field(default=20, ge=1, le=100)
+    # Tier-aware defaults: flash-lite stages wide, pricey pro judge narrow.
+    scenario_generation_concurrency: int = Field(default=DEFAULT_SCENARIO_CONCURRENCY, ge=1, le=100)
+    user_text_generation_concurrency: int = Field(
+        default=DEFAULT_USER_TEXT_CONCURRENCY, ge=1, le=100
+    )
+    agent_concurrency: int = Field(default=DEFAULT_AGENT_CONCURRENCY, ge=1, le=100)
+    judge_concurrency: int = Field(default=DEFAULT_JUDGE_CONCURRENCY, ge=1, le=100)
     timeout_sec_per_case: int = Field(default=180, ge=30, le=600)
     generator_model: str = DEFAULT_GENERATOR_MODEL
     judge_model: str = DEFAULT_JUDGE_MODEL
     use_llm_judge: bool = True
     use_real_tracker: bool = False
+    # Self-consistency panel: judge each case K times and aggregate (1 = off).
+    judge_samples: int = Field(default=DEFAULT_JUDGE_SAMPLES, ge=1, le=MAX_JUDGE_SAMPLES)
+    # Fake-tracker realism: simulate per-tool latency distributions and (opt-in)
+    # transient 429/error behavior so latency numbers and timeouts mean something.
+    simulate_tool_latency: bool = True
+    simulate_tracker_errors: bool = False
+    tool_latency_scale: float = Field(default=1.0, ge=0.0, le=10.0)
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -96,6 +115,20 @@ class LLMJudgeEvaluation(BaseModel):
     explanation: str = ""
     judge_model: str | None = None
     technical_error: str | None = None
+    # ── Self-consistency panel signals ──────────────────────────────────────
+    # How many judge samples were aggregated, how much they agreed (0..1), and
+    # the per-criterion spread. low_confidence flags verdicts worth a human look.
+    samples: int = 1
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    low_confidence: bool = False
+    weighted_score_stddev: float | None = None
+    criteria_stddev: dict[str, float] = Field(default_factory=dict)
+    # Failure-mode tags the judge attached (e.g. "hallucinated_field"), used by
+    # the run-level diagnosis to cluster "where the agent is dumb".
+    failure_modes: list[str] = Field(default_factory=list)
+    # Measured judge token usage (summed across panel samples) → real judge cost.
+    judge_prompt_tokens: int = 0
+    judge_completion_tokens: int = 0
 
     @property
     def semantic_pass(self) -> bool:
@@ -109,6 +142,30 @@ class FinalEvaluation(BaseModel):
     weighted_score: float = Field(default=0.0, ge=0, le=10)
     criteria: dict[str, JudgeCriterionScore] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
+
+
+class DiagnosisProblem(BaseModel):
+    title: str
+    severity: Literal["high", "medium", "low"] = "medium"
+    evidence: str = ""
+    failure_modes: list[str] = Field(default_factory=list)
+    affected_suites: list[str] = Field(default_factory=list)
+
+
+class DiagnosisImprovement(BaseModel):
+    area: Literal["prompt", "tools", "model", "data", "other"] = "prompt"
+    suggestion: str
+    rationale: str = ""
+    priority: Literal["P0", "P1", "P2"] = "P1"
+
+
+class DiagnosisReport(BaseModel):
+    """«Штурм» verdict on where the agent is dumb + how to fix it."""
+
+    summary: str = ""
+    top_problems: list[DiagnosisProblem] = Field(default_factory=list)
+    improvements: list[DiagnosisImprovement] = Field(default_factory=list)
+    generated_by: str | None = None
 
 
 class SyntheticScenario(BaseModel):

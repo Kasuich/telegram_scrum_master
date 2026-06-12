@@ -6,7 +6,7 @@ import math
 from collections import Counter, defaultdict
 from typing import Any
 
-from core.eval.constants import JUDGE_WEIGHTS
+from core.eval.constants import JUDGE_PASS_FAITHFULNESS_MIN, JUDGE_WEIGHTS, model_cost_usd
 
 
 def percentile(values: list[float], p: float) -> float | None:
@@ -21,7 +21,9 @@ def percentile(values: list[float], p: float) -> float | None:
     return sorted_vals[f] + (sorted_vals[c] - sorted_vals[f]) * (k - f)
 
 
-def compute_run_metrics(case_rows: list[dict[str, Any]]) -> dict[str, Any]:
+def compute_run_metrics(
+    case_rows: list[dict[str, Any]], *, judge_model: str | None = None
+) -> dict[str, Any]:
     """case_rows: dicts with suite, passed, score, latency_sec, agent_latency_sec, status."""
     completed = [r for r in case_rows if r.get("status") == "completed"]
     passed = [r for r in completed if r.get("passed")]
@@ -103,9 +105,81 @@ def compute_run_metrics(case_rows: list[dict[str, Any]]) -> dict[str, Any]:
             for err in det.get("errors") or []:
                 errors[str(err.get("type", err))[:120]] += 1
 
+    # ── Faithfulness / hallucination, judge confidence, trust split ─────────
+    faith_scores: list[float] = []
+    confidences: list[float] = []
+    low_conf = 0
+    hallucinated = 0
+    llm_judged = 0
+    heuristic_judged = 0
+    judge_prompt_tokens = 0
+    judge_completion_tokens = 0
+    for row in completed:
+        judge = row.get("llm_judge_evaluation") or {}
+        crit = (judge.get("criteria") or {}).get("faithfulness") or {}
+        if "score" in crit:
+            fs = float(crit["score"])
+            faith_scores.append(fs)
+            if fs < JUDGE_PASS_FAITHFULNESS_MIN:
+                hallucinated += 1
+        if judge.get("confidence") is not None:
+            confidences.append(float(judge["confidence"]))
+        if judge.get("low_confidence"):
+            low_conf += 1
+        model_name = str(judge.get("judge_model") or "")
+        if "heuristic" in model_name:
+            heuristic_judged += 1
+        elif model_name:
+            llm_judged += 1
+        judge_prompt_tokens += int(judge.get("judge_prompt_tokens") or 0)
+        judge_completion_tokens += int(judge.get("judge_completion_tokens") or 0)
+
+    # ── Per-tool simulated latency (fake tracker realism) ───────────────────
+    tool_calls: dict[str, int] = defaultdict(int)
+    tool_total: dict[str, float] = defaultdict(float)
+    for row in completed:
+        by_op = (row.get("tool_latency") or {}).get("by_op") or {}
+        for op, stats in by_op.items():
+            tool_calls[op] += int(stats.get("count") or 0)
+            tool_total[op] += float(stats.get("total_sec") or 0.0)
+    tool_latency_by_op = {
+        op: {
+            "calls": tool_calls[op],
+            "total_sec": round(tool_total[op], 2),
+            "avg_sec": round(tool_total[op] / tool_calls[op], 3) if tool_calls[op] else None,
+        }
+        for op in sorted(tool_calls, key=lambda o: tool_total[o], reverse=True)
+    }
+    total_tool_sec = round(sum(tool_total.values()), 2)
+    total_agent_sec = sum(agent_latencies)
+    tool_time_share = round(total_tool_sec / total_agent_sec, 3) if total_agent_sec else None
+
+    judge_cost = (
+        round(model_cost_usd(judge_model, judge_prompt_tokens, judge_completion_tokens), 4)
+        if judge_model and (judge_prompt_tokens or judge_completion_tokens)
+        else None
+    )
+
     n_completed = len(completed)
     return {
         "pass_rate": len(passed) / n_completed if n_completed else 0.0,
+        "faithfulness_avg": round(sum(faith_scores) / len(faith_scores), 2)
+        if faith_scores
+        else None,
+        "hallucination_rate": hallucinated / n_completed if n_completed else 0.0,
+        "avg_judge_confidence": round(sum(confidences) / len(confidences), 3)
+        if confidences
+        else None,
+        "low_confidence_rate": low_conf / n_completed if n_completed else 0.0,
+        "judge_trust": {"llm_judged": llm_judged, "heuristic_judged": heuristic_judged},
+        "tool_latency_by_op": tool_latency_by_op,
+        "total_tool_latency_sec": total_tool_sec,
+        "tool_time_share": tool_time_share,
+        "judge_tokens": {
+            "prompt": judge_prompt_tokens,
+            "completion": judge_completion_tokens,
+        },
+        "judge_cost_usd": judge_cost,
         "avg_latency_sec": sum(latencies) / len(latencies) if latencies else None,
         "p95_latency_sec": percentile(latencies, 0.95),
         "avg_agent_latency_sec": sum(agent_latencies) / len(agent_latencies)

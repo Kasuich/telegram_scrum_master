@@ -436,6 +436,41 @@ class TestLLMClientComplete:
             assert result.content == "Hello, World!"
 
     @pytest.mark.asyncio
+    async def test_retry_on_429_rate_limit(self) -> None:
+        """429 (rate-limit) must be retried — previously it was raised immediately."""
+        with patch.dict("os.environ", ENV):
+            from core.config import set_config
+
+            set_config(None)
+            client = LLMClient(max_retries=2)
+
+            rate_limited = _make_httpx_response({}, status_code=429)
+            ok_resp = _make_httpx_response(MOCK_TEXT_RESPONSE)
+            client._client = AsyncMock()
+            client._client.post = AsyncMock(side_effect=[rate_limited, ok_resp])
+
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                result = await client.complete([Message(role="user", content="hi")])
+
+            assert client._client.post.call_count == 2
+            assert result.content == "Hello, World!"
+
+    @pytest.mark.asyncio
+    async def test_429_honors_retry_after_header(self) -> None:
+        """A numeric Retry-After header drives the backoff delay (capped, jittered)."""
+        with patch.dict("os.environ", ENV):
+            from core.config import set_config
+
+            set_config(None)
+            client = LLMClient(provider="openrouter", max_retries=1)
+            delay = client._retry_delay(
+                httpx.Response(429, headers={"retry-after": "3"}, request=httpx.Request("POST", "http://x")),
+                attempt=0,
+            )
+            # 3s honored + up to 1s jitter, and capped by retry_max_wait.
+            assert 3.0 <= delay <= 4.0
+
+    @pytest.mark.asyncio
     async def test_raises_llm_error_on_timeout(self) -> None:
         """complete() raises LLMError after all retries exhaust on timeout."""
         with patch.dict("os.environ", ENV):

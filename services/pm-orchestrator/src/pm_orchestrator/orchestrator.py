@@ -311,6 +311,7 @@ class OrchestratorService:
         if fake_store is not None and is_eval_mode(invocation_context):
             result.eval_artifacts = {
                 "final_fake_tracker_state": fake_store.dump_state(),
+                "tool_latency": fake_store.latency_summary(),
                 "eval_mode": (invocation_context.metadata or {}).get("eval_mode"),
                 "eval_case_id": (invocation_context.metadata or {}).get("eval_case_id"),
                 "eval_run_id": (invocation_context.metadata or {}).get("eval_run_id"),

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
 from collections.abc import AsyncGenerator
 from typing import Any, Literal
@@ -25,6 +26,16 @@ from core.metrics import llm_latency_seconds, llm_requests_total, llm_tokens_tot
 
 # Provider-specific endpoints.
 _YANDEX_RESPONSES_URL = "https://ai.api.cloud.yandex.net/v1/responses"
+
+# HTTP statuses worth retrying. 429 (rate limit) is the important one for
+# OpenRouter: it sits below 500 and was previously NOT retried, so a single
+# upstream rate-limit killed the call. 408/409/425 cover transient request
+# races; 5xx are upstream blips.
+_RETRYABLE_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+# Fallback cap on honoring a Retry-After header when no config is available.
+_DEFAULT_RETRY_MAX_WAIT = 30.0
+# Cap on a single exponential-backoff sleep.
+_MAX_BACKOFF = 20.0
 
 
 class Message(BaseModel):
@@ -103,11 +114,15 @@ class LLMClient:
             self.model = model if model is not None else llm_cfg.openrouter_default_model
             self.temperature = temperature if temperature is not None else 0.7
             self.max_tokens = max_tokens if max_tokens is not None else 4000
-            self.timeout = timeout if timeout is not None else 60
-            self.max_retries = max_retries if max_retries is not None else 3
+            self.timeout = timeout if timeout is not None else llm_cfg.openrouter_timeout
+            self.max_retries = (
+                max_retries if max_retries is not None else llm_cfg.openrouter_max_retries
+            )
             self.api_key = llm_cfg.openrouter_api_key
             self.base_url = llm_cfg.openrouter_base_url
             self.folder_id = ""
+            self.max_connections = llm_cfg.openrouter_max_connections
+            self.retry_max_wait = llm_cfg.openrouter_retry_max_wait_sec
         else:
             self.model = model if model is not None else llm_cfg.yandexgpt_model
             self.temperature = (
@@ -121,14 +136,20 @@ class LLMClient:
             self.api_key = config.yandex.yc_api_key
             self.folder_id = config.yandex.yc_folder_id
             self.base_url = ""
+            self.max_connections = 32
+            self.retry_max_wait = _DEFAULT_RETRY_MAX_WAIT
 
         self._client: httpx.AsyncClient | None = None
 
     @property
     def client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client."""
+        """Get or create HTTP client with a bounded connection pool."""
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self.timeout)
+            limits = httpx.Limits(
+                max_connections=self.max_connections,
+                max_keepalive_connections=max(1, self.max_connections // 2),
+            )
+            self._client = httpx.AsyncClient(timeout=self.timeout, limits=limits)
         return self._client
 
     async def close(self) -> None:
@@ -167,16 +188,56 @@ class LLMClient:
                 if attempt == self.max_retries:
                     llm_requests_total.labels(model=self.model, status="error").inc()
                     raise LLMError(f"Request timeout after {self.max_retries} retries") from e
-                await asyncio.sleep(2**attempt * 0.5)
+                await asyncio.sleep(self._backoff_with_jitter(attempt))
             except httpx.HTTPStatusError as e:
-                if e.response.status_code >= 500 and attempt < self.max_retries:
-                    await asyncio.sleep(2**attempt * 0.5)
+                status_code = e.response.status_code
+                if status_code == 429:
+                    # Rate-limited. Surface it for observability and honor Retry-After.
+                    llm_requests_total.labels(model=self.model, status="rate_limited").inc()
+                if status_code in _RETRYABLE_STATUSES and attempt < self.max_retries:
+                    await asyncio.sleep(self._retry_delay(e.response, attempt))
                     continue
                 llm_requests_total.labels(model=self.model, status="error").inc()
-                raise LLMError(f"HTTP {e.response.status_code}: {e.response.text}") from e
+                raise LLMError(f"HTTP {status_code}: {e.response.text}") from e
 
         llm_requests_total.labels(model=self.model, status="error").inc()
         raise LLMError("Max retries exceeded")
+
+    @staticmethod
+    def _backoff_with_jitter(attempt: int) -> float:
+        """Exponential backoff capped at ``_MAX_BACKOFF`` with full jitter.
+
+        Full jitter (``uniform(0, base)``) de-synchronizes many concurrent
+        workers that would otherwise retry in lockstep — the classic
+        thundering-herd that turns one 429 into a sustained one.
+        """
+        base = min(2**attempt * 0.5, _MAX_BACKOFF)
+        return random.uniform(base * 0.5, base * 1.5)
+
+    def _retry_delay(self, response: httpx.Response, attempt: int) -> float:
+        """Delay before retrying a rate-limited / transient response.
+
+        Prefers the ``Retry-After`` header (seconds form) when present, capped
+        at ``retry_max_wait`` and nudged with a little jitter so concurrent
+        callers that received the same header don't wake up together. Falls
+        back to exponential backoff with jitter.
+        """
+        headers = getattr(response, "headers", None)
+        retry_after = None
+        if headers is not None:
+            try:
+                retry_after = headers.get("retry-after")
+            except (AttributeError, TypeError):
+                retry_after = None
+        if retry_after:
+            try:
+                wait = float(retry_after)
+            except (TypeError, ValueError):
+                wait = None  # HTTP-date form — fall back to backoff
+            if wait is not None and wait >= 0:
+                wait = min(wait, self.retry_max_wait)
+                return wait + random.uniform(0, 1.0)
+        return self._backoff_with_jitter(attempt)
 
     # ── Yandex (Responses API) ────────────────────────────────────────
 

@@ -193,6 +193,33 @@ class LLMConfig(BaseSettings):
         description="Default model for OpenRouter requests",
     )
 
+    openrouter_timeout: int = Field(
+        default=90,
+        ge=1,
+        description="OpenRouter request timeout in seconds (agent/judge calls can be slow)",
+    )
+
+    openrouter_max_retries: int = Field(
+        default=5,
+        ge=0,
+        le=12,
+        description="Max retry attempts for OpenRouter (covers 429 rate-limit + 5xx)",
+    )
+
+    openrouter_max_connections: int = Field(
+        default=32,
+        ge=1,
+        le=512,
+        description="httpx connection-pool cap per OpenRouter client (bounds socket fan-out)",
+    )
+
+    openrouter_retry_max_wait_sec: float = Field(
+        default=30.0,
+        ge=0.0,
+        le=120.0,
+        description="Cap on honoring a 429 Retry-After header before giving up the wait",
+    )
+
 
 class AppConfig(BaseSettings):
     """Application-level configuration."""
