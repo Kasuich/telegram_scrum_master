@@ -425,6 +425,12 @@ async def register_tracker_mcp_tools() -> list[str]:
             continue
 
         async def invoke(_tool_name: str = name, **kwargs: Any) -> Any:
+            from core.eval.fake_tracker import get_fake_tracker_store
+
+            store = get_fake_tracker_store()
+            if store is not None:
+                arguments = _normalize_tool_arguments(_tool_name, kwargs)
+                return await store.mcp_call(_tool_name, arguments)
             if _tool_name == "ChangeIssueStatus":
                 return await _change_issue_status_via_tracker(kwargs)
             arguments = _normalize_tool_arguments(_tool_name, kwargs)

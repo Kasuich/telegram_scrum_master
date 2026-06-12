@@ -10,6 +10,7 @@ resolution-markers = [
 members = [
     "console-api",
     "core",
+    "eval-runner",
     "meeting-capture",
     "platform-api",
     "pm-agent-platform",
@@ -245,6 +246,36 @@ sdist = { url = "https://files.pythonhosted.org/packages/df/de/5832661ed55107b8a
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d0/39/783980e78cb92c2d7bdb1fc7dbc86e94ccc6d58224d76a7f1f51b6c51e30/croniter-6.2.2-py3-none-any.whl", hash = "sha256:a5d17b1060974d36251ea4faf388233eca8acf0d09cbd92d35f4c4ac8f279960", size = 45422, upload-time = "2026-03-15T08:43:46.626Z" },
 ]
+
+[[package]]
+name = "eval-runner"
+version = "0.1.0"
+source = { editable = "services/eval-runner" }
+dependencies = [
+    { name = "core" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+test = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "core", editable = "packages/core" },
+    { name = "fastapi", specifier = ">=0.111" },
+    { name = "httpx", specifier = ">=0.25" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
+]
+provides-extras = ["test"]
 
 [[package]]
 name = "fastapi"

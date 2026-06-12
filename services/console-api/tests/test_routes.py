@@ -45,3 +45,10 @@ def test_console_api_routes_are_registered() -> None:
     assert ("/confirms", "GET") in routes
     assert ("/confirms/{confirm_id}/decision", "POST") in routes
     assert ("/playground/{agent}/chat", "POST") in routes
+    assert ("/eval-runs", "GET") in routes
+    assert ("/eval-runs", "POST") in routes
+    assert ("/eval-runs/{run_id}", "GET") in routes
+    assert ("/eval-runs/{run_id}/cancel", "POST") in routes
+    assert ("/eval-runs/{run_id}/cases", "GET") in routes
+    assert ("/eval-runs/{run_id}/cases/{case_id}", "GET") in routes
+    assert ("/eval-runs/{run_id}/report", "GET") in routes

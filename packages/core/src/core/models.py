@@ -13,6 +13,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -1689,6 +1690,244 @@ class Transcript(Base):
     meeting: Mapped[Meeting] = relationship("Meeting", back_populates="transcript")
 
 
+class EvalRun(Base):
+    """Eval harness run for PMAgent quality assessment."""
+
+    __tablename__ = "eval_runs"
+    __table_args__ = (
+        Index("idx_eval_runs_status", "status"),
+        Index("idx_eval_runs_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    config_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    git_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    generator_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    judge_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    agent_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    total_cases: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    generated_cases: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_cases: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    passed_cases: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_cases: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    timeout_cases: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pass_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_latency_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p95_latency_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_agent_latency_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p95_agent_latency_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error_summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    metrics_summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    cases: Mapped[list[EvalCase]] = relationship(
+        "EvalCase",
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+    metrics: Mapped[list[EvalMetric]] = relationship(
+        "EvalMetric",
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+    events: Mapped[list[EvalEvent]] = relationship(
+        "EvalEvent",
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+
+
+class EvalCase(Base):
+    """Single eval case within a run."""
+
+    __tablename__ = "eval_cases"
+    __table_args__ = (
+        Index("idx_eval_cases_run_id", "run_id"),
+        Index("idx_eval_cases_run_status", "run_id", "status"),
+        Index("idx_eval_cases_run_suite", "run_id", "suite"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("eval_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    suite: Mapped[str] = mapped_column(String(64), nullable=False)
+    difficulty: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    current_date: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    generated_scenario_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    user_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    initial_state_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    expected_operations_json: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    forbidden_operations_json: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    expected_final_state_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    run: Mapped[EvalRun] = relationship("EvalRun", back_populates="cases")
+    result: Mapped[EvalCaseResult | None] = relationship(
+        "EvalCaseResult",
+        back_populates="case",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class EvalCaseResult(Base):
+    """Result and audit trail for a single eval case."""
+
+    __tablename__ = "eval_case_results"
+    __table_args__ = (
+        Index("idx_eval_case_results_run_id", "run_id"),
+        Index("idx_eval_case_results_case_id", "case_id"),
+        Index("idx_eval_case_results_passed", "run_id", "passed"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("eval_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    case_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("eval_cases.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    agent_raw_output_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    agent_normalized_output_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    final_fake_tracker_state_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    deterministic_evaluation_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    llm_judge_evaluation_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    final_evaluation_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    latency_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    agent_latency_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    judge_latency_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    agent_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    agent_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    technical_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    case: Mapped[EvalCase] = relationship("EvalCase", back_populates="result")
+
+
+class EvalMetric(Base):
+    """Denormalized metric row for run comparison."""
+
+    __tablename__ = "eval_metrics"
+    __table_args__ = (Index("idx_eval_metrics_run_id", "run_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("eval_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    metric_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric_value: Mapped[float] = mapped_column(Float, nullable=False)
+    dimensions_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    run: Mapped[EvalRun] = relationship("EvalRun", back_populates="metrics")
+
+
+class EvalEvent(Base):
+    """Structured event log for eval runs."""
+
+    __tablename__ = "eval_events"
+    __table_args__ = (
+        Index("idx_eval_events_run_id", "run_id"),
+        Index("idx_eval_events_case_id", "case_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("eval_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    case_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("eval_cases.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    level: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    run: Mapped[EvalRun] = relationship("EvalRun", back_populates="events")
+
+
 __all__ = [
     "Base",
     "Organization",
@@ -1721,4 +1960,9 @@ __all__ = [
     "Meeting",
     "MeetingArtifact",
     "Transcript",
+    "EvalRun",
+    "EvalCase",
+    "EvalCaseResult",
+    "EvalMetric",
+    "EvalEvent",
 ]

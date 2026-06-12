@@ -267,27 +267,55 @@ class OrchestratorService:
         eff_prompt = eff.prompt if eff else None
         eff_rc = eff.runtime_config if eff else None
 
-        if self._db_enabled:
-            from core.db import get_session
+        from core.eval.mode import (
+            activate_fake_tracker,
+            deactivate_fake_tracker,
+            eval_runtime_overlay,
+            is_eval_mode,
+        )
 
-            async with get_session() as session:
+        if is_eval_mode(invocation_context):
+            eff_rc = eval_runtime_overlay(eff_rc)
+
+        cfg = get_config()
+        fake_store, fake_token = activate_fake_tracker(
+            invocation_context,
+            default_queue=cfg.tracker.tracker_queue,
+        )
+
+        try:
+            if self._db_enabled:
+                from core.db import get_session
+
+                async with get_session() as session:
+                    result = await runner.invoke(
+                        message,
+                        session_id,
+                        db_session=session,
+                        team_id=self._team_id,
+                        effective_prompt=eff_prompt,
+                        effective_runtime_config=eff_rc,
+                        invocation_context=invocation_context,
+                    )
+            else:
                 result = await runner.invoke(
                     message,
                     session_id,
-                    db_session=session,
-                    team_id=self._team_id,
                     effective_prompt=eff_prompt,
                     effective_runtime_config=eff_rc,
                     invocation_context=invocation_context,
                 )
-        else:
-            result = await runner.invoke(
-                message,
-                session_id,
-                effective_prompt=eff_prompt,
-                effective_runtime_config=eff_rc,
-                invocation_context=invocation_context,
-            )
+        finally:
+            deactivate_fake_tracker(fake_token)
+
+        if fake_store is not None and is_eval_mode(invocation_context):
+            result.eval_artifacts = {
+                "final_fake_tracker_state": fake_store.dump_state(),
+                "eval_mode": (invocation_context.metadata or {}).get("eval_mode"),
+                "eval_case_id": (invocation_context.metadata or {}).get("eval_case_id"),
+                "eval_run_id": (invocation_context.metadata or {}).get("eval_run_id"),
+            }
+
         self._index_confirms(agent_name, result)
         self._log_actions(agent_name, result, trace_label=message)
         return result

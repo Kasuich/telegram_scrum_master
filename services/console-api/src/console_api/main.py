@@ -192,7 +192,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # ---------------------------------------------------------------------------
 # DTOs
 # ---------------------------------------------------------------------------
@@ -2473,3 +2472,8 @@ async def team_audit(
         "/agents/audit_agent/chat",
         {"message": message, "session_id": f"audit:{team_id}:{uuid.uuid4()}"},
     )
+
+
+from console_api.eval_routes import router as eval_router  # noqa: E402
+
+app.include_router(eval_router)

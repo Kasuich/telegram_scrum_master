@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bot,
+  FlaskConical,
   Home,
   LayoutDashboard,
   LayoutGrid,
@@ -23,6 +24,10 @@ import { HomePage } from "./pages/HomePage";
 import { LoginPage } from "./pages/LoginPage";
 import { PeoplePage } from "./pages/PeoplePage";
 import { PetPage } from "./pages/PetPage";
+import { EvalCasePage } from "./pages/EvalCasePage";
+import { EvalListPage } from "./pages/EvalListPage";
+import { EvalNewPage } from "./pages/EvalNewPage";
+import { EvalRunPage } from "./pages/EvalRunPage";
 import { PlaygroundPage } from "./pages/PlaygroundPage";
 import { ProfilePage } from "./pages/ProfilePage";
 
@@ -137,6 +142,14 @@ const ROUTES: RouteDef[] = [
     nav: true,
     element: () => <PlaygroundPage />,
   },
+  {
+    path: "/eval",
+    label: "Eval",
+    icon: FlaskConical,
+    min: "developer",
+    nav: true,
+    element: () => <EvalListPage />,
+  },
 ];
 
 function defaultPath(role: UiRole): string {
@@ -229,6 +242,13 @@ export function App() {
                 path={route.path}
               />
             ))}
+            {canAccess(role, "developer") && (
+              <>
+                <Route element={<EvalNewPage />} path="/eval/new" />
+                <Route element={<EvalRunPage />} path="/eval/:runId" />
+                <Route element={<EvalCasePage />} path="/eval/:runId/cases/:caseId" />
+              </>
+            )}
             <Route element={<Navigate replace to={home} />} path="*" />
           </Routes>
         </Suspense>

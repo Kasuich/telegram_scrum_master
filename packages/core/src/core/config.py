@@ -571,6 +571,11 @@ class Config(BaseSettings):
     standup_poll: StandupPollConfig = Field(default_factory=StandupPollConfig)
     deadline_reminder: DeadlineReminderConfig = Field(default_factory=DeadlineReminderConfig)
 
+    allow_real_tracker_eval: bool = Field(
+        default=False,
+        description="Allow eval runs with use_real_tracker=true",
+    )
+
     # Database URL shortcut (delegates to database.database_url)
     @property
     def database_url(self) -> str:
