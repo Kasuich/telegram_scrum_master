@@ -16,6 +16,10 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET}
       - TELEGRAM_WEBHOOK_BASE_URL=${TELEGRAM_WEBHOOK_BASE_URL}
+      # Public path Telegram calls; must match the tunnel nginx location.
+      # Without this the gateway defaults to /webhook and Telegram hits the
+      # wrong nginx route (-> web-ui -> 405).
+      - TELEGRAM_WEBHOOK_PATH=${TELEGRAM_WEBHOOK_PATH:-/telegram/webhook}
       - TELEGRAM_TRANSPORT_MODE=${TELEGRAM_TRANSPORT_MODE:-webhook}
 
       # Bridge to main server
