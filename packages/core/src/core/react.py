@@ -319,164 +319,187 @@ def _progress_checkpoint(
     )
 
 
-def _format_action_tool_line(tool_name: str, result: dict[str, Any]) -> str:
-    if tool_name == "CreateIssue":
-        key = result.get("key") or result.get("issue_key", "")
-        return f"Создана {key} «{result.get('summary', '')}»"
-    if tool_name == "UpdateIssue":
-        key = result.get("key") or result.get("issue_key", "")
-        return f"Обновлена {key}"
-    if tool_name == "ChangeIssueStatus":
-        key = result.get("key") or result.get("issue_key", "")
-        return f"Статус изменён: {key}"
-    if tool_name == "CreateComment":
-        key = result.get("issue_key") or result.get("key", "")
-        return f"Добавлен комментарий к {key}"
-    if tool_name == "GetIssue":
-        key = result.get("key", "")
-        summary = result.get("summary", "")
-        return f"{key} «{summary}»".strip()
-    if tool_name == "GetIssues":
-        issues = result.get("issues")
-        if isinstance(issues, list):
-            return f"Найдено задач: {len(issues)}"
-    if tool_name in {"BulkUpdate", "BulkTransition", "BulkMove"}:
-        bulk_id = result.get("bulkchange_id") or result.get("id", "")
-        return f"{tool_name}: запущена операция {bulk_id}".strip()
-    if tool_name == "tracker_close_issue":
-        issue = result.get("issue") or {}
-        key = issue.get("key") or result.get("issue_key", "?")
-        return f"Закрыта {key} «{issue.get('summary', '')}» — {issue.get('status', '')}"
-    if tool_name in ("tracker_find_issues", "tracker_search_issues"):
-        if result.get("not_found") or result.get("count", 0) == 0:
-            return "Задача не найдена"
-        issues = result.get("issues") or []
-        parts = [f"{i.get('key')} «{i.get('summary')}» ({i.get('status')})" for i in issues[:5]]
-        return "Найдено: " + "; ".join(parts)
-    if tool_name == "tracker_create_issue" and (
+def _plural_tasks(n: int) -> str:
+    """Russian plural for «задача» — 1 задачу, 2 задачи, 5 задач."""
+    n = abs(int(n))
+    if 11 <= n % 100 <= 14:
+        return "задач"
+    last = n % 10
+    if last == 1:
+        return "задачу"
+    if 2 <= last <= 4:
+        return "задачи"
+    return "задач"
+
+
+def _format_action_tool_line(tool_name: str, result: dict[str, Any]) -> tuple[str, str]:
+    """Turn one tool result into a (category, human_text) pair.
+
+    The text is what the user reads, so it stays warm and free of internal
+    plumbing — no tool names, operation ids, confirm ids or stage labels.
+    The category is internal routing only and never reaches the user.
+    """
+    if tool_name in ("CreateIssue", "tracker_create_issue") and (
         result.get("duplicate_found") or result.get("merged_duplicate")
     ):
         key = result.get("key") or result.get("issue_key", "")
         summary = result.get("summary", "")
-        line = f"Найден дубликат задачи {key} «{summary}». Новая карточка не создавалась"
+        line = f"Такая задача уже есть — {key} «{summary}», новую заводить не стал"
         applied = result.get("updates_applied") or []
         if applied:
-            line += f". Обновлено: {', '.join(str(x) for x in applied)}"
-        return line
-    if tool_name in ("tracker_create_issue", "tracker_patch_issue", "tracker_update_issue"):
+            line += f". Заодно поправил: {', '.join(str(x) for x in applied)}"
+        return ("duplicate", line)
+    if tool_name == "CreateIssue":
         key = result.get("key") or result.get("issue_key", "")
-        who = result.get("assignee", "")
-        verb = "Создана" if tool_name == "tracker_create_issue" else "Обновлена"
-        line = f"{verb} {key} «{result.get('summary', '')}»"
-        if who:
-            line += f", исполнитель {who}"
-        return line
+        return ("created", f"Завёл {key} — «{result.get('summary', '')}»")
+    if tool_name == "UpdateIssue":
+        key = result.get("key") or result.get("issue_key", "")
+        return ("updated", f"Поправил {key}")
+    if tool_name == "ChangeIssueStatus":
+        key = result.get("key") or result.get("issue_key", "")
+        status = _issue_field(result, "status") or _issue_field(
+            result.get("issue") or {}, "status"
+        )
+        if status:
+            return ("status", f"{key} теперь «{status}»")
+        return ("status", f"Поменял статус у {key}")
+    if tool_name == "CreateComment":
+        key = result.get("issue_key") or result.get("key", "")
+        return ("comment", f"Оставил комментарий в {key}")
+    if tool_name == "GetIssue":
+        key = result.get("key", "")
+        summary = result.get("summary", "")
+        return ("found", f"{key} «{summary}»".strip())
+    if tool_name == "GetIssues":
+        issues = result.get("issues")
+        if isinstance(issues, list):
+            return ("found", f"Нашёл {len(issues)} {_plural_tasks(len(issues))}")
+    if tool_name in {"BulkUpdate", "BulkTransition", "BulkMove"}:
+        return ("bulk", "Запустил массовое изменение — применю по всем выбранным задачам")
+    if tool_name == "tracker_close_issue":
+        issue = result.get("issue") or {}
+        key = issue.get("key") or result.get("issue_key", "?")
+        summary = issue.get("summary", "")
+        line = f"Закрыл {key} «{summary}»"
+        status = issue.get("status")
+        if status:
+            line += f" — теперь «{status}»"
+        return ("closed", line)
+    if tool_name in ("tracker_find_issues", "tracker_search_issues"):
+        if result.get("not_found") or result.get("count", 0) == 0:
+            return ("not_found", "Ничего не нашёл по такому запросу")
+        issues = result.get("issues") or []
+        parts = [f"{i.get('key')} «{i.get('summary')}» ({i.get('status')})" for i in issues[:5]]
+        n = result.get("count") or len(issues)
+        head = f"Нашёл {n} {_plural_tasks(n)}: "
+        return ("found", head + "; ".join(parts))
+    if tool_name in ("tracker_patch_issue", "tracker_update_issue"):
+        key = result.get("key") or result.get("issue_key", "")
+        line = f"Поправил {key} «{result.get('summary', '')}»"
+        if result.get("assignee"):
+            line += f", исполнитель {result['assignee']}"
+        return ("updated", line)
+    if tool_name == "tracker_create_issue":
+        key = result.get("key") or result.get("issue_key", "")
+        line = f"Завёл {key} — «{result.get('summary', '')}»"
+        if result.get("assignee"):
+            line += f", на {result['assignee']}"
+        return ("created", line)
     if tool_name == "tracker_create_sprint":
-        name = result.get("name") or ""
-        sprint_id = result.get("id") or "?"
-        board = result.get("board") or result.get("board_id") or "?"
+        name = result.get("name") or "спринт"
         start = result.get("start_date") or "?"
         end = result.get("end_date") or "?"
-        return f"Создан спринт {sprint_id} «{name}» на доске {board}: {start} — {end}"
+        return ("other", f"Создал спринт «{name}»: {start} — {end}")
     if tool_name in ("tracker_open_sprint", "tracker_close_sprint"):
-        name = result.get("name") or ""
-        sprint_id = result.get("id") or "?"
-        action = "Открыт" if tool_name == "tracker_open_sprint" else "Закрыт"
-        return f"{action} спринт {sprint_id} «{name}»"
+        name = result.get("name") or "спринт"
+        action = "Открыл" if tool_name == "tracker_open_sprint" else "Закрыл"
+        return ("other", f"{action} спринт «{name}»")
     if tool_name == "tracker_rollover_sprint":
         old_sprint = result.get("old_sprint") or {}
         new_sprint = result.get("new_sprint") or {}
+        moved = result.get("moved_count", 0)
         line = (
-            f"Закрыт спринт «{old_sprint.get('name', '?')}», создан "
-            f"«{new_sprint.get('name', '?')}», перенесено задач: {result.get('moved_count', 0)}"
+            f"Закрыл спринт «{old_sprint.get('name', '?')}» и открыл "
+            f"«{new_sprint.get('name', '?')}», перенёс {moved} {_plural_tasks(moved)}"
         )
         if result.get("error_count"):
-            line += f", ошибок: {result.get('error_count')}"
+            line += f" (с {result['error_count']} не справился)"
         if result.get("close_error"):
-            line += f"; закрытие старого спринта не удалось: {result.get('close_error')}"
-        return line
+            line += "; старый спринт закрыть не получилось"
+        return ("other", line)
     if tool_name == "tracker_create_epic":
         key = result.get("key") or result.get("issue_key", "")
-        return f"Создан эпик {key} «{result.get('summary', '')}»"
+        return ("created", f"Завёл эпик {key} «{result.get('summary', '')}»")
     if tool_name in ("tracker_open_epic", "tracker_close_epic"):
         issue = result.get("issue") or result
         key = issue.get("key") or result.get("issue_key", "")
-        action = "Открыт" if tool_name == "tracker_open_epic" else "Закрыт"
-        return f"{action} эпик {key} «{issue.get('summary', '')}»"
+        action = "Открыл" if tool_name == "tracker_open_epic" else "Закрыл"
+        return ("other", f"{action} эпик {key} «{issue.get('summary', '')}»")
     if tool_name == "tracker_add_issues_to_sprint":
-        sprint = result.get("sprint_name") or result.get("sprint_id") or "?"
+        sprint = result.get("sprint_name") or "спринт"
         n = result.get("updated_count", 0)
-        err = result.get("error_count", 0)
-        line = f"В спринт «{sprint}» добавлено задач: {n}"
-        if err:
-            line += f", ошибок: {err}"
-        return line
+        line = f"Добавил в спринт «{sprint}» {n} {_plural_tasks(n)}"
+        if result.get("error_count"):
+            line += f" (с {result['error_count']} не справился)"
+        return ("other", line)
     if tool_name == "tracker_update_followers":
         key = result.get("key") or result.get("issue_key", "")
-        return f"Наблюдатели обновлены: {key}"
+        return ("updated", f"Обновил наблюдателей в {key}")
     if tool_name == "tracker_move_issues_to_in_progress":
         n = result.get("updated_count", 0)
-        err = result.get("error_count", 0)
-        line = f"Переведено в работу: {n}"
-        if err:
-            line += f", ошибок: {err}"
-        return line
+        line = f"Перевёл в работу {n} {_plural_tasks(n)}"
+        if result.get("error_count"):
+            line += f" (с {result['error_count']} не справился)"
+        return ("other", line)
     if tool_name == "tracker_close_issues":
         n = result.get("closed_count", 0)
-        err = result.get("error_count", 0)
-        line = f"Закрыто задач: {n}"
-        if err:
-            line += f", ошибок: {err}"
-        return line
+        line = f"Закрыл {n} {_plural_tasks(n)}"
+        if result.get("error_count"):
+            line += f" (с {result['error_count']} не справился)"
+        return ("closed", line)
     if tool_name == "tracker_comment_issue":
         key = result.get("issue_key", "")
-        text = (result.get("text") or "")[:120]
-        return f"Комментарий к {key}: {text}"
+        return ("comment", f"Оставил комментарий в {key}")
     if tool_name == "backlog_plan":
         if result.get("error"):
-            return f"backlog_plan: {result['error']}"
+            return ("other", "Черновик бэклога собрать не вышло")
         return (
-            f"План: epic={'да' if result.get('create_epic') else 'нет'}, "
-            f"stories={result.get('stories_count', 0)}, "
-            f"tasks={result.get('tasks_count', 0)}"
+            "other",
+            f"Набросал структуру: историй {result.get('stories_count', 0)}, "
+            f"задач {result.get('tasks_count', 0)}",
         )
     if tool_name == "tracker_apply_backlog_plan":
         if result.get("error"):
-            return f"tracker_apply_backlog_plan: {result['error']}"
+            return ("board", "Доску собрать не получилось — план пустой или сорвался")
         epic = result.get("epic_key")
         n = result.get("created_count", 0)
         skip_n = result.get("skipped_count", 0)
         err_n = result.get("error_count", 0)
         if n == 0 and err_n == 0 and skip_n == 0:
-            return (
-                "Доска: не создано ни одной задачи, план пуст или backlog_plan завершился с ошибкой"
-            )
-        line = f"Доска: создано {n} задач"
+            return ("board", "По плану заводить было нечего — доска осталась как есть")
+        line = f"Собрал доску: завёл {n} {_plural_tasks(n)}"
         if epic:
-            line += f", эпик {epic}"
+            line += f" под эпиком {epic}"
         if skip_n:
-            line += f", пропущено дублей {skip_n}"
+            line += f", {skip_n} уже были"
             skipped = result.get("skipped") or []
-            if skipped:
-                examples = ", ".join(f"{s.get('key')}" for s in skipped[:2] if s.get("key"))
-                if examples:
-                    line += f" ({examples})"
+            examples = ", ".join(f"{s.get('key')}" for s in skipped[:2] if s.get("key"))
+            if examples:
+                line += f" ({examples})"
         if err_n:
-            line += f", ошибок {err_n}"
+            line += f", с {err_n} не справился"
         tree = result.get("tree") or []
         if tree:
             line += "\n" + "\n".join(tree[:6])
         critical = result.get("critical") or []
         if critical:
             crit_parts = [f"{c.get('key')} до {c.get('deadline', '?')}" for c in critical[:3]]
-            line += "\nCritical: " + "; ".join(crit_parts)
-        return line
+            line += "\nСрочное: " + "; ".join(crit_parts)
+        return ("board", line)
     key = result.get("key") or result.get("issue_key", "")
     if key:
-        return f"{tool_name}: {key}"
-    if result.get("error"):
-        return f"{tool_name}: {result['error']}"
-    return f"{tool_name}: выполнено"
+        return ("other", f"Готово по {key}")
+    return ("other", "Готово")
 
 
 def _is_duplicate_tool_success(
@@ -659,62 +682,75 @@ def _assumptions_line(steps: list[dict[str, Any]]) -> str:
         if result.get("story_points") is not None:
             parts.append(f"оценка {result['story_points']}")
         if parts:
-            return "Предположения: " + ", ".join(parts)
+            return "Проставил сам: " + ", ".join(parts) + " — поправь, если что"
     return ""
 
 
 def _build_action_report(steps: list[dict[str, Any]]) -> str:
-    """Compact report from tool steps (for action_only agents)."""
-    lines: list[str] = []
+    """Compact, human report from tool steps (for action_only agents).
+
+    Everything here is user-facing, so it reads like a colleague reporting back
+    — no tool names, ids or internal labels leak through.
+    """
+    entries: list[tuple[str, str]] = []  # (category, text)
     for step in steps:
         kind = step.get("kind")
         if kind == "tool_result":
             result = step.get("result") or {}
             if isinstance(result, dict):
-                lines.append(_format_action_tool_line(step.get("tool_name", "tool"), result))
+                entries.append(_format_action_tool_line(step.get("tool_name", "tool"), result))
         elif kind == "tool_error":
-            lines.append(f"ОШИБКА {step.get('tool_name')}: {str(step.get('error', ''))[:200]}")
+            reason = str(step.get("error", "")).strip()[:200] or "что-то пошло не так"
+            entries.append(("error", f"Не получилось: {reason}"))
         elif kind == "confirm_wait":
-            lines.append(
-                f"ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ: {step.get('tool_name')} "
-                f"(confirm_id={step.get('confirm_id')})"
+            entries.append(
+                ("confirm", "Это рискованное действие — жду твоего подтверждения, чтобы продолжить")
             )
-    if not lines:
+    if not entries:
         return ""
-    errors = [ln for ln in lines if ln.startswith("ОШИБКА")]
-    board = [ln for ln in lines if ln.startswith("Доска:")]
+
+    def latest(*cats: str) -> str | None:
+        for cat, text in reversed(entries):
+            if cat in cats:
+                return text
+        return None
+
+    board = latest("board")
     if board:
-        return board[-1]
-    merged = [ln for ln in lines if ln.startswith("Найден дубликат")]
-    if merged:
-        return merged[-1]
-    created = [ln for ln in lines if ln.startswith("Создана")]
+        return board
+    duplicate = latest("duplicate")
+    if duplicate:
+        return duplicate
+    created = latest("created")
     if created:
         assumptions = _assumptions_line(steps)
-        return f"{created[-1]}. {assumptions}" if assumptions else created[-1]
-    updated = [ln for ln in lines if ln.startswith(("Обновлена", "Наблюдатели"))]
-    comments = [ln for ln in lines if ln.startswith("Комментарий")]
-    if updated and comments:
-        return f"{updated[-1]}. {comments[-1]}"
-    if updated:
-        return updated[-1]
-    if comments:
-        return comments[-1]
+        return f"{created}. {assumptions}" if assumptions else created
+    updated = latest("updated")
+    status = latest("status")
+    comment = latest("comment")
+    write = updated or status
+    if write and comment:
+        return f"{write}. {comment}"
+    if write:
+        return write
+    if comment:
+        return comment
     for step in steps:
         if step.get("kind") != "tool_result" or step.get("tool_name") != "call_agent":
             continue
         delegated = step.get("result")
         if isinstance(delegated, str) and delegated.strip():
             return delegated.strip()
-    for line in reversed(lines):
-        if line.startswith(("Найдено:", "Закрыта")):
-            return line
-    if errors:
-        return errors[-1]
-    for line in reversed(lines):
-        if line == "Задача не найдена":
-            return line
-    return lines[-1]
+    found_or_closed = latest("found", "closed")
+    if found_or_closed:
+        return found_or_closed
+    error = latest("error", "confirm")
+    if error:
+        return error
+    not_found = latest("not_found")
+    if not_found:
+        return not_found
+    return entries[-1][1]
 
 
 _READ_VOICE_STAGES = {StageId.QUERY}
@@ -759,7 +795,7 @@ def _format_read_tool_reply(tool_name: str, result: Any) -> str | None:
 
     issues = [issue for issue in issues if isinstance(issue, dict)]
     if not issues:
-        return "Задачи не найдены."
+        return "Ничего не нашёл."
 
     lines: list[str] = []
     for issue in issues[:20]:
@@ -797,12 +833,15 @@ def _action_only_final_reply(
             if reply:
                 return reply
         if had_tool:
-            return "Получил данные из трекера. Попробуй переформулировать запрос конкретнее."
+            return (
+                "Данные поднял, но не понял, что показать — "
+                "переформулируй, пожалуйста, поконкретнее."
+            )
     report = _build_action_report(steps)
     if report:
         return report
     if not had_tool:
-        return "Действия не выполнены."
+        return "Пока ничего не сделал."
     return llm_text
 
 
@@ -1225,7 +1264,7 @@ class ReActRunner:
         turn_steps = outcome.turn_steps or []
         reply = outcome.reply
         if reply is None and getattr(self.agent, "action_only", False):
-            reply = _build_action_report(turn_steps) or "Действие выполнено."
+            reply = _build_action_report(turn_steps) or "Готово."
         return AgentResult(
             reply=reply,
             session_id=session_id,
@@ -1279,7 +1318,7 @@ class ReActRunner:
         turn_steps = list(outcome.turn_steps or [])
         reply = outcome.reply or _build_action_report(turn_steps)
         if not reply:
-            reply = outcome.clarification or "Не удалось выполнить запрос."
+            reply = outcome.clarification or "Не получилось выполнить запрос."
 
         if not any(step.get("kind") == "final" for step in turn_steps):
             steps_offset = len(state["steps"]) - len(turn_steps)
@@ -1307,19 +1346,14 @@ class ReActRunner:
                     return single
         lines: list[str] = []
         for item, outcome in zip(goal_plan.items, outcomes):
-            label = item.stage.value
             if outcome.kind == "done":
                 report = _build_action_report(outcome.turn_steps or [])
-                if report:
-                    lines.append(f"✓ {label}: {report}")
-                else:
-                    lines.append(f"✓ {label}: выполнено")
+                lines.append(f"• {report}" if report else "• Готово")
             elif outcome.kind == "clarification":
-                lines.append(f"? {label}: {outcome.clarification or 'нужно уточнение'}")
+                lines.append(f"• {outcome.clarification or 'тут нужно уточнение'}")
             else:
-                reason = outcome.clarification or "не удалось"
-                lines.append(f"❗ {label}: {reason}")
-        return "\n".join(lines) if lines else "Действия не выполнены."
+                lines.append(f"• {outcome.clarification or 'с этим не справился'}")
+        return "\n".join(lines) if lines else "Пока ничего не сделал."
 
     async def _reflect_and_finalize(
         self,
@@ -1344,11 +1378,11 @@ class ReActRunner:
                 if stage and stage.id == StageId.QUERY and outcome.reply:
                     reply = outcome.reply
                 elif _goal_terminal_for_stage(stage, item, turn_steps):
-                    reply = _build_action_report(turn_steps) or "Действие выполнено."
+                    reply = _build_action_report(turn_steps) or "Готово."
                 elif outcome.reply:
                     reply = outcome.reply
                 else:
-                    reply = _build_action_report(turn_steps) or "Действие выполнено."
+                    reply = _build_action_report(turn_steps) or "Готово."
                 if not any(s.get("kind") == "final" for s in turn_steps):
                     steps_offset = len(state["steps"]) - len(turn_steps)
                     state["steps"].append(_step("final", content=reply, reason="stage_terminal"))
@@ -1921,7 +1955,7 @@ class ReActRunner:
                     turn_steps = steps[steps_before_turn:]
                     if state.get("_plan"):
                         return ScenarioOutcome(kind="done", turn_steps=list(turn_steps))
-                    reply = _build_action_report(turn_steps) or "Действие выполнено."
+                    reply = _build_action_report(turn_steps) or "Готово."
                     steps.append(_step("final", content=reply, reason="stage_terminal"))
                     messages.append({"role": "assistant", "content": reply})
                     state["messages"] = messages
@@ -2034,7 +2068,7 @@ class ReActRunner:
                             await self._compact_session_history(state)
                             continue
                     return ScenarioOutcome(kind="done", turn_steps=list(turn_steps))
-                reply = _build_action_report(turn_steps) or "Действие выполнено."
+                reply = _build_action_report(turn_steps) or "Готово."
                 steps.append(_step("final", content=reply, reason="stage_terminal"))
                 messages.append({"role": "assistant", "content": reply})
                 state["messages"] = messages
@@ -2072,7 +2106,7 @@ class ReActRunner:
                     clarification=question,
                 )
         report = _build_action_report(turn_steps)
-        reply = report or "Не удалось завершить запрос. Уточни задачу или ключ задачи."
+        reply = report or "Не получилось довести до конца — уточни задачу или её ключ, и я дожму."
         if state.get("_plan"):
             return ScenarioOutcome(
                 kind="max_iter",

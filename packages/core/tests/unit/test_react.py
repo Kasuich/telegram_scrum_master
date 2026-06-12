@@ -689,7 +689,7 @@ class TestActionOnlyReport:
                 },
             }
         ]
-        assert _build_action_report(steps) == "Закрыта DARKHORSE-8 «CI» — Закрыт"
+        assert _build_action_report(steps) == "Закрыл DARKHORSE-8 «CI» — теперь «Закрыт»"
 
     def test_not_found(self):
         from core.react import _build_action_report
@@ -701,7 +701,7 @@ class TestActionOnlyReport:
                 "result": {"count": 0, "issues": []},
             }
         ]
-        assert _build_action_report(steps) == "Задача не найдена"
+        assert _build_action_report(steps) == "Ничего не нашёл по такому запросу"
 
     def test_duplicate_found_create_reports_not_created(self):
         from core.react import _build_action_report
@@ -719,8 +719,8 @@ class TestActionOnlyReport:
         ]
         assert (
             _build_action_report(steps)
-            == "Найден дубликат задачи DARKHORSE-42 «Интеграция Telegram». "
-            "Новая карточка не создавалась"
+            == "Такая задача уже есть — DARKHORSE-42 «Интеграция Telegram», "
+            "новую заводить не стал"
         )
 
     def test_comment_report_over_call_agent(self):
@@ -739,4 +739,4 @@ class TestActionOnlyReport:
             },
         ]
         report = _build_action_report(steps)
-        assert report.startswith("Комментарий к TEST-1")
+        assert report.startswith("Оставил комментарий в TEST-1")
