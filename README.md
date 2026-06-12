@@ -12,6 +12,10 @@
   <img src="docs/agents/png/shturm@12x.png" height="64" alt="Штурм" />
 </p>
 
+> 🏆 Проект команды **MISIS Dark Horse** на хакатоне
+> [**«Цифровой прорыв 2026»**](https://leaders2026.ru/). Состав команды —
+> в разделе [Команда](#команда).
+
 > Это **гайд по установке и запуску с нуля**. Глубокие разделы вынесены в
 > [`docs/`](docs/README.md) — по ним расставлены ссылки. Если нужна архитектура
 > целиком, начните с [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -31,6 +35,7 @@
 9. [Деплой](#деплой)
 10. [Структура проекта](#структура-проекта)
 11. [Документация](#документация)
+12. [Команда](#команда)
 
 ---
 
@@ -341,3 +346,22 @@ digital_breakthrough_2026/
 - [Конфигурация](docs/CONFIGURATION.md) · [Деплой](docs/DEPLOYMENT.md) · [Мониторинг](docs/MONITORING.md)
 - [Создание агентов](docs/ADDING_AGENTS.md) · [Граф стадий pm_agent](docs/pm_agent_stage_graph.md) · [Оценка «Штурм»](docs/agent_evaluation.md)
 - [Roadmap / целевая архитектура](docs/TARGET_ARCHITECTURE.md)
+
+---
+
+## Команда
+
+Проект разработан командой **MISIS Dark Horse** в рамках хакатона
+[**«Цифровой прорыв 2026»**](https://leaders2026.ru/) — всероссийского
+конкурса по искусственному интеллекту.
+
+<p align="center">
+  <img src="docs/team/misis-dark-horse.png" alt="Команда MISIS Dark Horse" width="820" />
+</p>
+
+| Участник | Организация | Telegram |
+|----------|-------------|----------|
+| Александров Николай | Яндекс | [@Nukolays](https://t.me/Nukolays) |
+| Шинкаренко Роман | Яндекс | [@kasuich](https://t.me/kasuich) |
+| Цыканов Артём | АО «Гнивц» | [@artem2203](https://t.me/artem2203) |
+| Мартынов Сергей | MARS | [@smotrisergey](https://t.me/smotrisergey) |
