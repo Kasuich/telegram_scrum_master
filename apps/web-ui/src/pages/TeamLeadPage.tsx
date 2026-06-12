@@ -292,6 +292,13 @@ function CronCard({ job }: { job: ScheduledJob }) {
 
       {editing ? (
         <div className="cron-edit">
+          {isCustom ? (
+            <div className="cron-warning">
+              ⚠️ Текущее расписание задано вручную (<code>{job.cron_expr}</code>) и не
+              представимо пресетами. Сохранение <strong>заменит</strong> его выбранным ниже —
+              отмените, если не хотите менять.
+            </div>
+          ) : null}
           <div className="segmented">
             {(["daily", "weekdays", "weekly"] as const).map((value) => (
               <button className={preset === value ? "active" : ""} key={value} onClick={() => setPreset(value)}>
