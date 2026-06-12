@@ -55,6 +55,40 @@ def test_action_only_final_reply_transition_uses_action_report():
     assert reply != llm_text
 
 
+def test_freeform_read_only_turn_prefers_llm_text_despite_misstage():
+    # "что взять в работу" matches the TRANSITION marker "в работу", so the
+    # rules-router mis-stages a pure read+advice turn. A freeform agent must
+    # still return its real answer, not the terse "Нашёл N задач" report.
+    steps = [{"kind": "tool_result", "tool_name": "GetIssues", "result": {"issues": [{}] * 5}}]
+    llm_text = "Вот твои 5 задач: ... Рекомендую начать с DARKHORSE-289 — дедлайн завтра."
+    report = _build_action_report(steps)
+    reply = _action_only_final_reply(
+        steps, llm_text, had_tool=True, stage_id=StageId.TRANSITION, freeform=True
+    )
+    assert reply == llm_text
+    assert reply != report
+
+
+def test_freeform_write_turn_still_uses_action_report():
+    # A freeform turn that actually changed the board keeps the exact report.
+    steps = [{"kind": "tool_result", "tool_name": "tracker_create_issue", "result": {"key": "D-1"}}]
+    reply = _action_only_final_reply(
+        steps, "Готово!", had_tool=True, stage_id=StageId.TRANSITION, freeform=True
+    )
+    assert reply != "Готово!"
+    assert "D-1" in reply
+
+
+def test_non_freeform_read_only_misstage_unchanged():
+    # Without freeform the historical behaviour is preserved: a TRANSITION-staged
+    # read turn returns the deterministic report regardless of llm_text.
+    steps = [{"kind": "tool_result", "tool_name": "GetIssues", "result": {"issues": [{}] * 5}}]
+    reply = _action_only_final_reply(
+        steps, "full answer", had_tool=True, stage_id=StageId.TRANSITION, freeform=False
+    )
+    assert reply != "full answer"
+
+
 def test_action_only_final_reply_no_tool_no_stage():
     reply = _action_only_final_reply([], "", had_tool=False, stage_id=None)
     assert reply == "Пока ничего не сделал."

@@ -755,6 +755,44 @@ def _build_action_report(steps: list[dict[str, Any]]) -> str:
 
 _READ_VOICE_STAGES = {StageId.QUERY}
 
+# Read-only Tracker tools. A turn whose every successful tool is one of these
+# produced no board change, so its real answer lives in the LLM's text, not in
+# a deterministic action report.
+_READ_ONLY_TOOLS = {
+    "GetIssue",
+    "GetIssues",
+    "GetIssueLinks",
+    "GetIssueChangeLog",
+    "GetProject",
+    "GetPortfolio",
+    "GetGoal",
+    "GetComment",
+    "GetQueueForms",
+    "SearchEntities",
+    "tracker_board_snapshot",
+    "tracker_find_issues",
+    "tracker_search_issues",
+}
+
+
+def _turn_is_read_only(steps: list[dict[str, Any]]) -> bool:
+    """True when every successful tool in the turn was a read.
+
+    A turn with no successful tool is not read-only — there is nothing read to
+    report, so the normal action-report fallback applies.
+    """
+    saw_read = False
+    for step in steps:
+        if step.get("kind") != "tool_result":
+            continue
+        result = step.get("result")
+        if isinstance(result, dict) and result.get("error"):
+            continue
+        if str(step.get("tool_name") or "") not in _READ_ONLY_TOOLS:
+            return False
+        saw_read = True
+    return saw_read
+
 # YandexGPT content-safety filter phrases that leak into LLM output.
 # When detected, we suppress the response and use a safe fallback instead.
 _SAFETY_FILTER_PHRASES = (
@@ -817,8 +855,16 @@ def _action_only_final_reply(
     had_tool: bool,
     *,
     stage_id: StageId | None = None,
+    freeform: bool = False,
 ) -> str:
-    if stage_id in _READ_VOICE_STAGES:
+    # Freeform agents plan their own tool cascade and their LLM final text IS
+    # the intended answer (the prompt makes them report keys, numbers, results).
+    # On a read-only turn that text must win over a terse deterministic report,
+    # even when the rules-router happened to mis-stage the message — e.g.
+    # "что взять в работу" matches the TRANSITION marker "в работу" yet only
+    # reads the board. Without this the real answer is discarded and resurfaces
+    # only on the next turn. Writes still fall through to the exact report below.
+    if stage_id in _READ_VOICE_STAGES or (freeform and _turn_is_read_only(steps)):
         if llm_text.strip() and not _is_safety_filtered(llm_text):
             return llm_text.strip()
         # The model has explicitly ended the turn. Recover a useful answer from
@@ -1784,6 +1830,7 @@ class ReActRunner:
                         llm_text,
                         had_tool,
                         stage_id=(StageId(state["_stage"]) if state.get("_stage") else None),
+                        freeform=freeform,
                     )
                 else:
                     reply = llm_text
