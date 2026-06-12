@@ -71,6 +71,29 @@ def test_weak_spots_flags_low_suites_and_criteria() -> None:
     assert ("criterion", "faithfulness") not in kinds  # 8.1 is healthy
 
 
+def test_coerce_diagnosis_tolerates_off_enum_values() -> None:
+    from core.eval.analysis import _coerce_diagnosis
+
+    raw = {
+        "summary": "проблема",
+        "top_problems": [
+            {"title": "T", "severity": "критическая", "evidence": "e"},  # bad enum
+            "garbage",  # non-dict, skipped
+        ],
+        "improvements": [
+            {"area": "промпт", "suggestion": "fix", "priority": "P9"},  # bad enums
+            {"suggestion": ""},  # empty, skipped
+        ],
+    }
+    report = _coerce_diagnosis(raw, "model-x")
+    assert report.summary == "проблема"
+    assert len(report.top_problems) == 1
+    assert report.top_problems[0].severity == "medium"  # coerced default
+    assert len(report.improvements) == 1
+    assert report.improvements[0].area == "other"
+    assert report.improvements[0].priority == "P1"
+
+
 def test_build_failure_analysis_counts() -> None:
     analysis = build_failure_analysis(_rows(), {"suite_stats": {}, "criteria_avg": {}})
     assert analysis["failed_count"] == 2

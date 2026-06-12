@@ -5,6 +5,10 @@ DEFAULT_GENERATOR_MODEL = "google/gemini-3.1-flash-lite"
 MAX_RESUME_PER_AGENT_CALL = 10
 MAX_CONCURRENCY_PER_STAGE = 100
 
+# Eval scenarios operate exclusively on the team's real queue so generated
+# fixtures, the fake board and the agent's writes all share one namespace.
+EVAL_QUEUE = "DARKHORSE"
+
 # ── Tier-aware concurrency defaults ────────────────────────────────────────
 # Stages are barrier-separated, so peak in-flight OpenRouter load ≈ the active
 # stage's semaphore. flash-lite stages (cheap, high TPM) run wide; the judge

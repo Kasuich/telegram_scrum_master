@@ -105,6 +105,7 @@ Return STRICT JSON only (no markdown):
   "failure_modes": ["..."],
   "explanation": "one short paragraph"
 }
+Keep every "reason" ≤ 12 words and "explanation" ≤ 2 sentences — be terse so the JSON is never truncated.
 Do NOT compute a weighted score yourself."""
 
 _JUDGE_JSON_RETRY_HINT = (
@@ -148,7 +149,9 @@ def build_judge_errors(criteria: dict[str, JudgeCriterionScore], explanation: st
         if criterion.score < JUDGE_CRITERION_WARN_MIN:
             label = _CRITERION_LABELS.get(name, name)
             errors.append(f"{label}: {criterion.score}/10 — {criterion.reason}")
-    if explanation and not errors:
+    # Append the explanation only as context for cases that already have a
+    # concrete error — never for a clean pass (else it shows up as a fake error).
+    if errors and explanation:
         errors.append(explanation)
     return errors
 
@@ -287,7 +290,9 @@ async def _judge_once(
     messages: list[Message], *, model: str, temperature: float
 ) -> LLMJudgeEvaluation:
     """One judge sample with JSON parse-retry. Raises if it can't recover JSON."""
-    client = LLMClient(model=model, provider="openrouter", temperature=temperature, max_tokens=1200)
+    # Generous budget: gemini-3.1 are reasoning models — thinking tokens count
+    # against max_tokens, so a tight cap truncated the JSON mid-string.
+    client = LLMClient(model=model, provider="openrouter", temperature=temperature, max_tokens=3000)
     msgs = list(messages)
     last_error: Exception | None = None
     last_content = ""

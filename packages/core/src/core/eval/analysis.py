@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import Counter
 from typing import Any
 
 from core.eval.constants import JUDGE_WEIGHTS
-from core.eval.schemas import DiagnosisReport
+from core.eval.schemas import DiagnosisImprovement, DiagnosisProblem, DiagnosisReport
 from core.llm import LLMClient, Message
 
 logger = logging.getLogger(__name__)
@@ -196,7 +197,13 @@ Return STRICT JSON only:
     {"area": "prompt|tools|model|data|other", "suggestion": "concrete change",
      "rationale": "why it helps", "priority": "P0|P1|P2"}
   ]
-}"""
+}
+Be terse: ≤4 problems, ≤5 improvements, one-line fields. severity ∈ high|medium|low,
+priority ∈ P0|P1|P2, area ∈ prompt|tools|model|data|other. Output compact JSON, no markdown."""
+
+_SEVERITY = {"high", "medium", "low"}
+_PRIORITY = {"P0", "P1", "P2"}
+_AREA = {"prompt", "tools", "model", "data", "other"}
 
 
 def _extract_json(text: str) -> str:
@@ -205,6 +212,56 @@ def _extract_json(text: str) -> str:
         text = "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("```"))
     start, end = text.find("{"), text.rfind("}")
     return text[start : end + 1] if start >= 0 and end > start else text
+
+
+def _repair_json(text: str) -> str:
+    text = text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    text = re.sub(r",\s*}", "}", text)
+    text = re.sub(r",\s*]", "]", text)
+    return text
+
+
+def _norm(value: Any, allowed: set[str], default: str) -> str:
+    s = str(value or "").strip()
+    return s if s in allowed else default
+
+
+def _coerce_diagnosis(raw: dict[str, Any], model: str) -> DiagnosisReport:
+    """Build a DiagnosisReport leniently — never crash on an off-enum value."""
+    problems: list[DiagnosisProblem] = []
+    for p in (raw.get("top_problems") or [])[:6]:
+        if not isinstance(p, dict):
+            continue
+        problems.append(
+            DiagnosisProblem(
+                title=str(p.get("title", ""))[:200],
+                severity=_norm(p.get("severity"), _SEVERITY, "medium"),  # type: ignore[arg-type]
+                evidence=str(p.get("evidence", ""))[:300],
+                failure_modes=[str(m)[:40] for m in (p.get("failure_modes") or []) if m][:6],
+                affected_suites=[str(s)[:40] for s in (p.get("affected_suites") or []) if s][:6],
+            )
+        )
+    improvements: list[DiagnosisImprovement] = []
+    for imp in (raw.get("improvements") or [])[:8]:
+        if not isinstance(imp, dict):
+            continue
+        suggestion = str(imp.get("suggestion", "")).strip()
+        if not suggestion:
+            continue
+        improvements.append(
+            DiagnosisImprovement(
+                area=_norm(imp.get("area"), _AREA, "other"),  # type: ignore[arg-type]
+                suggestion=suggestion[:400],
+                rationale=str(imp.get("rationale", ""))[:400],
+                priority=_norm(imp.get("priority"), _PRIORITY, "P1"),  # type: ignore[arg-type]
+            )
+        )
+    return DiagnosisReport(
+        summary=str(raw.get("summary", ""))[:600],
+        top_problems=problems,
+        improvements=improvements,
+        generated_by=model,
+    )
 
 
 async def run_diagnosis(
@@ -231,7 +288,9 @@ async def run_diagnosis(
         },
         "failed_cases": failures,
     }
-    client = LLMClient(model=model, provider="openrouter", temperature=0.2, max_tokens=1500)
+    # Generous budget: gemini-3.1 reasoning models spend thinking tokens against
+    # max_tokens, so a tight cap truncated the JSON before any content was emitted.
+    client = LLMClient(model=model, provider="openrouter", temperature=0.2, max_tokens=6000)
     try:
         response = await client.complete(
             [
@@ -239,10 +298,12 @@ async def run_diagnosis(
                 Message(role="user", content=json.dumps(payload, ensure_ascii=False)),
             ]
         )
-        raw = json.loads(_extract_json(response.content or "{}"))
-        report = DiagnosisReport.model_validate(raw)
-        report.generated_by = model
-        return report
+        text = _extract_json(response.content or "{}")
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError:
+            raw = json.loads(_repair_json(text))
+        return _coerce_diagnosis(raw if isinstance(raw, dict) else {}, model)
     except Exception as exc:
         logger.warning("Diagnosis generation failed: %s", exc)
         modes = aggregate_failure_modes(case_rows)

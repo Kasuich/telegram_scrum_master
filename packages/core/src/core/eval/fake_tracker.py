@@ -23,7 +23,7 @@ class FakeTrackerStore:
     def __init__(
         self,
         *,
-        queue: str = "TEST",
+        queue: str = "DARKHORSE",
         initial_state: dict[str, Any] | None = None,
         latency_profile: ToolLatencyProfile | None = None,
         seed: str | None = None,

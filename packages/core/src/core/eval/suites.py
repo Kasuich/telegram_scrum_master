@@ -27,20 +27,20 @@ FIXTURE_CASES: list[SyntheticScenario] = [
     ),
     SyntheticScenario(
         goal="Обновить существующую задачу",
-        expected_behavior="update_task для SUPPORT-10",
+        expected_behavior="update_task для DARKHORSE-10",
         suite=EvalSuite.UPDATE_TASK.value,
         difficulty="medium",
         initial_state={
             "tasks": [
                 {
-                    "key": "SUPPORT-10",
+                    "key": "DARKHORSE-10",
                     "summary": "Старый заголовок",
                     "description": "Описание",
                     "status": "open",
                 }
             ]
         },
-        expected_operations=[{"operation": "update_task", "match": {"task_key": "SUPPORT-10"}}],
+        expected_operations=[{"operation": "update_task", "match": {"task_key": "DARKHORSE-10"}}],
         forbidden_operations=[{"operation": "create_task"}],
     ),
     SyntheticScenario(
@@ -51,7 +51,7 @@ FIXTURE_CASES: list[SyntheticScenario] = [
         initial_state={
             "tasks": [
                 {
-                    "key": "SUPPORT-101",
+                    "key": "DARKHORSE-101",
                     "summary": "Ошибка авторизации у клиента Альфа",
                     "description": "Клиент не может войти.",
                     "status": "open",
@@ -60,7 +60,7 @@ FIXTURE_CASES: list[SyntheticScenario] = [
         },
         expected_operations=[
             {"operation": "search_tasks"},
-            {"operation": "comment_task", "match": {"task_key": "SUPPORT-101"}},
+            {"operation": "comment_task", "match": {"task_key": "DARKHORSE-101"}},
         ],
         forbidden_operations=[{"operation": "create_task"}],
     ),
