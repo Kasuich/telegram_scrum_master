@@ -205,7 +205,7 @@ class TestBoardStage:
         tool_names = [s.get("tool_name") for s in result.steps if s.get("kind") == "tool_result"]
         assert "backlog_plan" in tool_names
         assert "tracker_apply_backlog_plan" in tool_names
-        assert "Доска:" in (result.reply or "")
+        assert "доск" in (result.reply or "").lower()
         # Exactly one LLM call (the plan); apply was a forced edge.
         assert post.await_count == 1
 
@@ -395,7 +395,7 @@ class TestStatusStage:
             result = await runner.invoke("Коля: добавил фичу, тесты проходят", "s1")
         kinds = [s.get("tool_name") for s in result.steps if s.get("kind") == "tool_result"]
         assert kinds == ["tracker_find_issues", "call_agent", "tracker_comment_issue"]
-        assert "Комментарий" in (result.reply or "")
+        assert "комментарий" in (result.reply or "").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -415,8 +415,8 @@ class TestIntakeStage:
         )
         with patch("httpx.AsyncClient.post", post):
             result = await runner.invoke("создай Коле задачу MCP", "i1")
-        assert "Создана DARKHORSE-7" in (result.reply or "")
-        assert "Предположения:" in (result.reply or "")
+        assert "Завёл DARKHORSE-7" in (result.reply or "")
+        assert "Проставил сам:" in (result.reply or "")
 
     @patch.dict("os.environ", ENV)
     async def test_freeform_followup_bypasses_goal_gates_and_creates_issue(self):
@@ -746,7 +746,9 @@ class TestMultiScenario:
                     "multi1",
                 )
 
-        assert "✓" in (result.reply or "")
-        assert "INTAKE" in (result.reply or "")
-        assert "QUERY" in (result.reply or "")
-        assert "STATUS" in (result.reply or "")
+        reply = result.reply or ""
+        # Three scenarios → three human bullets, with no internal stage labels leaked.
+        assert reply.count("•") == 3
+        assert not any(label in reply for label in ("INTAKE", "QUERY", "STATUS"))
+        assert "Завёл" in reply  # create scenario
+        assert "комментарий" in reply.lower()  # status/comment scenario

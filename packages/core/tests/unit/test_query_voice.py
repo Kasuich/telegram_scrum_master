@@ -22,7 +22,9 @@ def test_action_only_final_reply_query_prefers_llm_text():
 def test_action_only_final_reply_query_empty_llm_falls_back():
     steps = [{"kind": "tool_result", "tool_name": "tracker_board_snapshot", "result": {"total": 5}}]
     reply = _action_only_final_reply(steps, "", had_tool=True, stage_id=StageId.QUERY)
-    assert "Получил данные" in reply or "tracker_board_snapshot" in reply or "выполнено" in reply
+    # Empty LLM text on a read → graceful human fallback, never a tool name.
+    assert "Данные поднял" in reply
+    assert "tracker_board_snapshot" not in reply
 
 
 def test_action_only_final_reply_intake_uses_action_report():
@@ -55,7 +57,7 @@ def test_action_only_final_reply_transition_uses_action_report():
 
 def test_action_only_final_reply_no_tool_no_stage():
     reply = _action_only_final_reply([], "", had_tool=False, stage_id=None)
-    assert reply == "Действия не выполнены."
+    assert reply == "Пока ничего не сделал."
 
 
 def test_action_only_final_reply_no_tool_query_stage():
