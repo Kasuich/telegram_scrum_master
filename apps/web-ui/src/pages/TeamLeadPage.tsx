@@ -17,6 +17,15 @@ const WEEKDAYS = [
   { iso: 7, label: "Вс" },
 ];
 
+type EditablePreset = "hourly" | "daily" | "weekdays" | "weekly";
+
+const PRESET_OPTIONS: { value: EditablePreset; label: string }[] = [
+  { value: "hourly", label: "Каждый час" },
+  { value: "daily", label: "Ежедневно" },
+  { value: "weekdays", label: "Будни" },
+  { value: "weekly", label: "По дням" },
+];
+
 function healthColor(value: number): string {
   if (value >= 75) return "#0d9488";
   if (value >= 50) return "#f59e0b";
@@ -241,17 +250,24 @@ function CronCard({ job }: { job: ScheduledJob }) {
   const queryClient = useQueryClient();
   const isCustom = job.schedule.preset === "custom";
   const [editing, setEditing] = useState(false);
-  const [preset, setPreset] = useState<"daily" | "weekdays" | "weekly">(
-    isCustom ? "daily" : (job.schedule.preset as "daily" | "weekdays" | "weekly"),
+  const [preset, setPreset] = useState<EditablePreset>(
+    isCustom ? "daily" : (job.schedule.preset as EditablePreset),
   );
   const [time, setTime] = useState(job.schedule.time ?? "09:00");
   const [days, setDays] = useState<number[]>(job.schedule.days ?? [1]);
 
   useEffect(() => {
-    if (!isCustom) setPreset(job.schedule.preset as "daily" | "weekdays" | "weekly");
+    if (!isCustom) setPreset(job.schedule.preset as EditablePreset);
     setTime(job.schedule.time ?? "09:00");
     setDays(job.schedule.days ?? [1]);
   }, [job, isCustom]);
+
+  // For the hourly preset only the minute-of-hour matters; encode it as "00:MM".
+  const minute = Number(time.split(":")[1] ?? "0") || 0;
+  const setMinute = (value: number) => {
+    const clamped = Math.max(0, Math.min(59, Number.isFinite(value) ? value : 0));
+    setTime(`00:${String(clamped).padStart(2, "0")}`);
+  };
 
   const onSuccess = (updated: ScheduledJob) => {
     queryClient.setQueryData<ScheduledJob[]>(["scheduled-jobs"], (prev) =>
@@ -300,13 +316,26 @@ function CronCard({ job }: { job: ScheduledJob }) {
             </div>
           ) : null}
           <div className="segmented">
-            {(["daily", "weekdays", "weekly"] as const).map((value) => (
+            {PRESET_OPTIONS.map(({ value, label }) => (
               <button className={preset === value ? "active" : ""} key={value} onClick={() => setPreset(value)}>
-                {value === "daily" ? "Ежедневно" : value === "weekdays" ? "Будни" : "По дням"}
+                {label}
               </button>
             ))}
           </div>
-          <input type="time" value={time} onChange={(event) => setTime(event.target.value)} />
+          {preset === "hourly" ? (
+            <label className="cron-minute">
+              Минута часа
+              <input
+                max={59}
+                min={0}
+                type="number"
+                value={minute}
+                onChange={(event) => setMinute(Number(event.target.value))}
+              />
+            </label>
+          ) : (
+            <input type="time" value={time} onChange={(event) => setTime(event.target.value)} />
+          )}
           {preset === "weekly" ? (
             <div className="weekday-chips">
               {WEEKDAYS.map((day) => (

@@ -4,6 +4,13 @@ import pytest
 from core.cron_schedule import cron_to_schedule, describe_cron, schedule_to_cron
 
 
+def test_schedule_to_cron_hourly():
+    assert schedule_to_cron({"preset": "hourly", "time": "00:00"}) == "0 * * * *"
+    assert schedule_to_cron({"preset": "hourly", "time": "00:50"}) == "50 * * * *"
+    # Only the minute matters for hourly — the hour is ignored.
+    assert schedule_to_cron({"preset": "hourly", "time": "09:15"}) == "15 * * * *"
+
+
 def test_schedule_to_cron_daily():
     assert schedule_to_cron({"preset": "daily", "time": "09:30"}) == "30 9 * * *"
 
@@ -26,6 +33,14 @@ def test_schedule_to_cron_rejects_bad_input():
         schedule_to_cron({"preset": "custom"})
 
 
+def test_cron_to_schedule_hourly():
+    # The three live jobs (digest, deadline reminder, standup poll) are hourly.
+    assert cron_to_schedule("0 * * * *") == {"preset": "hourly", "time": "00:00"}
+    assert cron_to_schedule("50 * * * *") == {"preset": "hourly", "time": "00:50"}
+    # Wildcard hour with a weekday restriction is not a plain hourly schedule.
+    assert cron_to_schedule("0 * * * 1-5") == {"preset": "custom"}
+
+
 def test_cron_to_schedule_roundtrip():
     assert cron_to_schedule("30 9 * * *") == {"preset": "daily", "time": "09:30"}
     assert cron_to_schedule("0 8 * * 1-5") == {"preset": "weekdays", "time": "08:00"}
@@ -43,6 +58,8 @@ def test_cron_to_schedule_custom():
 
 
 def test_describe_cron():
+    assert describe_cron("0 * * * *") == "каждый час (в начале часа)"
+    assert describe_cron("50 * * * *") == "каждый час в :50"
     assert describe_cron("30 9 * * *") == "ежедневно в 09:30"
     assert describe_cron("0 8 * * 1-5") == "по будням в 08:00"
     assert describe_cron("0 10 * * 0,1") == "Пн Вс в 10:00"

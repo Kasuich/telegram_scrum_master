@@ -324,7 +324,7 @@ class ShopDTO(BaseModel):
 
 
 class ScheduleDTO(BaseModel):
-    preset: Literal["daily", "weekdays", "weekly"]
+    preset: Literal["hourly", "daily", "weekdays", "weekly"]
     time: str = Field(pattern=r"^\d{2}:\d{2}$")
     days: list[int] | None = None
 

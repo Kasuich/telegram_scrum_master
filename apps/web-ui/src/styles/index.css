@@ -771,6 +771,18 @@
     padding: 0 4px;
   }
 
+  .cron-minute {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #475569;
+  }
+
+  .cron-minute input {
+    width: 80px;
+  }
+
   .switch {
     display: inline-flex;
     align-items: center;

@@ -166,7 +166,7 @@ export interface Stats {
   note: string | null;
 }
 
-export type SchedulePreset = "daily" | "weekdays" | "weekly" | "custom";
+export type SchedulePreset = "hourly" | "daily" | "weekdays" | "weekly" | "custom";
 
 export interface ScheduleStruct {
   preset: SchedulePreset;
@@ -191,7 +191,7 @@ export interface ScheduledJob {
 
 export interface PatchScheduledJobBody {
   enabled?: boolean;
-  schedule?: { preset: "daily" | "weekdays" | "weekly"; time: string; days?: number[] };
+  schedule?: { preset: "hourly" | "daily" | "weekdays" | "weekly"; time: string; days?: number[] };
 }
 
 export interface TeamMember {
