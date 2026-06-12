@@ -16,6 +16,7 @@ from typing import Any
 from core.db import get_session
 from core.invocation import InvocationContext
 from core.models import (
+    User,
     TelegramBusinessConnection,
     TelegramCallbackToken,
     TelegramChat,
@@ -438,6 +439,20 @@ def _build_invocation_context(
     )
 
 
+def _is_audit_command(text: str) -> bool:
+    """True when the message is the /audit command (with optional @bot / args)."""
+    head = (text or "").strip().lstrip("/").split()[0].split("@")[0].lower() if text.strip() else ""
+    return head == "audit"
+
+
+async def _audit_access_allowed(session: AsyncSession, membership: TeamMembership) -> bool:
+    """Audit is for teamleads (membership role 'lead') and developers/admins."""
+    if membership.role == "lead":
+        return True
+    user_row = await session.get(User, membership.user_id)
+    return bool(user_row and user_row.role in ("dev", "admin"))
+
+
 async def _enqueue_thinking_status(
     *,
     installation: TelegramInstallation,
@@ -687,6 +702,26 @@ async def _route_inbound_message(
         except Exception as exc:  # noqa: BLE001 — surface failure to the user, never 500
             reply = f"Не удалось отправить бота на встречу: {exc}"
         result = SimpleNamespace(reply=reply, pending_confirm=None)
+    elif _is_audit_command(body):
+        # /audit — board audit, restricted to teamleads and developers/admins.
+        if not await _audit_access_allowed(session, membership):
+            result = SimpleNamespace(
+                reply="🔒 Команда /audit доступна только тимлидам и разработчикам.",
+                pending_confirm=None,
+            )
+        else:
+            await _enqueue_thinking_status(
+                installation=installation,
+                chat=chat,
+                message=message,
+                telegram_user=telegram_user,
+            )
+            result = await rpc_client.invoke(
+                "audit_agent",
+                body,
+                _telegram_session_id(installation, message),
+                context=context,
+            )
     else:
         # Show a "thinking" status while the (potentially slow) agent runs.
         await _enqueue_thinking_status(

@@ -213,9 +213,13 @@ class OrchestratorService:
     # ------------------------------------------------------------------
 
     def list_agents(self) -> list[dict[str, str]]:
-        """Return name + description for every registered agent."""
+        """Return name + description + base class prompt for every agent."""
         return [
-            {"name": r.agent.name, "description": r.agent.description}
+            {
+                "name": r.agent.name,
+                "description": r.agent.description,
+                "prompt": getattr(r.agent, "prompt", "") or "",
+            }
             for r in self._runners.values()
         ]
 

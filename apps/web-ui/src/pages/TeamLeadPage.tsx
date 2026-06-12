@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
+import { AuditReport } from "../components/AuditReport";
 import { api, type HealthBreakdown, type ScheduledJob, type TeamHealth } from "../lib/api";
 
 const WEEKDAYS = [
@@ -43,6 +44,7 @@ export function TeamLeadPage({ teamId }: { teamId: string | null }) {
 
 function HealthDashboard({ teamId }: { teamId: string }) {
   const health = useQuery({ queryKey: ["team-health", teamId, 14], queryFn: () => api.teamHealth(teamId, 14) });
+  const [auditKey, setAuditKey] = useState<number | null>(null);
 
   return (
     <section className="surface wide">
@@ -51,11 +53,14 @@ function HealthDashboard({ teamId }: { teamId: string }) {
           <h2>Здоровье команды</h2>
           <p>{health.data?.available ? `за ${health.data.window_days} дней` : "нет данных"}</p>
         </div>
-        <button className="secondary-button" disabled title="Скоро…">
+        <button className="secondary-button" onClick={() => setAuditKey(Date.now())} title="Аудит доски">
           <ClipboardCheck className="h-4 w-4" />
-          Аудит · Скоро
+          Аудит
         </button>
       </div>
+      {auditKey !== null ? (
+        <AuditReport key={auditKey} teamId={teamId} onClose={() => setAuditKey(null)} />
+      ) : null}
       {health.data?.available ? <HealthView health={health.data} /> : (
         <div className="empty">{health.data?.note ?? "Загрузка"}</div>
       )}

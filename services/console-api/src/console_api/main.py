@@ -1354,6 +1354,17 @@ async def _runtime_agents() -> dict[str, str]:
         return {}
 
 
+async def _runtime_agent_prompts() -> dict[str, str]:
+    """name → base class prompt, used as a fallback for class-based agents."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(f"{_platform_api_url()}/agents")
+        response.raise_for_status()
+        return {item["name"]: item.get("prompt", "") or "" for item in response.json()}
+    except Exception:
+        return {}
+
+
 async def _runtime_agent_tools(name: str) -> list[dict[str, Any]]:
     """Declared tools (+ registry risk metadata) for an agent, via platform-api."""
     try:
@@ -1439,11 +1450,19 @@ def _effective_model(spec: AgentSpec | None, instance: AgentInstance | None) -> 
     return spec.model if spec else DEFAULT_MODEL
 
 
-def _effective_prompt(spec: AgentSpec | None, instance: AgentInstance | None) -> str:
+def _effective_prompt(
+    spec: AgentSpec | None,
+    instance: AgentInstance | None,
+    fallback: str = "",
+) -> str:
     overlay = instance.overlay if instance else {}
     if overlay.get("prompt"):
         return str(overlay["prompt"])
-    return spec.prompt if spec else ""
+    if spec and spec.prompt:
+        return spec.prompt
+    # Class-based agents (no DB spec) — surface the base class prompt so the
+    # Разработка UI shows the live prompt instead of a blank field.
+    return fallback
 
 
 def _action_item(action: Action, agent_name: str | None = None) -> ActionListItem:
@@ -1540,19 +1559,21 @@ async def list_agents(user: User = Depends(current_user)) -> list[AgentListItem]
 async def get_agent_config(name: str, user: User = Depends(current_user)) -> AgentConfigDTO:
     del user
     runtime = await _runtime_agents()
+    runtime_prompts = await _runtime_agent_prompts()
     async with get_session() as session:
         instances, specs = await _agent_rows(session)
     instance = instances.get(name)
     spec = specs.get(name)
+    class_prompt = runtime_prompts.get(name, "")
 
     return AgentConfigDTO(
         name=name,
         description=runtime.get(name, ""),
         enabled=instance.enabled if instance else True,
         model=_effective_model(spec, instance),
-        prompt=_effective_prompt(spec, instance),
+        prompt=_effective_prompt(spec, instance, fallback=class_prompt),
         autonomy=_merged_autonomy(spec, instance),
-        spec_prompt=spec.prompt if spec else "",
+        spec_prompt=spec.prompt if spec else class_prompt,
         overlay=instance.overlay if instance else {},
         has_spec=spec is not None,
     )
@@ -2019,3 +2040,29 @@ async def team_health(
 
     health = board_metrics.team_health(members, window_days=window, now=now)
     return TeamHealthDTO(available=True, **health)
+
+
+@app.post("/teams/{team_id}/audit")
+async def team_audit(
+    team_id: uuid.UUID,
+    window: int = Query(14, ge=1, le=90),
+    user: User = Depends(current_teamlead),
+) -> Any:
+    """Run the board-audit agent for a team. Teamlead/developer only.
+
+    Returns the agent ``ChatResponse`` (markdown ``reply`` + trace ``steps``),
+    which the UI renders with mock streaming and a status timeline.
+    """
+    async with get_session() as session:
+        await _assert_team_access(session, user, team_id)
+        queue = await _team_queue(session, team_id)
+
+    queue_hint = f" queue={queue}" if queue else ""
+    message = (
+        "Проведи полный аудит доски: сильные стороны, что улучшить, "
+        f"и рекомендации по каждому участнику за {window} дней.{queue_hint}"
+    )
+    return await _post_platform(
+        "/agents/audit_agent/chat",
+        {"message": message, "session_id": f"audit:{team_id}:{uuid.uuid4()}"},
+    )
