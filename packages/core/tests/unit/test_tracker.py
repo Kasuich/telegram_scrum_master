@@ -51,6 +51,7 @@ SPRINT_RESPONSE = {
     "id": 44,
     "name": "Sprint 1",
     "board": {"id": "3", "display": "Testing"},
+    "version": 2,
     "status": "draft",
     "archived": False,
     "startDate": "2026-06-10",
@@ -313,36 +314,33 @@ class TestCreateSprint:
 
     async def test_patches_sprint(self):
         c = _client()
-        with _patch_request(_ok({**SPRINT_RESPONSE, "archived": True})) as mock_req:
-            result = await c.patch_sprint("44", {"archived": True})
+        with _patch_request(_ok({**SPRINT_RESPONSE, "name": "Sprint renamed"})) as mock_req:
+            result = await c.patch_sprint("44", {"name": "Sprint renamed"})
         method, url = mock_req.call_args[0]
         assert method == "PATCH"
         assert url.endswith("/sprints/44")
-        assert mock_req.call_args[1]["json"] == {"archived": True}
-        assert result["archived"] is True
+        assert mock_req.call_args[1]["json"] == {"name": "Sprint renamed"}
+        assert result["name"] == "Sprint renamed"
 
-    async def test_open_and_close_sprint_patch_archived(self):
+    async def test_open_and_close_sprint_use_lifecycle_endpoints(self):
         c = _client()
         with _patch_request(
             side_effect=[_ok(SPRINT_RESPONSE), _ok({**SPRINT_RESPONSE, "archived": True})]
         ) as mock_req:
-            await c.open_sprint("44")
-            await c.close_sprint("44")
-        assert mock_req.call_args_list[0][1]["json"] == {"archived": "false"}
-        assert mock_req.call_args_list[1][1]["json"] == {"archived": "true"}
+            await c.open_sprint("44", version=2)
+            result = await c.close_sprint("44", version=3)
 
-    async def test_close_sprint_falls_back_if_string_archived_rejected(self):
-        c = _client()
-        with _patch_request(
-            side_effect=[
-                _err(400, '{"errors":{"archived":"Incorrect data format."}}'),
-                _ok({**SPRINT_RESPONSE, "archived": True}),
-            ]
-        ) as mock_req:
-            result = await c.close_sprint("44")
-
-        assert mock_req.call_args_list[0][1]["json"] == {"archived": "true"}
-        assert mock_req.call_args_list[1][1]["json"] == {"archived": {"set": True}}
+        open_call, close_call = mock_req.call_args_list
+        assert open_call.args[0] == "POST"
+        assert open_call.args[1].endswith("/sprints/44/_start")
+        assert open_call.kwargs["headers"]["If-Match"] == '"2"'
+        assert open_call.kwargs["headers"]["Authorization"] == "OAuth test_token"
+        assert open_call.kwargs["headers"]["X-Cloud-Org-ID"] == "test_org"
+        assert close_call.args[0] == "POST"
+        assert close_call.args[1].endswith("/sprints/44/_archive")
+        assert close_call.kwargs["headers"]["If-Match"] == '"3"'
+        assert "json" not in open_call.kwargs
+        assert "json" not in close_call.kwargs
         assert result["archived"] is True
 
     async def test_add_issue_to_sprint_preserves_existing(self):
@@ -865,8 +863,8 @@ class TestTrackerTools:
                 opened = await tracker_open_sprint(sprint_id="44")
                 closed = await tracker_close_sprint(sprint_id="44")
 
-        client.open_sprint.assert_awaited_once_with("44")
-        client.close_sprint.assert_awaited_once_with("44")
+        client.open_sprint.assert_awaited_once_with("44", version=2)
+        client.close_sprint.assert_awaited_once_with("44", version=2)
         assert client.get_sprint.await_count == 2
         assert opened["opened"] is True
         assert opened["id"] == 44
@@ -917,7 +915,10 @@ class TestTrackerTools:
         with patch("core.tracker_tools.TrackerClient") as mock_cls:
             client = AsyncMock()
             mock_cls.return_value.__aenter__.return_value = client
-            client.get_sprint.return_value = old_sprint
+            client.get_sprint.side_effect = [
+                old_sprint,
+                {**old_sprint, "version": 3},
+            ]
             client.create_sprint.return_value = new_sprint
             client.search_all_issues.return_value = [open_issue, cancelled_issue, closed_issue]
             client.move_issue_to_sprint.side_effect = [open_issue, cancelled_issue]
@@ -936,6 +937,10 @@ class TestTrackerTools:
         client.move_issue_to_sprint.assert_any_await("TEST-2", "44", "45")
         assert client.move_issue_to_sprint.await_count == 2
         client.transition_issue.assert_not_called()
+        assert client.get_sprint.await_count == 2
+        client.close_sprint.assert_awaited_once_with("44", version=3)
+        assert result["closed_sprint"]["archived"] is True
+        assert result["close_error"] is None
         assert result["moved_count"] == 2
         assert result["statuses_preserved"] is True
 

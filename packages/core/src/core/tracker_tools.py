@@ -875,7 +875,10 @@ async def tracker_open_sprint(
             board_name=board_name,
         )
         original = await client.get_sprint(resolved_sprint_id)
-        patched = await client.open_sprint(resolved_sprint_id)
+        patched = await client.open_sprint(
+            resolved_sprint_id,
+            version=original.get("version"),
+        )
         sprint = _merge_sprint_patch_result(
             original,
             patched,
@@ -913,7 +916,10 @@ async def tracker_close_sprint(
             board_name=board_name,
         )
         original = await client.get_sprint(resolved_sprint_id)
-        patched = await client.close_sprint(resolved_sprint_id)
+        patched = await client.close_sprint(
+            resolved_sprint_id,
+            version=original.get("version"),
+        )
         sprint = _merge_sprint_patch_result(
             original,
             patched,
@@ -1015,7 +1021,11 @@ async def tracker_rollover_sprint(
         closed_sprint: dict[str, Any] | None = None
         close_error: str | None = None
         try:
-            closed_sprint = await client.close_sprint(old_id)
+            latest_old_sprint = await client.get_sprint(old_id)
+            closed_sprint = await client.close_sprint(
+                old_id,
+                version=latest_old_sprint.get("version"),
+            )
         except TrackerError as exc:
             close_error = str(exc)
 

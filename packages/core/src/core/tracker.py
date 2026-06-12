@@ -195,7 +195,9 @@ class TrackerClient:
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         self._ensure_configured()
         url = f"{self._base}/{path.lstrip('/')}"
-        response = await self._http.request(method, url, headers=self._headers(), **kwargs)
+        headers = self._headers()
+        headers.update(kwargs.pop("headers", {}))
+        response = await self._http.request(method, url, headers=headers, **kwargs)
         for attempt in range(_RETRY_MAX):
             if response.status_code not in _RETRY_STATUSES:
                 break
@@ -205,7 +207,7 @@ class TrackerClient:
                 method, path, response.status_code, attempt + 1, _RETRY_MAX, delay,
             )
             await asyncio.sleep(delay)
-            response = await self._http.request(method, url, headers=self._headers(), **kwargs)
+            response = await self._http.request(method, url, headers=headers, **kwargs)
         if response.status_code == 403:
             raise TrackerError(f"Access denied: {response.text[:200]}", status_code=403)
         if response.status_code == 404:
@@ -329,36 +331,37 @@ class TrackerClient:
             raise TrackerError("patch_sprint requires at least one field")
         return await self._request("PATCH", f"/sprints/{sprint_id}", json=fields)
 
-    async def set_sprint_archived(self, sprint_id: str, archived: bool) -> dict[str, Any]:
-        """Set sprint archived flag.
+    @staticmethod
+    def _sprint_version_headers(version: Any = None) -> dict[str, str]:
+        if version is None or str(version).strip() == "":
+            return {}
+        return {"If-Match": f'"{version}"'}
 
-        Tracker returns the field as a JSON boolean, but the update endpoint
-        rejects a JSON boolean with "Incorrect data format"; it accepts the
-        lower-case string representation.
-        """
-        attempts = (
-            {"archived": str(archived).lower()},
-            {"archived": {"set": archived}},
-            {"archived": archived},
+    async def open_sprint(
+        self,
+        sprint_id: str,
+        *,
+        version: Any = None,
+    ) -> dict[str, Any]:
+        """Start a sprint using Tracker's dedicated lifecycle endpoint."""
+        return await self._request(
+            "POST",
+            f"/sprints/{sprint_id}/_start",
+            headers=self._sprint_version_headers(version),
         )
-        last_error: TrackerError | None = None
-        for fields in attempts:
-            try:
-                return await self.patch_sprint(sprint_id, fields)
-            except TrackerError as exc:
-                if exc.status_code != 400 or "archived" not in str(exc):
-                    raise
-                last_error = exc
-        assert last_error is not None
-        raise last_error
 
-    async def open_sprint(self, sprint_id: str) -> dict[str, Any]:
-        """Mark sprint as open/unarchived."""
-        return await self.set_sprint_archived(sprint_id, False)
-
-    async def close_sprint(self, sprint_id: str) -> dict[str, Any]:
-        """Mark sprint as closed/archived."""
-        return await self.set_sprint_archived(sprint_id, True)
+    async def close_sprint(
+        self,
+        sprint_id: str,
+        *,
+        version: Any = None,
+    ) -> dict[str, Any]:
+        """Archive a sprint using Tracker's dedicated lifecycle endpoint."""
+        return await self._request(
+            "POST",
+            f"/sprints/{sprint_id}/_archive",
+            headers=self._sprint_version_headers(version),
+        )
 
     async def list_sprints(self, board_id: str) -> list[dict[str, Any]]:
         """Return all sprints of a board."""
