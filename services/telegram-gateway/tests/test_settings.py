@@ -45,6 +45,19 @@ def test_from_env_builds_webhook_url(monkeypatch) -> None:
     assert settings.webhook_url == "https://misisdarkhorse.ru/telegram/webhook"
 
 
+def test_from_env_default_bridge_timeout_is_120(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "hook-secret")
+    monkeypatch.setenv("MAIN_BRIDGE_URL", "https://main.example/internal/telegram/v1")
+    monkeypatch.setenv("TELEGRAM_BRIDGE_HMAC_KEY_ID", "key1")
+    monkeypatch.setenv("TELEGRAM_BRIDGE_HMAC_KEYS", "key1:secret-1")
+    monkeypatch.delenv("GATEWAY_BRIDGE_TIMEOUT", raising=False)
+
+    settings = GatewaySettings.from_env()
+
+    assert settings.bridge_timeout_seconds == 120.0
+
+
 def test_webhook_url_empty_without_base() -> None:
     settings = GatewaySettings(
         bot_token="bot-token",

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -130,3 +133,61 @@ def test_metrics_endpoint_exposes_gateway_counters(
 
     assert response.status_code == 200
     assert "telegram_gateway_webhook_total" in response.text
+    assert "telegram_gateway_drain_loop_seconds" in response.text
+    assert "telegram_gateway_deliver_loop_seconds" in response.text
+
+
+@pytest.mark.asyncio
+async def test_deliver_loop_runs_while_drain_slow(tmp_path: Path) -> None:
+    """Deliver loop ticks while drain loop is blocked (parallel workers)."""
+    runtime = make_runtime(tmp_path)
+    stop = asyncio.Event()
+    drain_started = asyncio.Event()
+    deliver_calls: list[float] = []
+
+    async def slow_drain_once(_self: GatewayRuntime, **_kwargs: object) -> int:
+        drain_started.set()
+        await asyncio.sleep(0.15)
+        return 0
+
+    async def track_deliver_once(_self: GatewayRuntime, **_kwargs: object) -> int:
+        deliver_calls.append(time.monotonic())
+        return 0
+
+    with (
+        patch.object(GatewayRuntime, "poll_updates_once", AsyncMock(return_value=0)),
+        patch.object(GatewayRuntime, "drain_once", slow_drain_once),
+        patch.object(GatewayRuntime, "deliver_once", track_deliver_once),
+        patch.object(GatewayRuntime, "heartbeat_once", AsyncMock()),
+    ):
+        drain_task = asyncio.create_task(runtime._drain_loop(stop))
+        deliver_task = asyncio.create_task(runtime._deliver_loop(stop))
+        await asyncio.wait_for(drain_started.wait(), timeout=2.0)
+        await asyncio.sleep(0.05)
+        assert len(deliver_calls) >= 1
+        stop.set()
+        await asyncio.wait_for(asyncio.gather(drain_task, deliver_task), timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_run_starts_drain_and_deliver_loops(tmp_path: Path) -> None:
+    runtime = make_runtime(tmp_path)
+    runtime.settings = replace(runtime.settings, worker_poll_interval=0.05)
+    drain_mock = AsyncMock(return_value=0)
+    deliver_mock = AsyncMock(return_value=0)
+    with (
+        patch.object(GatewayRuntime, "poll_updates_once", AsyncMock(return_value=0)),
+        patch.object(GatewayRuntime, "drain_once", drain_mock),
+        patch.object(GatewayRuntime, "deliver_once", deliver_mock),
+        patch.object(GatewayRuntime, "heartbeat_once", AsyncMock()),
+        patch.object(GatewayRuntime, "sync_transport_mode", AsyncMock()),
+        patch.object(GatewayRuntime, "register_commands", AsyncMock()),
+    ):
+        stop = asyncio.Event()
+        run_task = asyncio.create_task(runtime.run(stop))
+        await asyncio.sleep(0.08)
+        stop.set()
+        await asyncio.wait_for(run_task, timeout=2.0)
+
+    assert drain_mock.await_count >= 1
+    assert deliver_mock.await_count >= 1

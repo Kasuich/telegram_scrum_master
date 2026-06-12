@@ -47,7 +47,7 @@ class GatewaySettings:
     heartbeat_interval_seconds: float = 30.0
     lease_seconds: int = 60
     max_attempts: int = 8
-    bridge_timeout_seconds: float = 10.0
+    bridge_timeout_seconds: float = 120.0
     webhook_secret_header: str = "X-Telegram-Bot-Api-Secret-Token"
     # Cosmetic streaming for pm_agent replies (status line + mocked typing).
     stream_enabled: bool = True
@@ -92,7 +92,7 @@ class GatewaySettings:
             heartbeat_interval_seconds=float(os.getenv("GATEWAY_HEARTBEAT_INTERVAL", "30")),
             lease_seconds=int(os.getenv("TELEGRAM_OUTBOX_LEASE_SECONDS", "60")),
             max_attempts=int(os.getenv("GATEWAY_MAX_ATTEMPTS", "8")),
-            bridge_timeout_seconds=float(os.getenv("GATEWAY_BRIDGE_TIMEOUT", "10")),
+            bridge_timeout_seconds=float(os.getenv("GATEWAY_BRIDGE_TIMEOUT", "120")),
             stream_enabled=os.getenv("TELEGRAM_STREAM_ENABLED", "true").strip().lower()
             not in {"0", "false", "no", "off"},
             stream_cps=float(os.getenv("TELEGRAM_STREAM_CPS", "60")),
