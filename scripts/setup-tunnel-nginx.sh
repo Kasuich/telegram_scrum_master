@@ -43,8 +43,10 @@ log() { echo "[setup-tunnel-nginx] $*"; }
 # ── 1. Packages ──────────────────────────────────────────────────────────────
 if ! command -v nginx >/dev/null 2>&1 || ! command -v certbot >/dev/null 2>&1; then
   log "Installing nginx + certbot..."
-  $SUDO DEBIAN_FRONTEND=noninteractive apt-get update -y
-  $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y nginx certbot
+  # Use `env` for the assignment: `$SUDO VAR=val cmd` breaks when $SUDO is empty
+  # (bash treats VAR=val as the command name after the empty expansion).
+  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -y
+  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y nginx certbot
 else
   log "nginx + certbot already installed"
 fi
