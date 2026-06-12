@@ -16,6 +16,9 @@ from typing import Any
 from core.db import get_session
 from core.invocation import InvocationContext
 from core.models import (
+    PetState,
+    Team,
+    TeamMembership,
     User,
     TelegramBusinessConnection,
     TelegramCallbackToken,
@@ -445,6 +448,164 @@ def _is_audit_command(text: str) -> bool:
     return head == "audit"
 
 
+# Seconds the magical status animation plays before the leaderboard picture lands.
+_BATTLE_REVEAL_DELAY = 6
+
+
+def _is_battle_command(text: str) -> bool:
+    """True for /battle (with optional @bot / args) or the phrase «битва скрамиков»."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    head = raw.lstrip("/").split()[0].split("@")[0].lower()
+    if head == "battle":
+        return True
+    low = raw.lower()
+    return "битв" in low and "скрамик" in low
+
+
+async def _gather_team_combatants(session: AsyncSession, team_id: Any) -> list:
+    """Build battle combatants from persisted pet state (no Tracker calls → no 429s)."""
+    from core import pet_battle
+
+    rows = (
+        await session.execute(
+            select(TeamMembership, User)
+            .join(User, TeamMembership.user_id == User.id)
+            .where(
+                TeamMembership.team_id == team_id,
+                TeamMembership.tracker_match_status == "confirmed",
+                User.active.is_(True),
+            )
+            .order_by(User.display_name)
+        )
+    ).all()
+
+    combatants = []
+    for membership, user in rows:
+        state = await session.get(PetState, user.id)
+        combatants.append(
+            pet_battle.combatant_from_state(
+                name=user.display_name or membership.tracker_login or "Скрамик",
+                user_id=str(user.id),
+                state_json=state.state_json if state is not None else None,
+                level=state.level if state is not None else None,
+                species_id=state.species_id if state is not None else None,
+            )
+        )
+    return combatants
+
+
+def _battle_caption(team_name: str, ranked: list[dict[str, Any]]) -> str:
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [f"🏆 <b>Битва скрамиков</b> — {team_name}", ""]
+    for r in ranked[:3]:
+        m = medals[r["rank"] - 1] if r["rank"] <= 3 else f"{r['rank']}."
+        lines.append(f"{m} {r['name']} ({r['species_name']}, ур.{r['level']}) — ⚡{r['power']}")
+    extra = len(ranked) - 3
+    if extra > 0:
+        lines.append(f"…и ещё {extra} на арене")
+    return "\n".join(lines)
+
+
+async def _run_team_battle(
+    session: AsyncSession,
+    *,
+    installation: TelegramInstallation,
+    chat: TelegramChat,
+    message: TelegramMessage,
+    telegram_user: TelegramUser | None,
+) -> dict[str, Any]:
+    """Deterministic team royale → magical status frames + a leaderboard picture."""
+    import base64
+
+    from core import battle_image, pet_battle
+
+    combatants = await _gather_team_combatants(session, installation.team_id)
+    if len(combatants) < 2:
+        result = SimpleNamespace(
+            reply="⚔️ Для битвы нужно хотя бы двое скрамиков в команде. "
+            "Заведите питомцев и возвращайтесь!",
+            pending_confirm=None,
+        )
+        outbox = await _enqueue_agent_result(
+            session,
+            installation=installation,
+            chat=chat,
+            message=message,
+            telegram_user=telegram_user,
+            result=result,
+        )
+        return {"battle": "skipped", "outbox_id": str(outbox.id) if outbox else None}
+
+    royale = pet_battle.run_royale(combatants)
+    team = await session.get(Team, installation.team_id)
+    team_name = (team.name if team is not None else None) or chat.title or "команда"
+    png = battle_image.render_leaderboard_png(team_name, royale["ranked"])
+    caption = _battle_caption(team_name, royale["ranked"])
+
+    target_user_id = (
+        telegram_user.external_user_id
+        if telegram_user is not None and chat.type == "private"
+        else None
+    )
+
+    # 1) Magical status frames, animated while the reveal is delayed.
+    session.add(
+        TelegramOutbox(
+            team_id=installation.team_id,
+            installation_id=installation.id,
+            chat_id=chat.id,
+            category="agent_status",
+            target_chat_id=chat.external_chat_id,
+            target_user_id=target_user_id,
+            dedupe_key=f"telegram:battle-status:{message.id}",
+            priority=10,
+            status="pending",
+            attempts=0,
+            payload={
+                "method": "sendMessage",
+                "text": "",
+                "message_thread_id": message.external_thread_id,
+                "reply_to_message_id": message.external_message_id,
+                "metadata": {"status": True, "status_frames": royale["status_frames"]},
+            },
+        )
+    )
+
+    # 2) The leaderboard picture, delayed so the status animation has time to play.
+    reveal_at = datetime.now(timezone.utc) + timedelta(seconds=_BATTLE_REVEAL_DELAY)
+    photo = TelegramOutbox(
+        team_id=installation.team_id,
+        installation_id=installation.id,
+        chat_id=chat.id,
+        category="agent_reply",
+        target_chat_id=chat.external_chat_id,
+        target_user_id=target_user_id,
+        dedupe_key=f"telegram:battle-photo:{message.id}",
+        priority=100,
+        status="pending",
+        attempts=0,
+        next_attempt_at=reveal_at,
+        payload={
+            "method": "sendPhoto",
+            "photo_b64": base64.b64encode(png).decode("ascii"),
+            "caption": caption,
+            "message_thread_id": message.external_thread_id,
+            "reply_to_message_id": message.external_message_id,
+            "metadata": {},
+        },
+    )
+    session.add(photo)
+    await session.flush()
+    return {
+        "battle": "royale",
+        "participants": len(combatants),
+        "winner": royale["winner"]["name"] if royale["winner"] else None,
+        "outbox_id": str(photo.id),
+    }
+
+
 async def _audit_access_allowed(session: AsyncSession, membership: TeamMembership) -> bool:
     """Audit is for teamleads (membership role 'lead') and developers/admins."""
     if membership.role == "lead":
@@ -666,7 +827,16 @@ async def _route_inbound_message(
     )
     body = context.raw_text_without_mention or _message_text(message_payload)
 
-    if chat.type == "private" and (chat.ingest_mode or "").strip().lower() == "direct":
+    # A Telemost link is always a meeting-capture intent, never a standup
+    # answer — resolve it before the standup branch so it short-circuits
+    # straight to the recording bot (and avoids a needless poll lookup).
+    telemost_url = extract_telemost_url(body)
+
+    if (
+        telemost_url is None
+        and chat.type == "private"
+        and (chat.ingest_mode or "").strip().lower() == "direct"
+    ):
         standup_reply = await handle_standup_response(
             session,
             team_id=installation.team_id,
@@ -691,8 +861,18 @@ async def _route_inbound_message(
                 "standup_poll": "handled",
             }
 
+    # ⚔️ Битва скрамиков — deterministic team royale (open to every confirmed member).
+    if _is_battle_command(body):
+        battle = await _run_team_battle(
+            session,
+            installation=installation,
+            chat=chat,
+            message=message,
+            telegram_user=telegram_user,
+        )
+        return {"session_id": context.session_id, **battle}
+
     # Short-circuit: a Telemost link goes straight to the recording bot.
-    telemost_url = extract_telemost_url(body)
     if telemost_url is not None:
         try:
             data = await schedule_meeting_capture(

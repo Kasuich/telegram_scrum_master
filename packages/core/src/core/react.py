@@ -716,26 +716,33 @@ def _build_action_report(steps: list[dict[str, Any]]) -> str:
                 return text
         return None
 
-    board = latest("board")
-    if board:
-        return board
-    duplicate = latest("duplicate")
-    if duplicate:
-        return duplicate
-    created = latest("created")
-    if created:
-        assumptions = _assumptions_line(steps)
-        return f"{created}. {assumptions}" if assumptions else created
-    updated = latest("updated")
-    status = latest("status")
-    comment = latest("comment")
-    write = updated or status
-    if write and comment:
-        return f"{write}. {comment}"
-    if write:
-        return write
-    if comment:
-        return comment
+    # Categories that each represent a concrete change worth reporting on its
+    # own line. A multi-action turn — several created tasks, an edit, a sprint —
+    # must surface every step in order, not collapse to the latest one, or the
+    # earlier work silently vanishes from the answer.
+    listed_cats = (
+        "board", "duplicate", "created", "updated", "status", "comment", "closed", "other"
+    )
+    writes: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for cat, text in entries:
+        # "Готово" is the bare placeholder for an unrecognised read-ish tool
+        # (e.g. a board snapshot) — never a change to announce on its own.
+        if cat not in listed_cats or text == "Готово" or text in seen:
+            continue
+        seen.add(text)
+        writes.append((cat, text))
+    if writes:
+        body = "\n".join(text for _, text in writes)
+        # Spell out assumed fields only for a lone create — when there are
+        # several, each line already names its own issue and assignee.
+        if len(writes) == 1 and writes[0][0] == "created":
+            assumptions = _assumptions_line(steps)
+            if assumptions:
+                return f"{body}. {assumptions}"
+        return body
+
+    # No concrete write happened — fall back to delegation, reads, errors.
     for step in steps:
         if step.get("kind") != "tool_result" or step.get("tool_name") != "call_agent":
             continue

@@ -336,6 +336,20 @@ class DailyDigestConfig(BaseSettings):
         description="Maximum issues shown per member section",
     )
 
+    max_sprint_issues: int = Field(
+        default=30,
+        ge=1,
+        le=200,
+        description="Maximum current-sprint issues shown per board",
+    )
+
+    max_chat_messages: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Maximum common-chat messages shown for the completed hour",
+    )
+
     def in_progress_status_list(self) -> list[str]:
         return [
             part.strip()

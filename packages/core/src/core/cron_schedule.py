@@ -36,12 +36,17 @@ def _parse_time(value: str) -> tuple[int, int]:
 def schedule_to_cron(schedule: dict[str, Any]) -> str:
     """Build a 5-field cron expression from a structured schedule.
 
-    schedule = {"preset": "daily"|"weekdays"|"weekly", "time": "HH:MM",
+    schedule = {"preset": "hourly"|"daily"|"weekdays"|"weekly", "time": "HH:MM",
                 "days": [1..7]}  (days required only for "weekly")
+
+    For "hourly" only the minute component of ``time`` is used (the hour runs
+    every hour), so ``{"preset": "hourly", "time": "00:30"}`` -> ``30 * * * *``.
     """
     preset = schedule.get("preset")
     hours, minutes = _parse_time(str(schedule.get("time", "09:00")))
 
+    if preset == "hourly":
+        return f"{minutes} * * * *"
     if preset == "daily":
         return f"{minutes} {hours} * * *"
     if preset == "weekdays":
@@ -67,9 +72,16 @@ def cron_to_schedule(cron_expr: str) -> dict[str, Any]:
         return {"preset": "custom"}
     minute, hour, dom, month, dow = parts
 
-    if not (minute.isdigit() and hour.isdigit()):
+    if not minute.isdigit():
         return {"preset": "custom"}
     if dom != "*" or month != "*":
+        return {"preset": "custom"}
+
+    # Hourly: wildcard hour every day, e.g. "0 * * * *" / "50 * * * *".
+    if hour == "*" and dow == "*":
+        return {"preset": "hourly", "time": f"00:{int(minute):02d}"}
+
+    if not hour.isdigit():
         return {"preset": "custom"}
     time = f"{int(hour):02d}:{int(minute):02d}"
 
@@ -87,6 +99,9 @@ def describe_cron(cron_expr: str) -> str:
     """Human-readable Russian description of a cron schedule."""
     schedule = cron_to_schedule(cron_expr)
     preset = schedule.get("preset")
+    if preset == "hourly":
+        minute = schedule["time"].split(":")[1]
+        return "каждый час (в начале часа)" if minute == "00" else f"каждый час в :{minute}"
     if preset == "daily":
         return f"ежедневно в {schedule['time']}"
     if preset == "weekdays":

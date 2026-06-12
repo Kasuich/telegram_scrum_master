@@ -67,6 +67,17 @@ jobs:
             SPEECHKIT_API_KEY=${{ secrets.SPEECHKIT_API_KEY }}
             EOF
 
+            # A previously interrupted recreate can leave Docker-renamed
+            # containers behind (e.g. "<hash>_test-pm-orchestrator-1"). They
+            # still hold the original name, so the next `up` fails with a
+            # "container name is already in use" conflict. Compose no longer
+            # tracks them (the name no longer matches), so remove them first.
+            dangling=$(docker ps -aq --filter "name=_test-")
+            if [ -n "$dangling" ]; then
+              echo "=== Removing leftover renamed containers from a previous deploy ==="
+              docker rm -f $dangling
+            fi
+
             docker compose \
               -f docker-compose.yml \
               -f docker-compose.test.yml \

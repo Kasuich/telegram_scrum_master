@@ -21,6 +21,8 @@ services:
       # wrong nginx route (-> web-ui -> 405).
       - TELEGRAM_WEBHOOK_PATH=${TELEGRAM_WEBHOOK_PATH:-/telegram/webhook}
       - TELEGRAM_TRANSPORT_MODE=${TELEGRAM_TRANSPORT_MODE:-webhook}
+      # Mini App launch URL → sets the chat menu button on startup.
+      - MINI_APP_URL=${MINI_APP_URL:-}
 
       # Bridge to main server
       - MAIN_BRIDGE_URL=${MAIN_BRIDGE_URL}

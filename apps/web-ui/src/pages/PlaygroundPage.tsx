@@ -4,6 +4,7 @@ import { FormEvent, useMemo, useState } from "react";
 
 import { RiskBadge } from "../components/Badge";
 import { TraceTimeline } from "../components/TraceTimeline";
+import { agentLogo } from "../lib/agentLogos";
 import { api, type ChatResponse } from "../lib/api";
 
 export function PlaygroundPage() {
@@ -51,9 +52,14 @@ export function PlaygroundPage() {
     <div className="playground-grid">
       <section className="surface">
         <div className="section-head">
-          <div>
-            <h2>Песочница</h2>
-            <p>{activeAgent || "агент"}</p>
+          <div className="flex items-center gap-3">
+            {activeAgent && (
+              <img src={agentLogo(activeAgent)} alt="" width={36} height={36} className="rounded-lg" />
+            )}
+            <div>
+              <h2>Песочница</h2>
+              <p>{activeAgent || "агент"}</p>
+            </div>
           </div>
           <select value={activeAgent} onChange={(event) => setAgent(event.target.value)}>
             {(agents.data ?? []).map((item) => (

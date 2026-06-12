@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -17,8 +17,10 @@ from core.models import (
     Team,
     TelegramChat,
     TelegramInstallation,
+    TelegramMessage,
     TelegramOutbox,
     TelegramStandupPoll,
+    TelegramUser,
 )
 from core.standup_poll import (
     STANDUP_POLL_JOB_NAME,
@@ -54,6 +56,27 @@ class DigestMember:
     standup_response: str = ""
     applied_items: list[str] = field(default_factory=list)
     sections: dict[str, list[str]] = field(default_factory=dict)
+    board_name: str = ""
+    responded: bool = False
+
+
+@dataclass(frozen=True)
+class DigestSprint:
+    board_id: str
+    board_name: str
+    sprint_id: str
+    sprint_name: str
+    status: str
+    start_date: str
+    end_date: str
+    issues: list[DigestIssue] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DigestChatUpdate:
+    author: str
+    text: str
+    local_time: str
 
 
 @dataclass(frozen=True)
@@ -64,6 +87,8 @@ class DigestReport:
     local_hour: str
     timezone: str
     members: list[DigestMember]
+    sprints: list[DigestSprint] = field(default_factory=list)
+    chat_updates: list[DigestChatUpdate] = field(default_factory=list)
 
 
 def _timezone(name: str) -> ZoneInfo:
@@ -105,6 +130,17 @@ def local_hour_key(
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     return current.astimezone(tz).strftime("%Y-%m-%dT%H")
+
+
+def completed_hour_window_utc(
+    now: datetime | None = None,
+) -> tuple[datetime, datetime]:
+    current = now or datetime.now(tz=timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    end = current.replace(minute=0, second=0, microsecond=0)
+    return end - timedelta(hours=1), end
 
 
 def _quote_yql(value: str) -> str:
@@ -520,18 +556,180 @@ async def _mark_standup_polls_reported(
         poll.status = "reported"
 
 
+def _parse_sprint_date(value: Any) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _current_sprint(
+    sprints: list[dict[str, Any]],
+    *,
+    local_date: date,
+) -> dict[str, Any] | None:
+    active = [sprint for sprint in sprints if not bool(sprint.get("archived"))]
+    in_window = []
+    for sprint in active:
+        start = _parse_sprint_date(sprint.get("startDate"))
+        end = _parse_sprint_date(sprint.get("endDate"))
+        if start is not None and end is not None and start <= local_date <= end:
+            in_window.append(sprint)
+    candidates = in_window or active
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda sprint: _parse_sprint_date(sprint.get("endDate")) or date.min,
+    )
+
+
+def _issue_belongs_to_sprint(issue: dict[str, Any], sprint_id: str) -> bool:
+    values = issue.get("sprint")
+    if not isinstance(values, list) or not values:
+        return True
+    return any(
+        isinstance(item, dict) and str(item.get("id") or "") == sprint_id
+        for item in values
+    )
+
+
+async def _load_current_sprints(
+    client: TrackerClient,
+    *,
+    queue: str,
+    members: list[Any],
+    local_date: date,
+    max_issues: int,
+) -> list[DigestSprint]:
+    boards: dict[str, str] = {}
+    for member in members:
+        board_id = str(getattr(member, "board_id", "") or "").strip()
+        if not board_id:
+            continue
+        boards.setdefault(
+            board_id,
+            str(getattr(member, "board_name", "") or board_id).strip(),
+        )
+
+    result: list[DigestSprint] = []
+    for board_id, board_name in boards.items():
+        try:
+            sprint = _current_sprint(
+                await client.list_sprints(board_id),
+                local_date=local_date,
+            )
+            if sprint is None:
+                continue
+            sprint_id = str(sprint.get("id") or "").strip()
+            sprint_name = str(sprint.get("name") or sprint_id).strip()
+            if not sprint_id or not sprint_name:
+                continue
+            board = await client.get_board(board_id)
+            board_query = str(board.get("query") or "").strip()
+            sprint_query = f"Sprint: {_quote_yql(sprint_name)}"
+            query = f"({board_query}) AND ({sprint_query})" if board_query else sprint_query
+            raw_issues = await client.search_all_issues(
+                query,
+                queue=None if board_query else queue,
+                page_size=min(max_issues, 200),
+            )
+            issues = [
+                digest_issue
+                for raw in raw_issues
+                if _issue_belongs_to_sprint(raw, sprint_id)
+                and (digest_issue := _to_digest_issue(raw)) is not None
+            ]
+            result.append(
+                DigestSprint(
+                    board_id=board_id,
+                    board_name=board_name,
+                    sprint_id=sprint_id,
+                    sprint_name=sprint_name,
+                    status=str(sprint.get("status") or ""),
+                    start_date=str(sprint.get("startDate") or ""),
+                    end_date=str(sprint.get("endDate") or ""),
+                    issues=issues[:max_issues],
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Hourly digest: failed to load current sprint for board %s",
+                board_id,
+            )
+    return result
+
+
+def _telegram_author(user: TelegramUser | None) -> str:
+    if user is None:
+        return "Участник"
+    full_name = " ".join(
+        part for part in (user.first_name, user.last_name) if str(part or "").strip()
+    ).strip()
+    return full_name or user.username or "Участник"
+
+
+async def _load_chat_updates(
+    session: Any,
+    *,
+    team_id: uuid.UUID,
+    chat_id: uuid.UUID | None,
+    start_utc: datetime,
+    end_utc: datetime,
+    timezone_name: str,
+    limit: int,
+) -> list[DigestChatUpdate]:
+    if chat_id is None:
+        return []
+    stmt = (
+        select(TelegramMessage, TelegramUser)
+        .outerjoin(TelegramUser, TelegramUser.id == TelegramMessage.telegram_user_id)
+        .where(
+            TelegramMessage.team_id == team_id,
+            TelegramMessage.chat_id == chat_id,
+            TelegramMessage.direction == "inbound",
+            TelegramMessage.deleted_at.is_(None),
+            TelegramMessage.sent_at >= start_utc,
+            TelegramMessage.sent_at < end_utc,
+        )
+        .order_by(TelegramMessage.sent_at.desc(), TelegramMessage.id.desc())
+        .limit(limit)
+    )
+    rows = list((await session.execute(stmt)).all())
+    tz = _timezone(timezone_name)
+    updates: list[DigestChatUpdate] = []
+    for message, user in reversed(rows):
+        text = " ".join(str(message.text or message.caption or "").split())
+        if not text:
+            continue
+        sent_at = message.sent_at or start_utc
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        updates.append(
+            DigestChatUpdate(
+                author=_telegram_author(user),
+                text=text[:300],
+                local_time=sent_at.astimezone(tz).strftime("%H:%M"),
+            )
+        )
+    return updates
+
+
 async def build_daily_digest_report(
     session: Any,
     *,
     team_id: uuid.UUID,
     now: datetime | None = None,
     client_factory: Callable[[], TrackerClient] = TrackerClient,
+    chat_id: uuid.UUID | None = None,
 ) -> DigestReport:
     cfg = get_config().daily_digest
     local_date, _, _ = day_window_utc(now, timezone_name=cfg.timezone)
     local_hour = local_hour_key(now, timezone_name=cfg.timezone)
     queue = await _load_team_queue(session, team_id)
-    del client_factory
     members = await load_registered_participants(session, team_id=team_id)
     polls_by_login = await _load_standup_polls_by_login(
         session,
@@ -543,22 +741,44 @@ async def build_daily_digest_report(
     for member in members:
         login_key = member.tracker_login.casefold()
         poll = polls_by_login.get(login_key)
-        if poll is None:
-            continue
-        sections = _poll_event_sections(poll)
-        if not sections:
-            continue
+        response = _poll_response_text(poll).strip() if poll is not None else ""
         digest_members.append(
             DigestMember(
                 login=member.tracker_login,
                 display=member.display,
                 in_progress=[],
                 done_today=[],
-                standup_response=_poll_response_text(poll) if poll is not None else "",
+                standup_response=response,
                 applied_items=_poll_applied_items(poll) if poll is not None else [],
-                sections=sections,
+                sections=_poll_event_sections(poll) if poll is not None else {},
+                board_name=str(getattr(member, "board_name", "") or ""),
+                responded=bool(response),
             )
         )
+
+    tz = _timezone(cfg.timezone)
+    current = now or datetime.now(tz=timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    async with client_factory() as client:
+        sprints = await _load_current_sprints(
+            client,
+            queue=queue,
+            members=members,
+            local_date=current.astimezone(tz).date(),
+            max_issues=cfg.max_sprint_issues,
+        )
+
+    start_utc, end_utc = completed_hour_window_utc(now)
+    chat_updates = await _load_chat_updates(
+        session,
+        team_id=team_id,
+        chat_id=chat_id,
+        start_utc=start_utc,
+        end_utc=end_utc,
+        timezone_name=cfg.timezone,
+        limit=cfg.max_chat_messages,
+    )
 
     return DigestReport(
         team_id=team_id,
@@ -567,6 +787,8 @@ async def build_daily_digest_report(
         local_hour=local_hour,
         timezone=cfg.timezone,
         members=digest_members,
+        sprints=sprints,
+        chat_updates=chat_updates,
     )
 
 
@@ -587,24 +809,60 @@ def _format_issue_section(issues: list[DigestIssue], *, limit: int) -> list[str]
 
 
 def format_daily_digest(report: DigestReport, *, max_issues_per_section: int | None = None) -> str:
-    del max_issues_per_section
+    cfg = get_config().daily_digest
+    limit = max_issues_per_section or cfg.max_issues_per_section
+    hour = report.local_hour.rsplit("T", 1)[-1]
     lines = [
-        f"Ежедневный отчёт по задачам за {report.local_date}",
-        f"Очередь: {report.queue}",
+        f"📋 **Ежечасный отчёт · {hour}:00**",
+        f"Очередь: `{report.queue}` · {report.local_date}",
         "",
     ]
-    if not report.members:
-        lines.append("За период нет обновлений.")
-        return "\n".join(lines)
 
+    lines.append("🏃 **Текущий спринт**")
+    if not report.sprints:
+        lines.append("- активный спринт для привязанных досок не найден")
+    for sprint in report.sprints:
+        board = sprint.board_name or sprint.board_id
+        dates = " — ".join(value for value in (sprint.start_date, sprint.end_date) if value)
+        suffix = f" · {dates}" if dates else ""
+        lines.append(f"**{board} · {sprint.sprint_name}**{suffix}")
+        if not sprint.issues:
+            lines.append("- задач нет")
+            continue
+        for issue in sprint.issues[:limit]:
+            assignee = f" · {issue.assignee_display}" if issue.assignee_display else ""
+            status = issue.status or "Без статуса"
+            lines.append(
+                f"- [{issue.key}]({issue.url}) · {status}{assignee}: "
+                f"{issue.summary or '(без названия)'}"
+            )
+        overflow = len(sprint.issues) - limit
+        if overflow > 0:
+            lines.append(f"- ещё {overflow}")
+
+    lines.extend(["", "👥 **Статусы команды**"])
+    if not report.members:
+        lines.append("- зарегистрированные участники не найдены")
     for member in report.members:
-        lines.append(f"{member.display} (@{member.login})")
+        board = f" · {member.board_name}" if member.board_name else ""
+        lines.append(f"**{member.display}** (`@{member.login}`){board}")
+        if member.responded:
+            lines.append(f"- ответ: {member.standup_response}")
+        else:
+            lines.append("- ⏳ ответа на опрос нет")
         for title, section_lines in member.sections.items():
             if not section_lines:
                 continue
-            lines.append(f"{title}:")
-            lines.extend(section_lines)
+            lines.append(f"- {title}:")
+            lines.extend(f"  {line}" for line in section_lines[:limit])
         lines.append("")
+
+    lines.append("💬 **Что изменилось в общем чате за час**")
+    if not report.chat_updates:
+        lines.append("- новых сообщений нет")
+    else:
+        for update in report.chat_updates:
+            lines.append(f"- {update.local_time} · **{update.author}**: {update.text}")
     return "\n".join(lines).rstrip()
 
 
@@ -644,7 +902,12 @@ async def _resolve_digest_chat(
         .where(
             TelegramInstallation.team_id == team_id,
             TelegramInstallation.status == "active",
-            TelegramInstallation.mode == "workspace_bot",
+            # NB: do NOT filter on TelegramInstallation.mode here. That column is
+            # transport-agnostic bookkeeping (it has held values like "webhook" in
+            # prod) and is unrelated to whether a chat is a workspace-bot chat —
+            # TelegramChat.access_mode below is the authoritative signal. Filtering
+            # on it silently produced zero digest chats. Deadline reminders never
+            # had this filter, which is why they kept working.
             TelegramChat.active.is_(True),
             TelegramChat.access_mode == "workspace_bot",
         )
@@ -709,7 +972,7 @@ async def _enqueue_digest_messages(
                 "method": "sendMessage",
                 "text": chunk,
                 "metadata": {
-                    "digest": "team_daily",
+                    "digest": "team_hourly",
                     "local_date": local_date,
                     "part": index,
                     "parts": len(chunks),
@@ -745,6 +1008,7 @@ async def send_team_daily_digest(
         team_id=team_uuid,
         now=now,
         client_factory=client_factory,
+        chat_id=chat.id,
     )
     text = format_daily_digest(report, max_issues_per_section=cfg.max_issues_per_section)
     outbox_ids = await _enqueue_digest_messages(
@@ -871,12 +1135,15 @@ __all__ = [
     "LEGACY_DAILY_DIGEST_JOB_NAMES",
     "STANDUP_POLL_JOB_NAME",
     "STANDUP_POLL_PAYLOAD_TYPE",
+    "DigestChatUpdate",
     "DigestIssue",
     "DigestMember",
     "DigestReport",
+    "DigestSprint",
     "build_daily_digest_report",
     "build_done_today_yql",
     "build_in_progress_yql",
+    "completed_hour_window_utc",
     "day_window_utc",
     "ensure_daily_digest_scheduled_job",
     "format_daily_digest",

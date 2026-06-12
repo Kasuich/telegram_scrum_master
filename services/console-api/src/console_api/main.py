@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import hmac
+import json
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -11,6 +14,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import parse_qsl
 
 import httpx
 from core import board_metrics
@@ -26,6 +30,7 @@ from core.models import (
     Confirm,
     ConsoleSession,
     LoginChallenge,
+    PetBattle,
     PetState,
     ScheduledJob,
     Team,
@@ -102,6 +107,32 @@ def _set_session_cookie(response: Response, raw_token: str) -> None:
         secure=os.getenv("CONSOLE_SECURE_COOKIES", "false").lower() == "true",
         max_age=int(_session_ttl().total_seconds()),
     )
+
+
+def _set_webapp_session_cookie(response: Response, raw_token: str) -> None:
+    """Session cookie for the Telegram Mini App (loaded inside the TG webview).
+
+    Production (HTTPS) needs ``SameSite=None; Secure`` so the cookie survives the
+    webview's iframe context; local dev (HTTP) falls back to Lax.
+    """
+    secure = os.getenv("CONSOLE_SECURE_COOKIES", "false").lower() == "true"
+    response.set_cookie(
+        SESSION_COOKIE,
+        raw_token,
+        httponly=True,
+        samesite="none" if secure else "lax",
+        secure=secure,
+        max_age=int(_session_ttl().total_seconds()),
+    )
+
+
+def _telegram_bot_token() -> str | None:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    return token or None
+
+
+def _webapp_dev_mode() -> bool:
+    return os.getenv("TG_WEBAPP_DEV", "false").strip().lower() in ("1", "true", "yes")
 
 
 def _cors_origins() -> list[str]:
@@ -292,7 +323,7 @@ class ShopDTO(BaseModel):
 
 
 class ScheduleDTO(BaseModel):
-    preset: Literal["daily", "weekdays", "weekly"]
+    preset: Literal["hourly", "daily", "weekdays", "weekly"]
     time: str = Field(pattern=r"^\d{2}:\d{2}$")
     days: list[int] | None = None
 
@@ -1332,6 +1363,382 @@ async def pet_equip(payload: EquipRequest, user: User = Depends(current_user)) -
         cos["equipped"] = equipped
         _save_cosmetics(state, cos)
         return _pet_dto_from_state(state, owner_name=user.display_name)
+
+
+# ---------------------------------------------------------------------------
+# Telegram Mini App — auth via initData + «Битва скрамиков»
+# ---------------------------------------------------------------------------
+
+
+class WebAppAuthRequest(BaseModel):
+    init_data: str = Field(min_length=1, max_length=8192)
+
+
+def _validate_webapp_init_data(init_data: str) -> dict[str, Any]:
+    """Verify Telegram WebApp ``initData`` and return the parsed ``user`` object.
+
+    Spec: ``secret = HMAC_SHA256("WebAppData", bot_token)`` then compare
+    ``HMAC_SHA256(secret, data_check_string)`` to the supplied ``hash``. In dev mode
+    (``TG_WEBAPP_DEV=true``) the signature check is skipped so the page can be opened
+    in a plain browser with a hand-made ``user=...`` query string.
+    """
+    pairs = dict(parse_qsl(init_data, keep_blank_values=True))
+    user_raw = pairs.get("user")
+    if not user_raw:
+        raise HTTPException(status_code=401, detail="initData: no user")
+
+    if not _webapp_dev_mode():
+        token = _telegram_bot_token()
+        if not token:
+            raise HTTPException(status_code=503, detail="Telegram bot token not configured")
+        received_hash = pairs.get("hash", "")
+        check_string = "\n".join(
+            f"{k}={v}" for k, v in sorted(pairs.items()) if k != "hash"
+        )
+        secret_key = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+        expected = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, received_hash):
+            raise HTTPException(status_code=401, detail="initData: bad signature")
+
+    try:
+        user_obj = json.loads(user_raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=401, detail="initData: bad user json") from exc
+    if not user_obj.get("id"):
+        raise HTTPException(status_code=401, detail="initData: no user id")
+    return user_obj
+
+
+async def _resolve_linked_user(session: AsyncSession, telegram_external_id: str) -> User:
+    """Map a Telegram user id → internal User via the active team link."""
+    row = (
+        await session.execute(
+            select(User)
+            .join(TelegramUserLink, TelegramUserLink.user_id == User.id)
+            .join(TelegramUser, TelegramUser.id == TelegramUserLink.telegram_user_id)
+            .where(
+                TelegramUser.external_user_id == str(telegram_external_id),
+                TelegramUserLink.status == "active",
+                User.active.is_(True),
+            )
+            .order_by(TelegramUserLink.created_at)
+        )
+    ).scalars().first()
+    if row is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Этот Telegram не привязан к участнику. Пройдите онбординг у бота (/start).",
+        )
+    return row
+
+
+@app.post("/auth/telegram/webapp", response_model=LoginResponse)
+async def auth_telegram_webapp(payload: WebAppAuthRequest, response: Response) -> LoginResponse:
+    """Authenticate a Telegram Mini App user from ``initData`` → console session."""
+    tg_user = _validate_webapp_init_data(payload.init_data)
+    async with get_session() as session:
+        user = await _resolve_linked_user(session, str(tg_user["id"]))
+        raw_token = new_session_token()
+        session.add(
+            ConsoleSession(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                token_hash=hash_session_token(raw_token),
+                expires_at=datetime.now(timezone.utc) + _session_ttl(),
+            )
+        )
+        user_dto = await _build_user_dto(session, user)
+    _set_webapp_session_cookie(response, raw_token)
+    return LoginResponse(user=user_dto)
+
+
+# ---- Battle ---------------------------------------------------------------
+
+
+class BattleCombatantDTO(BaseModel):
+    rank: int | None = None
+    user_id: str | None = None
+    name: str
+    species_id: str | None = None
+    species_name: str = ""
+    level: int = 1
+    power: int = 0
+    equipped: dict[str, str] = Field(default_factory=dict)
+
+
+class BattleRoyaleResponse(BaseModel):
+    team_name: str
+    ranked: list[BattleCombatantDTO]
+    winner: BattleCombatantDTO | None = None
+    status_frames: list[str] = Field(default_factory=list)
+    image_base64: str
+
+
+class DuelResponse(BaseModel):
+    winner: BattleCombatantDTO
+    loser: BattleCombatantDTO
+    log: list[str]
+    status_frames: list[str] = Field(default_factory=list)
+    image_base64: str
+
+
+class DuelLeaderboardRow(BaseModel):
+    user_id: str
+    name: str
+    wins: int = 0
+    losses: int = 0
+    battles: int = 0
+
+
+def _combatant_dto(row: dict[str, Any]) -> BattleCombatantDTO:
+    return BattleCombatantDTO(
+        rank=row.get("rank"),
+        user_id=row.get("user_id"),
+        name=row.get("name", "—"),
+        species_id=row.get("species_id"),
+        species_name=row.get("species_name", ""),
+        level=int(row.get("level", 1)),
+        power=int(row.get("power", 0)),
+        equipped=row.get("equipped", {}) or {},
+    )
+
+
+async def _combatant_for_user(session: AsyncSession, target: User):
+    from core import pet_battle
+
+    state = await session.get(PetState, target.id)
+    return pet_battle.combatant_from_state(
+        name=target.display_name or "Скрамик",
+        user_id=str(target.id),
+        state_json=state.state_json if state is not None else None,
+        level=state.level if state is not None else None,
+        species_id=state.species_id if state is not None else None,
+    )
+
+
+async def _team_combatants(session: AsyncSession, team_id: uuid.UUID) -> list:
+    from core import pet_battle
+
+    rows = (
+        await session.execute(
+            select(TeamMembership, User)
+            .join(User, TeamMembership.user_id == User.id)
+            .where(
+                TeamMembership.team_id == team_id,
+                TeamMembership.tracker_match_status == "confirmed",
+                User.active.is_(True),
+            )
+            .order_by(User.display_name)
+        )
+    ).all()
+    out = []
+    for membership, user_row in rows:
+        state = await session.get(PetState, user_row.id)
+        out.append(
+            pet_battle.combatant_from_state(
+                name=user_row.display_name or membership.tracker_login or "Скрамик",
+                user_id=str(user_row.id),
+                state_json=state.state_json if state is not None else None,
+                level=state.level if state is not None else None,
+                species_id=state.species_id if state is not None else None,
+            )
+        )
+    return out
+
+
+async def _enqueue_battle_photo(
+    session: AsyncSession, user: User, png: bytes, caption: str
+) -> None:
+    """Best-effort: drop the leaderboard picture into the user's private Telegram chat."""
+    link_row = (
+        await session.execute(
+            select(TelegramUserLink, TelegramUser)
+            .join(TelegramUser, TelegramUser.id == TelegramUserLink.telegram_user_id)
+            .where(
+                TelegramUserLink.user_id == user.id,
+                TelegramUserLink.status == "active",
+                TelegramUserLink.installation_id.is_not(None),
+            )
+            .order_by(TelegramUserLink.created_at)
+        )
+    ).first()
+    if link_row is None:
+        return
+    link, tg_user = link_row
+    session.add(
+        TelegramOutbox(
+            team_id=link.team_id,
+            installation_id=link.installation_id,
+            category="agent_reply",
+            target_chat_id=tg_user.external_user_id,  # private chat id == user id
+            target_user_id=tg_user.external_user_id,
+            dedupe_key=f"telegram:battle-app:{uuid.uuid4()}",
+            priority=100,
+            status="pending",
+            attempts=0,
+            payload={
+                "method": "sendPhoto",
+                "photo_b64": base64.b64encode(png).decode("ascii"),
+                "caption": caption,
+                "metadata": {},
+            },
+        )
+    )
+
+
+@app.post("/me/battle/team", response_model=BattleRoyaleResponse)
+async def battle_team(user: User = Depends(current_user)) -> BattleRoyaleResponse:
+    """Run a team royale, return the leaderboard image, and post it to the chat."""
+    from core import battle_image, pet_battle
+
+    async with get_session() as session:
+        membership = await _primary_membership(session, user)
+        team_id = membership.team_id if membership else _default_team_id()
+        combatants = await _team_combatants(session, team_id)
+        if len(combatants) < 2:
+            raise HTTPException(status_code=400, detail="Нужно хотя бы двое скрамиков в команде")
+        team = await session.get(Team, team_id)
+        team_name = (team.name if team else None) or "команда"
+
+        royale = pet_battle.run_royale(combatants)
+        png = battle_image.render_leaderboard_png(team_name, royale["ranked"])
+        caption = _royale_caption(team_name, royale["ranked"])
+        await _enqueue_battle_photo(session, user, png, caption)
+
+    return BattleRoyaleResponse(
+        team_name=team_name,
+        ranked=[_combatant_dto(r) for r in royale["ranked"]],
+        winner=_combatant_dto(royale["winner"]) if royale["winner"] else None,
+        status_frames=royale["status_frames"],
+        image_base64=base64.b64encode(png).decode("ascii"),
+    )
+
+
+@app.get("/me/battle/leaderboard", response_model=list[BattleCombatantDTO])
+async def battle_leaderboard(user: User = Depends(current_user)) -> list[BattleCombatantDTO]:
+    """Current power ranking of the team (deterministic, no randomness)."""
+    from core import pet_battle
+
+    async with get_session() as session:
+        membership = await _primary_membership(session, user)
+        team_id = membership.team_id if membership else _default_team_id()
+        combatants = await _team_combatants(session, team_id)
+    ranked = sorted(combatants, key=pet_battle.combatant_power, reverse=True)
+    out: list[BattleCombatantDTO] = []
+    for i, c in enumerate(ranked):
+        out.append(
+            BattleCombatantDTO(
+                rank=i + 1,
+                user_id=c.user_id,
+                name=c.name,
+                species_id=c.species_id,
+                species_name=c.species_name,
+                level=c.level,
+                power=pet_battle.combatant_power(c),
+                equipped=c.equipped,
+            )
+        )
+    return out
+
+
+@app.post("/me/battle/duel/{opponent_user_id}", response_model=DuelResponse)
+async def battle_duel(
+    opponent_user_id: uuid.UUID, user: User = Depends(current_user)
+) -> DuelResponse:
+    """1-on-1 duel vs a teammate; persists the result for the duel leaderboard."""
+    from core import battle_image, pet_battle
+
+    if opponent_user_id == user.id:
+        raise HTTPException(status_code=400, detail="Нельзя вызвать самого себя")
+    async with get_session() as session:
+        opponent = await session.get(User, opponent_user_id)
+        if opponent is None or not opponent.active:
+            raise HTTPException(status_code=404, detail="Соперник не найден")
+        me_c = await _combatant_for_user(session, user)
+        opp_c = await _combatant_for_user(session, opponent)
+        duel = pet_battle.run_duel(me_c, opp_c)
+        png = battle_image.render_duel_png(duel)
+
+        winner_id = duel["winner"].get("user_id")
+        membership = await _primary_membership(session, user)
+        team_id = membership.team_id if membership else _default_team_id()
+        session.add(
+            PetBattle(
+                team_id=team_id,
+                mode="duel",
+                attacker_user_id=user.id,
+                defender_user_id=opponent_user_id,
+                winner_user_id=uuid.UUID(winner_id) if winner_id else None,
+                log_json={"log": duel["log"], "hp": duel["hp"]},
+            )
+        )
+
+    return DuelResponse(
+        winner=_combatant_dto(duel["winner"]),
+        loser=_combatant_dto(duel["loser"]),
+        log=duel["log"],
+        status_frames=duel["status_frames"],
+        image_base64=base64.b64encode(png).decode("ascii"),
+    )
+
+
+@app.get("/me/battle/duels", response_model=list[DuelLeaderboardRow])
+async def duel_leaderboard(user: User = Depends(current_user)) -> list[DuelLeaderboardRow]:
+    """Win/loss standings from recorded duels for the user's team."""
+    async with get_session() as session:
+        membership = await _primary_membership(session, user)
+        team_id = membership.team_id if membership else _default_team_id()
+        members = (
+            await session.execute(
+                select(User.id, User.display_name)
+                .join(TeamMembership, TeamMembership.user_id == User.id)
+                .where(TeamMembership.team_id == team_id)
+            )
+        ).all()
+        names = {str(uid): name for uid, name in members}
+        battles = (
+            await session.execute(
+                select(PetBattle).where(
+                    PetBattle.team_id == team_id, PetBattle.mode == "duel"
+                )
+            )
+        ).scalars().all()
+
+    stats: dict[str, dict[str, int]] = {
+        uid: {"wins": 0, "losses": 0, "battles": 0} for uid in names
+    }
+    for b in battles:
+        for uid in (b.attacker_user_id, b.defender_user_id):
+            if uid is None:
+                continue
+            s = stats.setdefault(str(uid), {"wins": 0, "losses": 0, "battles": 0})
+            s["battles"] += 1
+            if b.winner_user_id == uid:
+                s["wins"] += 1
+            else:
+                s["losses"] += 1
+    rows = [
+        DuelLeaderboardRow(
+            user_id=uid, name=names.get(uid, "—"),
+            wins=s["wins"], losses=s["losses"], battles=s["battles"],
+        )
+        for uid, s in stats.items()
+        if s["battles"] > 0
+    ]
+    rows.sort(key=lambda r: (r.wins, -r.losses), reverse=True)
+    return rows
+
+
+def _royale_caption(team_name: str, ranked: list[dict[str, Any]]) -> str:
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [f"🏆 Битва скрамиков — {team_name}", ""]
+    for r in ranked[:3]:
+        m = medals[r["rank"] - 1] if r["rank"] <= 3 else f"{r['rank']}."
+        lines.append(f"{m} {r['name']} ({r['species_name']}, ур.{r['level']}) — ⚡{r['power']}")
+    extra = len(ranked) - 3
+    if extra > 0:
+        lines.append(f"…и ещё {extra} на арене")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

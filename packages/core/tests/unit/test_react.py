@@ -740,3 +740,70 @@ class TestActionOnlyReport:
         ]
         report = _build_action_report(steps)
         assert report.startswith("Оставил комментарий в TEST-1")
+
+    def test_multiple_creates_all_reported(self):
+        """Regression: a turn with several creates lists them all, not just the last.
+
+        Reproduces the «Завёл DARKHORSE-362…» report that hid two sibling tasks
+        created in the same turn.
+        """
+        from core.react import _build_action_report
+
+        steps = [
+            {
+                "kind": "tool_result",
+                "tool_name": "tracker_board_snapshot",
+                "result": {"total": 7},
+            },
+            {
+                "kind": "tool_result",
+                "tool_name": "tracker_create_issue",
+                "result": {"key": "DARKHORSE-360", "summary": "1:1 с Аней", "assignee": "Аня"},
+            },
+            {
+                "kind": "tool_result",
+                "tool_name": "tracker_create_issue",
+                "result": {"key": "DARKHORSE-361", "summary": "1:1 с Борей", "assignee": "Боря"},
+            },
+            {
+                "kind": "tool_result",
+                "tool_name": "tracker_create_issue",
+                "result": {
+                    "key": "DARKHORSE-362",
+                    "summary": "1:1 с Сергеем",
+                    "assignee": "Сергей",
+                },
+            },
+        ]
+        report = _build_action_report(steps)
+        assert "DARKHORSE-360" in report
+        assert "DARKHORSE-361" in report
+        assert "DARKHORSE-362" in report
+        # The read-only board snapshot must not leak its bare «Готово» placeholder.
+        assert "Готово" not in report
+
+    def test_mixed_actions_all_reported(self):
+        """A create plus an edit plus a comment all surface, in order."""
+        from core.react import _build_action_report
+
+        steps = [
+            {
+                "kind": "tool_result",
+                "tool_name": "tracker_create_issue",
+                "result": {"key": "D-1", "summary": "Новая"},
+            },
+            {
+                "kind": "tool_result",
+                "tool_name": "tracker_patch_issue",
+                "result": {"key": "D-2", "summary": "Старая"},
+            },
+            {
+                "kind": "tool_result",
+                "tool_name": "tracker_comment_issue",
+                "result": {"issue_key": "D-2", "text": "контекст"},
+            },
+        ]
+        report = _build_action_report(steps)
+        assert "Завёл D-1" in report
+        assert "Поправил D-2" in report
+        assert "Оставил комментарий в D-2" in report

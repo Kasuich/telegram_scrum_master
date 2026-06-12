@@ -40,6 +40,9 @@ class GatewaySettings:
     # Public path appended to base_url for the registered webhook URL. The
     # reverse proxy maps this public path onto the app's internal /webhook route.
     webhook_path: str = "/webhook"
+    # Public HTTPS URL of the Telegram Mini App; sets the chat menu button on
+    # startup so users can launch the app. Empty → menu button not configured.
+    mini_app_url: str = ""
     worker_poll_interval: float = 0.5
     heartbeat_interval_seconds: float = 30.0
     lease_seconds: int = 60
@@ -84,6 +87,7 @@ class GatewaySettings:
             version=os.getenv("GATEWAY_VERSION", "0.1.0"),
             webhook_base_url=os.getenv("TELEGRAM_WEBHOOK_BASE_URL", "").strip(),
             webhook_path=os.getenv("TELEGRAM_WEBHOOK_PATH", "/webhook"),
+            mini_app_url=os.getenv("MINI_APP_URL", "").strip(),
             worker_poll_interval=float(os.getenv("GATEWAY_WORKER_POLL_INTERVAL", "0.5")),
             heartbeat_interval_seconds=float(os.getenv("GATEWAY_HEARTBEAT_INTERVAL", "30")),
             lease_seconds=int(os.getenv("TELEGRAM_OUTBOX_LEASE_SECONDS", "60")),

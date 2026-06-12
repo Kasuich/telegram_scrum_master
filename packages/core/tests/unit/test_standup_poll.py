@@ -96,6 +96,8 @@ def test_format_standup_poll_message_numbers_tasks() -> None:
 
     assert "1. TEST-1" in text
     assert "задача 1 закрыта" in text
+    assert "что вы сделали за последний час" in text
+    assert "Через 10 минут" in text
 
 
 def test_parse_standup_response() -> None:
@@ -218,6 +220,34 @@ async def test_load_registered_participants_returns_confirmed_links() -> None:
     assert participants[0].tracker_login == "alice"
     assert participants[0].board_id == "3"
     assert participants[0].board_name == "Product"
+
+
+class _StmtCaptureSession:
+    def __init__(self) -> None:
+        self.stmt = None
+
+    async def execute(self, stmt):
+        self.stmt = stmt
+        return _Result([])
+
+
+async def test_load_registered_participants_does_not_filter_on_installation_mode() -> None:
+    # Regression: installation.mode is transport bookkeeping (held "webhook" in
+    # prod). Filtering on it here yielded zero participants, so no standup polls
+    # were sent and the digest team-status section was empty. Stays consistent
+    # with deadline_reminders.load_reminder_recipients, which has no mode filter.
+    from sqlalchemy.dialects import postgresql
+
+    session = _StmtCaptureSession()
+    await load_registered_participants(session, team_id=uuid.uuid4())
+    sql = str(
+        session.stmt.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "telegram_installations.mode = 'workspace_bot'" not in sql
+    assert "team_memberships.tracker_match_status = 'confirmed'" in sql
 
 
 class _ResponseSession:
@@ -389,7 +419,7 @@ async def test_handle_standup_response_closes_all_active_snapshot_tasks() -> Non
     ]
 
 
-async def test_handle_standup_response_keeps_ambiguous_update() -> None:
+async def test_handle_standup_response_accepts_freeform_update() -> None:
     team_id = uuid.uuid4()
     telegram_user_id = uuid.uuid4()
     poll = TelegramStandupPoll(
@@ -409,10 +439,11 @@ async def test_handle_standup_response_keeps_ambiguous_update() -> None:
         _ResponseSession(poll),
         team_id=team_id,
         telegram_user_id=telegram_user_id,
-        text="done",
+        text="Провёл ревью, обсудил макеты и подготовил демо",
         client_factory=lambda: _FakeTracker(),
     )
 
-    assert reply is not None
-    assert poll.status == "ambiguous"
-    assert poll.applied_json["events"][0]["kind"] == "not_applied"
+    assert reply == "Принял статус. Добавлю его в ближайший командный отчёт."
+    assert poll.status == "answered"
+    assert poll.response_text == "Провёл ревью, обсудил макеты и подготовил демо"
+    assert poll.applied_json["events"] == []

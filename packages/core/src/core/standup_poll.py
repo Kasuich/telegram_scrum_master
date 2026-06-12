@@ -206,7 +206,11 @@ async def load_registered_participants(
             TelegramUserLink.status == "active",
             TeamMembership.tracker_match_status == "confirmed",
             TelegramInstallation.status == "active",
-            TelegramInstallation.mode == "workspace_bot",
+            # No TelegramInstallation.mode filter — kept consistent with
+            # deadline_reminders.load_reminder_recipients. installation.mode is
+            # transport bookkeeping (e.g. "webhook") and filtering on it here
+            # silently yielded zero participants, so no standup polls were sent
+            # and the digest team-status section was empty.
             TelegramUser.is_bot.is_(False),
             TelegramUser.is_blocked.is_(False),
         )
@@ -280,7 +284,8 @@ def format_standup_poll_message(
 ) -> str:
     board = f" ({participant.board_name})" if participant.board_name else ""
     lines = [
-        (f"{participant.display}, короткий статус перед дайджестом {local_hour}{board}:"),
+        f"⏱ **{participant.display}, что вы сделали за последний час?**",
+        f"Через 10 минут соберу командный отчёт{board}.",
         "",
     ]
     if issues:
@@ -913,9 +918,6 @@ async def handle_standup_response(
     text: str,
     client_factory: Callable[[], TrackerClient] = TrackerClient,
 ) -> str | None:
-    if not is_standup_response(text):
-        return None
-
     poll = await find_pending_poll_for_response(
         session,
         team_id=team_id,
@@ -956,16 +958,6 @@ async def handle_standup_response(
                             "error": str(exc),
                         }
                     )
-    else:
-        results.append(
-            {
-                "kind": "not_applied",
-                "text": text,
-                "ok": False,
-                "error": "ambiguous",
-            }
-        )
-
     responded_at = datetime.now(timezone.utc)
     events = [
         _event_from_result(actions[index] if index < len(actions) else None, result)
@@ -979,9 +971,11 @@ async def handle_standup_response(
         events=events,
         responded_at=responded_at,
     )
-    poll.status = "answered" if any(event.get("ok") for event in events) else "ambiguous"
+    poll.status = "answered"
     poll.responded_at = responded_at
     await session.flush()
+    if not actions:
+        return "Принял статус. Добавлю его в ближайший командный отчёт."
     return _format_apply_report(results)
 
 
