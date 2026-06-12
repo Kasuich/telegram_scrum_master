@@ -34,6 +34,11 @@ class GatewaySettings:
     spool_path: Path = Path("/var/lib/telegram-gateway/spool.db")
     gateway_id: str = "telegram-gateway"
     version: str = "0.1.0"
+    # Public base URL Telegram calls (e.g. https://misisdarkhorse.ru). Empty in
+    # tests / polling-only deployments — set_webhook is skipped when it is unset.
+    webhook_base_url: str = ""
+    # Public path appended to base_url for the registered webhook URL. The
+    # reverse proxy maps this public path onto the app's internal /webhook route.
     webhook_path: str = "/webhook"
     worker_poll_interval: float = 0.5
     heartbeat_interval_seconds: float = 30.0
@@ -52,6 +57,14 @@ class GatewaySettings:
     stream_status_max_frames: int = 12
     stream_min_chars: int = 16
 
+    @property
+    def webhook_url(self) -> str:
+        """Full HTTPS URL registered with Telegram via setWebhook, or empty if
+        no public base URL is configured."""
+        if not self.webhook_base_url:
+            return ""
+        return f"{self.webhook_base_url.rstrip('/')}{self.webhook_path}"
+
     @classmethod
     def from_env(cls) -> "GatewaySettings":
         transport_mode = os.getenv("TELEGRAM_TRANSPORT_MODE", "webhook").strip().lower()
@@ -69,6 +82,7 @@ class GatewaySettings:
             ),
             gateway_id=os.getenv("GATEWAY_ID", "telegram-gateway"),
             version=os.getenv("GATEWAY_VERSION", "0.1.0"),
+            webhook_base_url=os.getenv("TELEGRAM_WEBHOOK_BASE_URL", "").strip(),
             webhook_path=os.getenv("TELEGRAM_WEBHOOK_PATH", "/webhook"),
             worker_poll_interval=float(os.getenv("GATEWAY_WORKER_POLL_INTERVAL", "0.5")),
             heartbeat_interval_seconds=float(os.getenv("GATEWAY_HEARTBEAT_INTERVAL", "30")),

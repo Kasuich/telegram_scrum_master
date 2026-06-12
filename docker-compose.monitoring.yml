@@ -49,6 +49,9 @@ services:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
       GF_SERVER_ROOT_URL: ${GRAFANA_URL:-http://localhost:3000}
+      # Served behind the tunnel nginx under /grafana; enabled when GRAFANA_URL
+      # carries a sub-path. Harmless when GRAFANA_URL is a bare host.
+      GF_SERVER_SERVE_FROM_SUB_PATH: ${GRAFANA_SERVE_FROM_SUB_PATH:-false}
       GF_UNIFIED_ALERTING_ENABLED: "true"
       GF_ALLOW_LOADING_UNSIGNED_PLUGINS: "marcusolsson-gantt-panel,auxmoney-waterfall-panel"
       GF_INSTALL_PLUGINS: "marcusolsson-gantt-panel,auxmoney-waterfall-panel"
