@@ -302,6 +302,31 @@ class TestTelegramBridge:
         assert r.json()["update_id"] == "u1"
         mocked.assert_awaited()
 
+    def test_ingest_records_latency_metrics(self, client):
+        from platform_api.telegram_bridge import BRIDGE_INGEST_LATENCY, BRIDGE_INGEST_TOTAL
+
+        body = (
+            b'{"team_id":"00000000-0000-0000-0000-000000000001",'
+            b'"installation_id":"00000000-0000-0000-0000-000000000002",'
+            b'"update_id":2,"payload":{"message":{"message_id":43}}}'
+        )
+        before = BRIDGE_INGEST_TOTAL.labels(status="ok")._value.get()  # noqa: SLF001
+        with patch(
+            "platform_api.telegram_bridge.ingest_event",
+            AsyncMock(return_value={"update_id": "u2", "duplicate": False}),
+        ):
+            r = client.post(
+                "/internal/telegram/v1/events:ingest",
+                content=body,
+                headers={
+                    **_bridge_headers("/internal/telegram/v1/events:ingest", body),
+                    "content-type": "application/json",
+                },
+            )
+        assert r.status_code == 200
+        assert BRIDGE_INGEST_TOTAL.labels(status="ok")._value.get() == before + 1  # noqa: SLF001
+        assert BRIDGE_INGEST_LATENCY._sum.get() > 0  # noqa: SLF001
+
     def test_lease_delegates_to_helper(self, client):
         body = b'{"worker_id":"gw-1","limit":2,"lease_seconds":60}'
         with patch(

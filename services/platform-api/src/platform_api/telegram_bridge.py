@@ -19,7 +19,6 @@ from core.models import (
     PetState,
     Team,
     TeamMembership,
-    User,
     TelegramBusinessConnection,
     TelegramCallbackToken,
     TelegramChat,
@@ -30,6 +29,7 @@ from core.models import (
     TelegramOutbox,
     TelegramUpdate,
     TelegramUser,
+    User,
 )
 from core.standup_poll import handle_standup_response
 from core.telemost_shortcut import (
@@ -81,7 +81,18 @@ try:
     BRIDGE_INGEST_LATENCY = Histogram(
         "telegram_bridge_ingest_latency_seconds",
         "Ingest request latency",
+        buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0],
+    )
+    BRIDGE_PRE_AGENT_LATENCY = Histogram(
+        "telegram_bridge_pre_agent_seconds",
+        "Time from route start to agent invoke (auth, routing, thinking enqueue)",
         buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
+    )
+    BRIDGE_AGENT_INVOKE_LATENCY = Histogram(
+        "telegram_bridge_agent_invoke_seconds",
+        "Agent rpc invoke latency inside telegram ingest",
+        ["agent"],
+        buckets=[0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0],
     )
     BRIDGE_LEASE_TOTAL = Counter(
         "telegram_bridge_lease_total",
@@ -122,7 +133,24 @@ try:
 except ImportError:
     BRIDGE_INGEST_TOTAL = BRIDGE_INGEST_LATENCY = BRIDGE_LEASE_TOTAL = BRIDGE_ACK_TOTAL = None
     OUTBOX_PENDING = OUTBOX_LEASED = OUTBOX_DEAD_LETTER = BUSINESS_CONNECTION_TOTAL = None
-    BRIDGE_E2E_LATENCY = None
+    BRIDGE_E2E_LATENCY = BRIDGE_PRE_AGENT_LATENCY = BRIDGE_AGENT_INVOKE_LATENCY = None
+
+
+async def _invoke_agent_timed(
+    agent: str,
+    body: str,
+    session_id: str,
+    *,
+    context: InvocationContext,
+) -> Any:
+    """rpc_client.invoke with prometheus timing for telegram ingest."""
+    if BRIDGE_AGENT_INVOKE_LATENCY is not None:
+        started = time.monotonic()
+        try:
+            return await rpc_client.invoke(agent, body, session_id, context=context)
+        finally:
+            BRIDGE_AGENT_INVOKE_LATENCY.labels(agent=agent).observe(time.monotonic() - started)
+    return await rpc_client.invoke(agent, body, session_id, context=context)
 
 
 class HeartbeatRequest(BaseModel):
@@ -769,6 +797,7 @@ async def _route_inbound_message(
     telegram_user: TelegramUser | None,
     message_payload: dict[str, Any],
 ) -> dict[str, Any] | None:
+    route_started = time.monotonic()
     if not _should_route_message(installation, chat, message_payload):
         return None
 
@@ -896,7 +925,9 @@ async def _route_inbound_message(
                 message=message,
                 telegram_user=telegram_user,
             )
-            result = await rpc_client.invoke(
+            if BRIDGE_PRE_AGENT_LATENCY is not None:
+                BRIDGE_PRE_AGENT_LATENCY.observe(time.monotonic() - route_started)
+            result = await _invoke_agent_timed(
                 "audit_agent",
                 body,
                 _telegram_session_id(installation, message),
@@ -910,7 +941,9 @@ async def _route_inbound_message(
             message=message,
             telegram_user=telegram_user,
         )
-        result = await rpc_client.invoke(
+        if BRIDGE_PRE_AGENT_LATENCY is not None:
+            BRIDGE_PRE_AGENT_LATENCY.observe(time.monotonic() - route_started)
+        result = await _invoke_agent_timed(
             "pm_agent",
             body,
             _telegram_session_id(installation, message),
@@ -1699,7 +1732,22 @@ async def ingest_events(
     _auth: None = Depends(verify_bridge_request),
     session: AsyncSession = Depends(_db_session),
 ) -> dict[str, Any]:
-    return await ingest_event(session, payload)
+    started = time.monotonic()
+    status = "ok"
+    try:
+        return await ingest_event(session, payload)
+    except HTTPException:
+        status = "error"
+        raise
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        elapsed = time.monotonic() - started
+        if BRIDGE_INGEST_TOTAL is not None:
+            BRIDGE_INGEST_TOTAL.labels(status=status).inc()
+        if BRIDGE_INGEST_LATENCY is not None:
+            BRIDGE_INGEST_LATENCY.observe(elapsed)
 
 
 @router.post("/outbox:lease", response_model=LeaseResponse)

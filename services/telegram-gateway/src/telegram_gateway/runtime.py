@@ -33,6 +33,14 @@ DELIVER_LATENCY = Histogram(
     "telegram_gateway_deliver_latency_seconds",
     "Time to deliver one item",
 )
+DRAIN_LOOP_LATENCY = Histogram(
+    "telegram_gateway_drain_loop_seconds",
+    "One drain loop iteration (poll + forward spool)",
+)
+DELIVER_LOOP_LATENCY = Histogram(
+    "telegram_gateway_deliver_loop_seconds",
+    "One deliver loop iteration (lease + send outbox)",
+)
 
 
 @dataclass(slots=True)
@@ -496,19 +504,18 @@ class GatewayRuntime:
         except BotAPIError:
             pass
 
-    async def run(self, stop_event: asyncio.Event) -> None:
-        await self.sync_transport_mode()
-        await self.register_commands()
+    async def _drain_loop(self, stop_event: asyncio.Event) -> None:
+        """Poll Telegram and forward spool → main. Runs concurrently with deliver."""
         while not stop_event.is_set():
-            try:
-                await self.poll_updates_once(
-                    timeout=max(1, int(self.settings.heartbeat_interval_seconds))
-                )
-                await self.drain_once()
-                await self.deliver_once()
-                await self.heartbeat_once()
-            except Exception:
-                pass
+            with DRAIN_LOOP_LATENCY.time():
+                try:
+                    await self.poll_updates_once(
+                        timeout=max(1, int(self.settings.heartbeat_interval_seconds))
+                    )
+                    await self.drain_once()
+                    await self.heartbeat_once()
+                except Exception:
+                    pass
             try:
                 await asyncio.wait_for(
                     stop_event.wait(),
@@ -516,6 +523,30 @@ class GatewayRuntime:
                 )
             except TimeoutError:
                 continue
+
+    async def _deliver_loop(self, stop_event: asyncio.Event) -> None:
+        """Lease outbox and send via Bot API while ingest/agent may still be running."""
+        while not stop_event.is_set():
+            with DELIVER_LOOP_LATENCY.time():
+                try:
+                    await self.deliver_once()
+                except Exception:
+                    pass
+            try:
+                await asyncio.wait_for(
+                    stop_event.wait(),
+                    timeout=self.settings.worker_poll_interval,
+                )
+            except TimeoutError:
+                continue
+
+    async def run(self, stop_event: asyncio.Event) -> None:
+        await self.sync_transport_mode()
+        await self.register_commands()
+        await asyncio.gather(
+            self._drain_loop(stop_event),
+            self._deliver_loop(stop_event),
+        )
 
     async def close(self) -> None:
         if self.bridge is not None:
