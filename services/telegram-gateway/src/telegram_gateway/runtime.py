@@ -93,12 +93,21 @@ class GatewayRuntime:
         if self.bot_client is None:
             return
         commands = [
+            {"command": "battle", "description": "⚔️ Битва скрамиков (турнир команды)"},
             {"command": "audit", "description": "Аудит доски (для тимлидов)"},
         ]
         try:
             await self.bot_client.set_my_commands(commands)
         except BotAPIError:
             pass
+        # Launch button for the Telegram Mini App (best-effort; needs a public URL).
+        if self.settings.mini_app_url:
+            try:
+                await self.bot_client.set_chat_menu_button(
+                    url=self.settings.mini_app_url, text="🎮 Скрамики"
+                )
+            except BotAPIError:
+                pass
 
     async def resolve_installation_once(self) -> None:
         if self.bridge is None or self.bot_client is None:
@@ -284,6 +293,27 @@ class GatewayRuntime:
                 reply_markup=item.payload.get("reply_markup"),
                 parse_mode="HTML",
             )
+        elif method == "sendPhoto":
+            import base64
+
+            photo_b64 = item.payload.get("photo_b64")
+            if not photo_b64:
+                return None
+            photo = base64.b64decode(photo_b64)
+            chat_id = item.target_chat_id or item.target_user_id
+            # The picture replaces any "thinking"/battle status in this chat.
+            await self._clear_status(str(chat_id))
+            raw_caption = str(item.payload.get("caption", ""))
+            caption = render_telegram_html(raw_caption) if raw_caption else None
+            return await self.bot_client.send_photo(
+                chat_id=chat_id,
+                photo_bytes=photo,
+                caption=caption,
+                reply_to_message_id=item.payload.get("reply_to_message_id"),
+                message_thread_id=item.payload.get("message_thread_id"),
+                reply_markup=item.payload.get("reply_markup"),
+                parse_mode="HTML",
+            )
         elif method == "answerCallbackQuery":
             return await self.bot_client.answer_callback_query(
                 callback_query_id=item.payload.get("callback_query_id", ""),
@@ -328,13 +358,16 @@ class GatewayRuntime:
         chat_id = item.target_chat_id or item.target_user_id
         reply_to = item.payload.get("reply_to_message_id")
         thread_id = item.payload.get("message_thread_id")
+        # Battle (and similar) flows can supply their own flavorful beats; otherwise
+        # we fall back to the generic "thinking" animation.
+        frames = (item.payload.get("metadata") or {}).get("status_frames") or None
 
         # A late status is worse than none: if the reply already cleared this
         # chat (fast agent), don't post an orphan.
         try:
             status = await self.bot_client.send_message(
                 chat_id=chat_id,
-                text=thinking_html(0, self.rng),
+                text=frames[0] if frames else thinking_html(0, self.rng),
                 reply_to_message_id=reply_to,
                 message_thread_id=thread_id,
                 parse_mode="HTML",
@@ -344,13 +377,28 @@ class GatewayRuntime:
 
         key = str(chat_id)
         await self._clear_status(key)  # never keep two statuses for one chat
-        task = asyncio.create_task(self._animate_status(key, status.message_id))
+        task = asyncio.create_task(self._animate_status(key, status.message_id, frames))
         self.status_messages[key] = (status.message_id, task)
         return status
 
-    async def _animate_status(self, chat_id: str, message_id: str) -> None:
-        """Edit the status message through stage beats until cancelled."""
+    async def _animate_status(
+        self, chat_id: str, message_id: str, frames: list[str] | None = None
+    ) -> None:
+        """Edit the status message through stage beats until cancelled.
+
+        With explicit ``frames`` (e.g. a battle log) it walks them once; otherwise it
+        cycles the generic "thinking" beats up to the configured frame cap."""
         if self.bot_client is None:
+            return
+        if frames:
+            for frame in frames[1:]:
+                await self.sleep(self.settings.stream_status_interval)
+                try:
+                    await self.bot_client.edit_message_text(
+                        chat_id=chat_id, message_id=message_id, text=frame, parse_mode="HTML"
+                    )
+                except BotAPIError:
+                    continue
             return
         for index in range(1, self.settings.stream_status_max_frames):
             await self.sleep(self.settings.stream_status_interval)

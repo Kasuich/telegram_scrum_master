@@ -1,0 +1,229 @@
+/* Telegram Mini App — self-contained mobile dark theme (independent of the
+   desktop console styles so it renders predictably inside the TG webview). */
+
+.tg-root {
+  --tg-bg: #0f1117;
+  --tg-panel: #1a1d27;
+  --tg-panel-2: #222633;
+  --tg-ink: #e7ebf3;
+  --tg-mute: #949eAD;
+  --tg-accent: #7c5cff;
+  --tg-accent-2: #56cc82;
+  --tg-gold: #f5b301;
+  --tg-line: #2b2f3d;
+  background: var(--tg-bg);
+  color: var(--tg-ink);
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  padding-bottom: 76px;
+}
+
+.tg-screen {
+  padding: 16px 14px 24px;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.tg-h1 {
+  font-size: 22px;
+  font-weight: 800;
+  margin: 4px 0 2px;
+}
+.tg-sub {
+  color: var(--tg-mute);
+  font-size: 13px;
+  margin-bottom: 14px;
+}
+
+.tg-card {
+  background: var(--tg-panel);
+  border: 1px solid var(--tg-line);
+  border-radius: 18px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.tg-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.tg-row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  border-radius: 14px;
+  padding: 14px 16px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--tg-accent);
+  cursor: pointer;
+  transition: filter 0.15s, transform 0.05s;
+}
+.tg-btn:active {
+  transform: scale(0.98);
+}
+.tg-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.tg-btn.secondary {
+  background: var(--tg-panel-2);
+  color: var(--tg-ink);
+  border: 1px solid var(--tg-line);
+}
+.tg-btn.gold {
+  background: linear-gradient(135deg, #f5b301, #ff8a00);
+  color: #1a1d27;
+}
+.tg-btn.small {
+  width: auto;
+  padding: 8px 14px;
+  font-size: 13px;
+  border-radius: 10px;
+}
+
+.tg-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--tg-panel-2);
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tg-stat {
+  margin: 8px 0;
+}
+.tg-stat-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--tg-mute);
+  margin-bottom: 4px;
+}
+.tg-bar {
+  height: 8px;
+  border-radius: 6px;
+  background: var(--tg-panel-2);
+  overflow: hidden;
+}
+.tg-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 6px;
+  background: var(--tg-accent);
+}
+
+.tg-list-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--tg-line);
+}
+.tg-list-item:last-child {
+  border-bottom: none;
+}
+.tg-rank {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 13px;
+  color: #15171f;
+  background: #3c4252;
+  flex: 0 0 auto;
+}
+.tg-rank.g1 { background: #f5b301; }
+.tg-rank.g2 { background: #cdd3da; }
+.tg-rank.g3 { background: #cd7f32; }
+
+.tg-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  background: rgba(15, 17, 23, 0.96);
+  border-top: 1px solid var(--tg-line);
+  backdrop-filter: blur(8px);
+  padding: 8px 4px calc(8px + env(safe-area-inset-bottom));
+}
+.tg-nav button {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--tg-mute);
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 4px;
+  cursor: pointer;
+}
+.tg-nav button.active {
+  color: var(--tg-accent);
+}
+.tg-nav .ico {
+  font-size: 19px;
+  line-height: 1;
+}
+
+.tg-status {
+  font-size: 15px;
+  text-align: center;
+  padding: 18px;
+  color: var(--tg-ink);
+  min-height: 56px;
+}
+.tg-battle-img {
+  width: 100%;
+  border-radius: 16px;
+  border: 1px solid var(--tg-line);
+  display: block;
+}
+.tg-log {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--tg-mute);
+  max-height: 180px;
+  overflow-y: auto;
+}
+.tg-center {
+  text-align: center;
+  padding: 40px 16px;
+  color: var(--tg-mute);
+}
+.tg-error {
+  color: #ff8a8a;
+}
+.tg-muted { color: var(--tg-mute); }
+.tg-small { font-size: 12px; }
+.tg-name { font-weight: 700; font-size: 15px; }
+.tg-spin {
+  width: 26px; height: 26px; margin: 0 auto;
+  border: 3px solid var(--tg-panel-2);
+  border-top-color: var(--tg-accent);
+  border-radius: 50%;
+  animation: tg-spin 0.8s linear infinite;
+}
+@keyframes tg-spin { to { transform: rotate(360deg); } }

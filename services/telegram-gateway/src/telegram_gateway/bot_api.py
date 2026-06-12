@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -172,6 +173,69 @@ class TelegramBotClient:
             sent_at=datetime.now(tz=timezone.utc),
         )
 
+    async def send_photo(
+        self,
+        chat_id: str | int,
+        photo_bytes: bytes,
+        *,
+        caption: str | None = None,
+        filename: str = "battle.png",
+        reply_to_message_id: str | int | None = None,
+        message_thread_id: int | None = None,
+        reply_markup: dict[str, object] | None = None,
+        parse_mode: str | None = None,
+    ) -> SendResult:
+        """Upload an image via multipart ``sendPhoto`` (caption ≤1024 chars)."""
+        data: dict[str, object] = {"chat_id": str(chat_id)}
+        if caption:
+            data["caption"] = caption[:1024]
+        if reply_to_message_id:
+            data["reply_to_message_id"] = str(reply_to_message_id)
+        if message_thread_id:
+            data["message_thread_id"] = str(message_thread_id)
+        if reply_markup:
+            data["reply_markup"] = json.dumps(reply_markup)
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+        files = {"photo": (filename, photo_bytes, "image/png")}
+        result = await self._request_multipart("sendPhoto", data=data, files=files)
+        return SendResult(
+            message_id=str(result.get("message_id")),
+            chat_id=str(result.get("chat", {}).get("id", chat_id)),
+            text=caption or "",
+            sent_at=datetime.now(tz=timezone.utc),
+        )
+
+    async def _request_multipart(
+        self,
+        method: str,
+        *,
+        data: dict[str, object],
+        files: dict[str, object],
+    ) -> dict[str, object]:
+        start = time.monotonic()
+        elapsed = 0.0
+        status = "error"
+        try:
+            response = await self._client.post(
+                self._get_url(method),
+                data=data,
+                files=files,
+            )
+            elapsed = time.monotonic() - start
+            result = response.json()
+            if not result.get("ok", False):
+                self._handle_error(result, response.status_code)
+            status = "success"
+            payload = result.get("result", {})
+            return dict(payload) if isinstance(payload, dict) else {"success": payload}
+        except httpx.HTTPError as exc:
+            elapsed = time.monotonic() - start
+            raise BotAPIError(status_code=500, description=str(exc), permanent=False) from exc
+        finally:
+            _bot_api_total.labels(method=method, status=status).inc()
+            _bot_api_latency_seconds.labels(method=method).observe(elapsed)
+
     async def send_message_draft(
         self,
         chat_id: str | int,
@@ -304,6 +368,13 @@ class TelegramBotClient:
     async def set_my_commands(self, commands: list[dict[str, str]]) -> None:
         """Register the bot command list shown in Telegram's "/" menu."""
         await self._request("setMyCommands", {"commands": commands})
+
+    async def set_chat_menu_button(self, *, url: str, text: str = "Открыть") -> None:
+        """Set the global chat menu button to launch a Telegram Mini App (web_app)."""
+        await self._request(
+            "setChatMenuButton",
+            {"menu_button": {"type": "web_app", "text": text, "web_app": {"url": url}}},
+        )
 
 
 # ── Metrics ─────────────────────────────────────────────────────────────────────

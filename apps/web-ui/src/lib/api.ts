@@ -309,6 +309,41 @@ export interface ChatResponse {
   steps: TraceStep[];
 }
 
+export interface BattleCombatant {
+  rank: number | null;
+  user_id: string | null;
+  name: string;
+  species_id: string | null;
+  species_name: string;
+  level: number;
+  power: number;
+  equipped: Record<string, string>;
+}
+
+export interface BattleRoyale {
+  team_name: string;
+  ranked: BattleCombatant[];
+  winner: BattleCombatant | null;
+  status_frames: string[];
+  image_base64: string;
+}
+
+export interface Duel {
+  winner: BattleCombatant;
+  loser: BattleCombatant;
+  log: string[];
+  status_frames: string[];
+  image_base64: string;
+}
+
+export interface DuelRow {
+  user_id: string;
+  name: string;
+  wins: number;
+  losses: number;
+  battles: number;
+}
+
 const API_BASE = import.meta.env.VITE_CONSOLE_API_URL ?? "/api";
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -430,6 +465,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ message, session_id }),
     }),
+  // Telegram Mini App
+  authTelegramWebApp: (initData: string) =>
+    request<{ user: User }>("/auth/telegram/webapp", {
+      method: "POST",
+      body: JSON.stringify({ init_data: initData }),
+    }),
+  battleTeam: () => request<BattleRoyale>("/me/battle/team", { method: "POST" }),
+  battleLeaderboard: () => request<BattleCombatant[]>("/me/battle/leaderboard"),
+  battleDuel: (opponentId: string) =>
+    request<Duel>(`/me/battle/duel/${opponentId}`, { method: "POST" }),
+  duelLeaderboard: () => request<DuelRow[]>("/me/battle/duels"),
 };
 
 function localizeError(status: number, raw: string): string {

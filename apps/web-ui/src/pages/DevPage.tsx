@@ -6,6 +6,7 @@ import { AgentConfigPanel } from "../components/AgentConfigPanel";
 import { AgentToolsPanel } from "../components/AgentToolsPanel";
 import { EnabledBadge, RiskBadge, StatusBadge } from "../components/Badge";
 import { TraceTimeline } from "../components/TraceTimeline";
+import { agentLogo } from "../lib/agentLogos";
 import { api, type AgentListItem } from "../lib/api";
 import { formatDate, shortId } from "../lib/format";
 
@@ -145,7 +146,10 @@ function AgentRow({
   return (
     <button className={`list-row text-left ${selected ? "selected" : ""}`} onClick={onClick}>
       <div className="flex items-center justify-between gap-2">
-        <span className="truncate font-medium">{agent.name}</span>
+        <span className="flex min-w-0 items-center gap-2">
+          <img src={agentLogo(agent.name)} alt="" width={22} height={22} className="rounded" />
+          <span className="truncate font-medium">{agent.name}</span>
+        </span>
         <EnabledBadge enabled={agent.enabled} />
       </div>
       <div className="mt-2 flex items-center gap-2 text-xs text-muted">
