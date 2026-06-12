@@ -117,6 +117,10 @@ services:
       CONSOLE_LOGIN_CODE_SECRET: ${CONSOLE_LOGIN_CODE_SECRET}
       CONSOLE_CORS_ORIGINS: ${CONSOLE_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       CONSOLE_AVATAR_DIR: ${CONSOLE_AVATAR_DIR:-/data/avatars}
+      CONSOLE_SECURE_COOKIES: ${CONSOLE_SECURE_COOKIES:-false}
+      # Telegram Mini App: bot token validates WebApp initData; dev flag skips the check.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TG_WEBAPP_DEV: ${TG_WEBAPP_DEV:-false}
       PET_FAST_MODE: ${PET_FAST_MODE:-true}
       PET_DEV_TOOLS: ${PET_DEV_TOOLS:-false}
       PET_XP_PER_RESOLVED: ${PET_XP_PER_RESOLVED:-}
