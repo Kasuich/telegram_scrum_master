@@ -613,8 +613,9 @@ flowchart TB
 **Зависит от:** transport context в `invoke` и durable confirm lookup в Треке B.
 **DoD:** Telegram работает через второй сервер; можно читать разрешённые чаты, поговорить с агентом, запросить уточнение, получить личное уведомление и подтвердить действие кнопкой после рестарта любого сервиса.
 
-Полная декомпозиция, схема данных, двухсерверный deployment и методика тестирования:
-[`docs/TRACK_A_TELEGRAM_PLAN.md`](TRACK_A_TELEGRAM_PLAN.md).
+Двухсерверный deployment и эксплуатация Telegram-контура:
+[`TELEGRAM_SETUP_GUIDE.md`](TELEGRAM_SETUP_GUIDE.md),
+[`DEPLOYMENT.md`](DEPLOYMENT.md), [`runbooks/telegram-gateway-runbook.md`](runbooks/telegram-gateway-runbook.md).
 
 ### 🅱 Трек B — Ядро рантайма (`pm-orchestrator` + `core`)
 **Слой:** «мозг» / runtime. Внутренности оркестратора и `core`.

@@ -1,6 +1,8 @@
+# --- secrets & env ---
 .env*
 !.env.example
 
+# --- python / node build artefacts ---
 .venv/
 node_modules/
 __pycache__/
@@ -10,4 +12,15 @@ __pycache__/
 .ruff_cache/
 dist/
 *.egg-info/
-docs/AGENT_HANDOFF.md
+
+# --- OS / editor junk ---
+.DS_Store
+
+# --- local-only working dirs (not part of the repo) ---
+backups/
+knowledge-base/
+
+# --- throwaway debugging scratch ---
+mcp_test_*.txt
+mcp_test_*.log
+test_mcp_*.py

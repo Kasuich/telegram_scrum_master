@@ -1,275 +1,349 @@
 # Архитектура PM Agent Platform
 
-## Обзор
-
-PM Agent Platform — мультиагентная платформа для управления проектами поверх Яндекс Трекера. Агент понимает запросы на естественном языке, вызывает инструменты Трекера и запрашивает подтверждение у пользователя для рискованных операций.
-
----
-
-## Компоненты системы
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Пользователь                            │
-│                   (HTTP curl / Swagger UI)                       │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ HTTP :8000
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      platform-api                               │
-│              Тонкий HTTP транспортный слой                      │
-│   POST /chat   POST /confirm/{id}   GET /actions   GET /metrics │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ JSON-RPC 2.0 POST /rpc
-                             │ (in-process в dev, HTTP в Docker)
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     pm-orchestrator :8001                       │
-│                        Мозг системы                             │
-│                                                                 │
-│  ┌─────────────────┐   ┌────────────────────────────────────┐  │
-│  │  OrchestratorService  │   │         agents/              │  │
-│  │  invoke / resume      │   │   pm_agent.py  ← BaseAgent   │  │
-│  │  confirm_index        │   │   my_agent.py  ← BaseAgent   │  │
-│  └──────────┬────────────┘   │   (автодискавери при старте) │  │
-│             │                └────────────────────────────────┘  │
-│             ▼                                                   │
-│  ┌─────────────────┐         ┌───────────────────────────────┐  │
-│  │   ReActRunner   │         │       ToolRegistry            │  │
-│  │  LLM → tool     │ ──────► │  @platform_tool decorator    │  │
-│  │  → confirm_wait │         │  tracker_get_issue  (low)     │  │
-│  │  → resume       │         │  tracker_create_issue (medium)│  │
-│  └─────────────────┘         │  tracker_close_issue (high)   │  │
-└────────────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     Яндекс Трекер API v3                        │
-│              REST https://api.tracker.yandex.net/v3/           │
-└─────────────────────────────────────────────────────────────────┘
-```
+> Полная карта системы: сервисы, потоки данных, рантайм агента, расписания и
+> Telegram-контур. Для пошаговой установки см. корневой **[README](../README.md)**,
+> для справочников — **[docs/README.md](README.md)**.
 
 ---
 
-## Стек технологий
+## 1. Что это
+
+**PM Agent Platform** — мультиагентная платформа-«виртуальный проджект-менеджер»
+поверх Яндекс Трекера. Система понимает запросы на естественном языке (через чат,
+Telegram или веб-консоль), сама работает с задачами, спринтами и досками Трекера,
+а перед рискованными действиями запрашивает подтверждение у человека.
+
+Помимо ядра «агент ↔ Трекер» платформа включает:
+
+- **Telegram-контур** — бот в группах, Mini App, стендап-опросы, дайджесты, напоминания о дедлайнах;
+- **Meeting Capture** — запись и расшифровка встреч Telemost с авто-саммари;
+- **Геймификацию** — питомец-тамагочи «Скрамик» и «Битва скрамиков»;
+- **Веб-консоль** — ролевой интерфейс (доска, команда, настройка агентов, аудит действий);
+- **«Штурм»** — фреймворк оценки качества агента (LLM-as-a-judge);
+- **Observability** — Prometheus + Grafana + Loki + Alertmanager.
+
+---
+
+## 2. Карта компонентов
+
+```mermaid
+flowchart TB
+    subgraph clients["Клиенты"]
+        WEB["Веб-консоль<br/>React SPA :5173"]
+        TG["Telegram<br/>бот + Mini App"]
+        CURL["HTTP / curl / Swagger"]
+    end
+
+    subgraph edge["Публичный контур (отдельный сервер)"]
+        GW["telegram-gateway :8080<br/>webhook + outbox spool"]
+        NGINX["nginx + TLS<br/>misisdarkhorse.ru"]
+    end
+
+    subgraph core_stack["Основной стек (Docker Compose)"]
+        CONSOLE["console-api :8002<br/>бэкенд консоли"]
+        PAPI["platform-api :8000<br/>HTTP BFF + Telegram bridge"]
+        ORC["pm-orchestrator :8001<br/>агенты + ReAct + Scheduler"]
+        MEET["meeting-capture :8003<br/>запись/расшифровка встреч"]
+        EVAL["eval-runner :8004<br/>прогон оценок"]
+        PG[("PostgreSQL 16")]
+    end
+
+    subgraph external["Внешние сервисы"]
+        MCP["Tracker MCP gateway"]
+        TRACKER["Яндекс Трекер REST v3"]
+        LLM["LLM: OpenRouter (Gemini)<br/>+ Yandex Cloud"]
+        SK["Yandex SpeechKit"]
+        S3["S3 (артефакты встреч)"]
+    end
+
+    WEB --> NGINX --> CONSOLE
+    TG --> NGINX --> GW
+    CURL --> PAPI
+
+    GW <-->|"HMAC bridge"| PAPI
+    CONSOLE --> PAPI
+    PAPI -->|JSON-RPC| ORC
+    EVAL -->|JSON-RPC| ORC
+    MEET -->|JSON-RPC| ORC
+
+    ORC --> MCP --> TRACKER
+    ORC --> LLM
+    CONSOLE --> TRACKER
+    MEET --> SK
+    MEET --> S3
+
+    CONSOLE --- PG
+    PAPI --- PG
+    ORC --- PG
+    MEET --- PG
+    EVAL --- PG
+```
+
+Стрелки «`--- PG`» означают общую схему PostgreSQL: все сервисы работают с одной
+базой через пакет `core` (см. [Модель данных](DATA_MODEL.md)).
+
+---
+
+## 3. Сервисы одним взглядом
+
+| Сервис | Порт | Роль | Подробно |
+|--------|------|------|----------|
+| **pm-orchestrator** | 8001 | «Мозг»: автодискавери агентов, ReAct-рантайм, Autonomy Gate, Scheduler daemon, JSON-RPC сервер | [SERVICES](SERVICES.md#pm-orchestrator) |
+| **platform-api** | 8000 | Тонкий HTTP-BFF поверх оркестратора + Telegram bridge (ingest/outbox) | [SERVICES](SERVICES.md#platform-api) |
+| **console-api** | 8002 | Бэкенд веб-консоли: auth, профили, доска/статистика, питомец, битвы, конфиг агентов, аудит | [SERVICES](SERVICES.md#console-api) |
+| **meeting-capture** | 8003 | Бот-участник Telemost: запись экрана/звука, STT через SpeechKit, авто-саммари | [SERVICES](SERVICES.md#meeting-capture) |
+| **eval-runner** | 8004 | Фоновый демон прогонов оценки качества агента («Штурм») | [SERVICES](SERVICES.md#eval-runner) |
+| **telegram-gateway** | 8080 | Standalone-шлюз на публичном сервере: webhook Telegram ↔ bridge к основному стеку | [SERVICES](SERVICES.md#telegram-gateway) |
+| **web-ui** | 5173→80 | React SPA + Telegram Mini App, раздаётся nginx | [SERVICES](SERVICES.md#web-ui) |
+| **packages/core** | — | Общая библиотека: агент-фреймворк, ReAct, LLM, Трекер, Scheduler, питомец, eval, ORM | [CORE_LIBRARY](CORE_LIBRARY.md) |
+
+Почему так разбито: оркестратор (тяжёлый LLM-рантайм), транспорт (platform-api) и
+консоль (console-api) масштабируются независимо; `telegram-gateway` и
+`meeting-capture` вынесены отдельно, потому что у них особые требования к среде
+(публичный IP с TLS у шлюза, Chromium/FFmpeg у Meeting Capture).
+
+---
+
+## 4. Стек технологий
 
 | Слой | Технология |
 |------|-----------|
-| LLM | gpt-oss-120b (Yandex Cloud OpenAI-совместимый Responses API `/v1/responses`), прямой HTTP |
-| HTTP сервер | FastAPI + Uvicorn |
-| Транспорт между сервисами | JSON-RPC 2.0 (HTTP в prod, in-process в dev) |
-| Трекер | Yandex Tracker REST API v3 + httpx |
-| Конфигурация | Pydantic Settings v2 + .env |
-| ORM | SQLAlchemy 2.0 async + asyncpg |
-| Мониторинг | Prometheus + Grafana + Alertmanager |
-| Линтер | ruff |
-| Пакетный менеджер | uv (workspace) |
+| Язык / рантайм | Python 3.12, asyncio |
+| HTTP-сервер | FastAPI + Uvicorn |
+| Транспорт между сервисами | JSON-RPC 2.0 (HTTP в Docker, in-process в dev/тестах) |
+| LLM агентов | OpenRouter (`google/gemini-3.1-flash-lite`, `google/gemini-3.1-pro`); Yandex Cloud Responses API (`gpt-oss-120b`) как альтернативный провайдер |
+| Трекер (агент) | Tracker MCP gateway (Model Context Protocol поверх HTTP/SSE) |
+| Трекер (сервисы) | Yandex Tracker REST API v3 + httpx (`core.tracker`) |
+| STT | Yandex SpeechKit |
+| ORM / БД | SQLAlchemy 2.0 async + asyncpg + PostgreSQL 16; миграции — Alembic |
+| Конфигурация | Pydantic Settings v2 + `.env`; runtime-overlay из БД без деплоя |
+| Фронтенд | React 18 + TypeScript + Vite + Tailwind + TanStack Query |
+| Мониторинг | Prometheus, Grafana, Loki, Promtail, Alertmanager, cAdvisor, node-exporter |
+| Пакетный менеджер | uv (workspace), линтер ruff |
+| CI/CD | GitHub Actions → тест-VPS (Docker Compose) |
 
 ---
 
-## Поток запроса
+## 5. Рантайм агента
 
-```mermaid
-sequenceDiagram
-    participant U as Пользователь
-    participant API as platform-api :8000
-    participant ORC as pm-orchestrator :8001
-    participant LLM as gpt-oss-120b
-    participant TR as Яндекс Трекер
+Главный сервис — **pm-orchestrator**. При старте он сканирует пакет
+`agents/`, находит подклассы `BaseAgent` и регистрирует их. Добавить агента =
+создать один файл (см. [ADDING_AGENTS](ADDING_AGENTS.md)).
 
-    U->>API: POST /chat {"message": "заведи задачу", "session_id": "s1"}
-    API->>ORC: JSON-RPC invoke(agent="pm_agent", message, session_id)
+Сейчас зарегистрированы три агента:
 
-    ORC->>LLM: messages + tool_schemas
-    LLM-->>ORC: tool_call: tracker_create_issue(queue, summary)
+| Агент | Модель | Инструменты | Назначение |
+|-------|--------|-------------|------------|
+| `pm_agent` | gemini-3.1-flash-lite | Tracker MCP (Get/Create/Update/Bulk…), `tracker_*`, `backlog_plan`, `call_agent`, `schedule_task`, `schedule_meeting_bot`, `get_meeting_transcript` | Основной PM-ассистент Трекера |
+| `audit_agent` | gemini-3.1-pro | `audit_board_digest` | Аудит доски с рекомендациями по каждому участнику (для тимлидов/админов) |
+| `meeting_summarizer` | gemini-3.1-flash-lite | — | Транскрипт встречи → структурированный markdown-отчёт |
 
-    note over ORC: Autonomy Gate: medium risk → confirm!
-
-    ORC-->>API: AgentResult{pending_confirm: {confirm_id, prompt}}
-    API-->>U: 200 {pending_confirm: {confirm_id: "abc", prompt: "..."}}
-
-    U->>API: POST /confirm/abc {"approved": true}
-    API->>ORC: JSON-RPC resume(confirm_id="abc", approved=true)
-
-    ORC->>TR: POST /issues/ {queue, summary}
-    TR-->>ORC: {key: "DARKHORSE-42", ...}
-
-    ORC->>LLM: "Инструмент выполнен. Результат: {key: DARKHORSE-42}. Сообщи."
-    LLM-->>ORC: "Задача DARKHORSE-42 создана успешно!"
-
-    ORC-->>API: AgentResult{reply: "Задача DARKHORSE-42 создана успешно!"}
-    API-->>U: 200 {reply: "Задача DARKHORSE-42 создана успешно!"}
-```
-
----
-
-## ReAct цикл
+### 5.1 ReAct-цикл + Autonomy Gate
 
 ```mermaid
 flowchart TD
-    START([invoke / resume]) --> MSG[Добавить сообщение в историю]
-    MSG --> LLM[Вызов LLM с историей + tool_schemas]
-    LLM --> CHECK{Тип ответа?}
-
-    CHECK -- text --> REPLY([Вернуть AgentResult.reply])
-    CHECK -- tool_call --> GATE{Autonomy Gate}
-
-    GATE -- risk=low\nauto_risk → execute --> EXEC[Выполнить инструмент]
-    GATE -- risk=medium/high\nconfirm_risk --> CONFIRM([Вернуть AgentResult.pending_confirm])
-
-    EXEC --> RESULT[Добавить результат в историю]
-    RESULT --> ITER{Лимит итераций < 8?}
-    ITER -- да --> LLM
-    ITER -- нет --> LIMIT([Ответ: лимит достигнут])
+    START([invoke / resume]) --> STAGE[stage_router: выбрать стадию хода]
+    STAGE --> LLM[LLM с историей + tool-схемами whitelisted стадии]
+    LLM --> CHECK{Ответ?}
+    CHECK -- текст --> REPLY([AgentResult.reply])
+    CHECK -- tool_call --> GATE{Autonomy Gate<br/>risk инструмента}
+    GATE -- low ∈ auto_risk --> EXEC[Выполнить инструмент]
+    GATE -- medium/high ∈ confirm_risk --> CONFIRM([AgentResult.pending_confirm<br/>ход замораживается в БД])
+    EXEC --> GUARD[turn_guards: проверки валидности хода]
+    GUARD --> ITER{Лимит итераций?}
+    ITER -- ещё можно --> LLM
+    ITER -- достигнут --> LIMIT([Ответ: лимит])
+    CONFIRM -. resume approved=true .-> EXEC
 ```
+
+- **Стадии** (`stage_graph.py`, `stage_router.py`) — детерминированный граф: один раз
+  за ход выбирается стадия (INTAKE / STATUS / BOARD / TRANSITION / QUERY / REORG /
+  PROACTIVE / HYGIENE / MEETING_SYNC / DIALOG), внутри неё LLM ходит только по
+  whitelist инструментов. Подробно — [pm_agent_stage_graph](pm_agent_stage_graph.md).
+- **Autonomy Gate** — у каждого инструмента есть `risk` (`low`/`medium`/`high`).
+  `low` выполняются автоматически, `medium`/`high` ставят ход на паузу и возвращают
+  `pending_confirm`. Состояние хода персистится в таблицу `traces`, так что
+  подтверждение приходит отдельным HTTP-запросом (`resume`).
+- **turn_guards** блокируют невалидные ходы (создать комментарий без задачи и т.п.).
+
+| Risk | Поведение | Примеры |
+|------|-----------|---------|
+| `low` | авто | get/search issue, board snapshot, `call_agent` |
+| `medium` | confirm | create/update issue, `schedule_task` |
+| `high` | confirm | close/transition, bulk-операции |
+
+Пороги настраиваются per-team через `auto_risk` / `confirm_risk` /
+`always_confirm_tools` (см. Effective Config ниже).
+
+### 5.2 Источники инструментов
+
+Инструменты агента приходят из двух мест:
+
+1. **Tracker MCP gateway** — CamelCase-инструменты (`GetIssue`, `CreateComment`,
+   `BulkUpdate`, `SearchEntities`…), которые отдаёт serverless MCP-сервер Яндекс
+   Трекера. Подключение — `TRACKER_MCP_URL` (см. [TRACKER_MCP_SETUP](TRACKER_MCP_SETUP.md)).
+2. **Нативные `@platform_tool`** из `core` и `pm-orchestrator` — `tracker_create_issue`,
+   `tracker_board_snapshot`, `backlog_plan`, `audit_board_digest`, `call_agent`,
+   `schedule_task`, `schedule_meeting_bot`, `get_meeting_transcript`.
+
+### 5.3 Effective Config (промпт без деплоя)
+
+Промпт и пороги автономии меняются без перезапуска через таблицы `agent_specs` и
+`agent_instances.overlay`:
+
+```
+class defaults  →  AgentSpec (prompt, model)  →  AgentInstance.overlay (team-specific overrides)
+```
+
+`build_effective_config(...)` (`core/effective_config.py`) сводит три слоя в
+`EffectiveAgentConfig` (итоговые `prompt`, `llm_configs`, `runtime_config`).
+Редактируется из веб-консоли (`/dev`). См. [CORE_LIBRARY](CORE_LIBRARY.md#конфигурация).
 
 ---
 
-## Автодискавери агентов
+## 6. Поток HTTP-запроса (чат + confirm)
+
+```mermaid
+sequenceDiagram
+    participant U as Клиент
+    participant API as platform-api :8000
+    participant ORC as pm-orchestrator :8001
+    participant LLM as Gemini (OpenRouter)
+    participant TR as Tracker MCP → Трекер
+
+    U->>API: POST /chat {message, session_id}
+    API->>ORC: JSON-RPC invoke(pm_agent, message, session_id)
+    ORC->>LLM: история + tool-схемы
+    LLM-->>ORC: tool_call tracker_create_issue(...)
+    note over ORC: Autonomy Gate: medium → confirm
+    ORC-->>API: AgentResult{pending_confirm}
+    API-->>U: 200 {pending_confirm: {confirm_id, prompt}}
+
+    U->>API: POST /confirm/{id} {approved:true}
+    API->>ORC: JSON-RPC resume(confirm_id, approved=true)
+    ORC->>TR: создать задачу
+    TR-->>ORC: DARKHORSE-42
+    ORC->>LLM: «инструмент выполнен, сообщи результат»
+    LLM-->>ORC: «Задача DARKHORSE-42 создана»
+    ORC-->>API: AgentResult{reply}
+    API-->>U: 200 {reply}
+```
+
+**JSON-RPC методы оркестратора** (`POST /rpc`): `list_agents`, `invoke`, `resume`,
+`agent_tools`, `get_actions`. В dev/тестах `rpc_client` вызывает оркестратор
+in-process; в Docker — по HTTP через `ORCHESTRATOR_URL`.
+
+---
+
+## 7. Telegram-контур
+
+Telegram вынесен на отдельный публичный сервер, потому что вебхуку Telegram нужен
+доступный TLS-endpoint, а основной стек живёт за приватной сетью.
 
 ```mermaid
 flowchart LR
-    FILE[agents/my_agent.py\nclass MyAgent(BaseAgent):] 
-    DISC[OrchestratorService\n.discover_agents()]
-    RUN[ReActRunner\nдля MyAgent]
-    RPC[JSON-RPC метод\ninvoke(agent='my_agent')]
-    HTTP[HTTP маршрут\nPOST /agents/my_agent/chat]
+    TGAPI["Telegram Bot API"]
+    subgraph pub["Публичный сервер · misisdarkhorse.ru"]
+        N["nginx + TLS"]
+        GW["telegram-gateway :8080<br/>spool (SQLite)"]
+    end
+    subgraph main["Основной стек (WireGuard)"]
+        PAPI["platform-api<br/>/internal/telegram/v1"]
+        ORC["pm-orchestrator"]
+        OUTBOX[("telegram_outbox")]
+    end
 
-    FILE --> DISC --> RUN --> RPC --> HTTP
+    TGAPI -->|webhook| N --> GW
+    GW -->|"ingest (HMAC nonce)"| PAPI
+    PAPI -->|invoke| ORC
+    ORC --> OUTBOX
+    GW -->|"poll outbox (HMAC)"| PAPI
+    GW -->|sendMessage| TGAPI
+    N -->|"/grafana, /"| main
 ```
 
-При старте оркестратор сканирует пакет `agents/`, импортирует все модули, находит подклассы `BaseAgent` и автоматически регистрирует их. Добавление нового агента = создать один файл.
+- **Входящие**: Telegram → webhook → gateway кладёт апдейт в локальный spool →
+  отправляет в `platform-api` bridge (`ingest`) с HMAC-подписью и nonce →
+  оркестратор отрабатывает ход → ответ кладётся в `telegram_outbox`.
+- **Исходящие**: gateway лизит outbox по bridge, шлёт в Telegram, с ретраями,
+  дедупликацией и dead-letter (всё через persistent spool, переживает рестарты).
+- Тот же nginx проксирует `/grafana` и веб-консоль через WireGuard-туннель.
+
+Подробно: [SERVICES → telegram-gateway](SERVICES.md#telegram-gateway),
+[TELEGRAM_SETUP_GUIDE](TELEGRAM_SETUP_GUIDE.md),
+[runbook](runbooks/telegram-gateway-runbook.md), [DEPLOYMENT](DEPLOYMENT.md).
 
 ---
 
-## JSON-RPC 2.0 протокол
+## 8. Расписания (Scheduler daemon)
 
-**Endpoint:** `POST http://pm-orchestrator:8001/rpc`
+`SchedulerDaemon` (asyncio-таск внутри `pm-orchestrator`) каждые ~60 сек выбирает
+просроченные `ScheduledJob` через `SELECT … FOR UPDATE SKIP LOCKED` — безопасно
+для нескольких реплик. Задачи бывают двух видов:
 
-| Метод | Параметры | Ответ |
-|-------|----------|-------|
-| `list_agents` | — | `[{name, description}]` |
-| `invoke` | `agent, message, session_id` | `AgentResult` |
-| `resume` | `confirm_id, approved` | `AgentResult` |
-| `get_actions` | `session_id?, limit?` | `[action]` |
+- **agent-job** — агент сам запланировал cron-задачу инструментом `schedule_task`;
+- **системные cron-джобы**, включаемые env-флагами оркестратора:
 
-```json
-// Запрос
-{
-  "jsonrpc": "2.0",
-  "method": "invoke",
-  "params": {"agent": "pm_agent", "message": "найди задачи", "session_id": "s1"},
-  "id": 1
-}
+| Джоба | Cron по умолчанию | Что делает | Код |
+|-------|-------------------|------------|-----|
+| Daily digest | `0 * * * *` | Часовой дайджест по команде в Telegram | `core/daily_digest.py` |
+| Standup poll | `50 * * * *` | Стендап-опрос участников | `core/standup_poll.py` |
+| Deadline reminders | `0 * * * *` | Напоминания об овердью/скоро-дедлайнах | `core/deadline_reminders.py` |
 
-// Ответ
-{
-  "jsonrpc": "2.0",
-  "result": {"reply": "Найдено 3 задачи...", "session_id": "s1", "steps": [...]},
-  "id": 1
-}
-```
-
-**Режимы работы `rpc_client.py`:**
-- `dev / тесты` — прямой Python-вызов (in-process, без HTTP)
-- `Docker` — HTTP при наличии переменной `ORCHESTRATOR_URL`
+Результаты складываются в `telegram_outbox` и доставляются шлюзом. Расписания
+редактируются из веб-консоли (`/team`).
 
 ---
 
-## Autonomy Gate
+## 9. Meeting Capture
 
-Каждый инструмент имеет уровень риска. Перед выполнением оркестратор проверяет:
+```mermaid
+flowchart LR
+    REQ["POST /meetings<br/>(telemost_url)"] --> DISP["MeetingDispatcher"]
+    DISP --> BOT["Бот-гость:<br/>Chromium + FFmpeg"]
+    BOT --> AUDIO["audio.ogg → S3/локально"]
+    AUDIO --> STT["SpeechKit STT<br/>(спикеры, таймкоды)"]
+    STT --> SUM["invoke meeting_summarizer"]
+    SUM --> MD["markdown-отчёт"]
+    MD --> OUTBOX[("telegram_outbox")]
+```
 
-| Риск | Поведение | Примеры |
-|------|----------|---------|
-| `low` | Авто-выполнение | get_issue, search_issues, comment |
-| `medium` | Пауза → confirm | create_issue, update_issue |
-| `high` | Пауза → confirm | close_issue |
-
-Настраивается через `RuntimeConfig(auto_risk=["low"], confirm_risk=["medium", "high"])`.  
-Конкретные инструменты можно всегда требовать confirm через `always_confirm_tools`.
+Сервис не использует официальный bot API Telemost — бот заходит по ссылке как
+обычный гость, пишет экран и звук, сохраняет артефакты и (при наличии SpeechKit/S3)
+строит транскрипт. Подробно — [meeting_capture](meeting_capture.md).
 
 ---
 
-## Структура монорепо
+## 10. Геймификация: Скрамик и Битвы
 
-```
-digital_breakthrough_2026/
-├── packages/
-│   └── core/                    # Общая библиотека
-│       └── src/core/
-│           ├── agent.py         # BaseAgent, LLMSettings (default: gpt-oss-120b)
-│           ├── react.py         # ReActRunner, AgentResult, _RunCtx (effective config)
-│           ├── llm.py           # LLMClient → Responses API (gpt-oss-120b)
-│           ├── tools.py         # @platform_tool, ToolRegistry
-│           ├── effective_config.py  # build_effective_config (class < spec < overlay)
-│           ├── scheduler.py     # SchedulerDaemon, compute_next_run
-│           ├── seed.py          # ensure_default_team, ensure_agent_instances
-│           ├── tracker.py       # TrackerClient
-│           ├── tracker_tools.py # tracker_* @platform_tool
-│           ├── config.py        # Pydantic settings (DEFAULT_TEAM_ID, SCHEDULER_ENABLED)
-│           ├── metrics.py       # Prometheus counters/histograms
-│           └── models.py        # SQLAlchemy ORM (11 таблиц)
-│
-├── services/
-│   ├── pm-orchestrator/         # Мозг (порт 8001)
-│   │   └── src/pm_orchestrator/
-│   │       ├── agents/
-│   │       │   └── pm_agent.py  # ← Добавить нового агента сюда
-│   │       ├── tools/
-│   │       │   ├── call_agent.py    # call_agent @platform_tool (делегирование)
-│   │       │   └── schedule_task.py # schedule_task @platform_tool (cron-задачи)
-│   │       ├── orchestrator.py  # OrchestratorService + effective config loading
-│   │       └── rpc.py           # JSON-RPC сервер + SchedulerDaemon lifecycle
-│   │
-│   └── platform-api/            # HTTP транспорт (порт 8000)
-│       └── src/platform_api/
-│           ├── main.py          # FastAPI роуты
-│           └── rpc_client.py    # JSON-RPC клиент
-│
-├── monitoring/                  # Prometheus + Grafana + Alertmanager
-├── docker-compose.yml
-└── .github/workflows/           # CI (lint + test) + CD (deploy to VPS)
-```
+«Скрамик» — командный питомец-тамагочи: уровень растёт от закрытых задач (XP),
+есть настроение, 10 видов, 4 характеристики, монеты и магазин косметики. «Битва
+скрамиков» — командный royale и дуэли 1-на-1 с генерацией картинки результата
+(PIL). Вся математика — чистые детерминированные функции в `core/pet.py` и
+`core/pet_battle.py`. Дизайн и ассеты — [SCRUMIC_DESIGN](SCRUMIC_DESIGN.md).
+
+![Скрамики](scrumiks/scrumiks_all.png)
 
 ---
 
-## Встроенные инструменты оркестратора
+## 11. «Штурм» — оценка качества агента
 
-| Инструмент | Risk | Описание |
-|------------|------|----------|
-| `call_agent` | low | Делегировать задачу другому агенту in-process |
-| `schedule_task` | medium | Запланировать cron-задачу для агента |
-| `tracker_*` (6 шт.) | low/medium/high | Яндекс Трекер CRUD |
-
-## Effective Config (класс < spec < overlay)
-
-Промпт и пороги автономии можно менять **без деплоя** через таблицы `agent_specs` и `agent_instances.overlay`:
-
-```
-class defaults → AgentSpec (prompt, model) → AgentInstance.overlay (prompt, autonomy thresholds)
-```
-
-Функция `build_effective_config(agent, spec_data, overlay_data)` возвращает `EffectiveAgentConfig` с итоговыми `prompt`, `llm_configs`, `runtime_config`.
-
-## Scheduler daemon
-
-`SchedulerDaemon` (asyncio-таск в `pm-orchestrator`) каждые 60 сек обрабатывает просроченные `ScheduledJob` через `SELECT … FOR UPDATE SKIP LOCKED` — безопасно для нескольких реплик.
+LLM-as-a-judge фреймворк: генерирует сценарии, прогоняет агента в изоляции (на
+fake-трекере или реальной доске), судит ответ панелью судей по критериям, считает
+метрики и формирует диагностический отчёт. Прогоны запускаются демоном
+`eval-runner` и просматриваются в консоли (`/eval`). Дизайн —
+[agent_evaluation](agent_evaluation.md), код — [CORE_LIBRARY → eval](CORE_LIBRARY.md#подсистема-оценки-eval).
 
 ---
 
-## Мониторинг
+## 12. Что дальше (roadmap)
 
-- **Prometheus** — scrape с platform-api `/metrics` и pm-orchestrator `/metrics`
-- **Grafana** — 3 дашборда: хост, контейнеры, приложение (LLM/tool метрики)
-- **Alertmanager** → Telegram: контейнер упал, диск >80%, LLM latency p95 >15s
+Стратегический взгляд «где мы и куда идём» — отдельный документ
+[TARGET_ARCHITECTURE](TARGET_ARCHITECTURE.md): networked A2A, расширение набора
+агентов (correspondence/analytics), масштабирование рантайма.
 
 ---
 
-## Что отложено
-
-- Networked A2A (агент→агент через сеть)
-- Telegram-бот (Трек A)
-- Meeting Capture агент
-- Correspondence/Analytics агенты
-- GUI-консоль (Трек D)
+**См. также:** [Сервисы](SERVICES.md) · [Core-библиотека](CORE_LIBRARY.md) ·
+[Модель данных](DATA_MODEL.md) · [Конфигурация](CONFIGURATION.md) ·
+[Деплой](DEPLOYMENT.md) · [Мониторинг](MONITORING.md)
